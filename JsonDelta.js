@@ -1,29 +1,24 @@
-//  jsonseq - JSON Diffs and Patches
+//  JsonDelta - JSON Delta Edits
 //  (c) 2012 LikeBike LLC
-//  jsonseq is freely distributable under the 3-clause BSD license.  (See LICENSE.TXT)
+//  JsonDelta is freely distributable under the 3-clause BSD license.  (See LICENSE.TXT)
 
 
 (function() {
 
 
 // First, install ourselves and import our dependencies:
-var JDIFF = {},
+var JDELTA = {},
     _;
 if(exports !== undefined) {
     // We are on Node.
-    exports.JDIFF = JDIFF;
+    exports.JDELTA = JDELTA;
     _ = require('./lib/underscore.js');
 } else if(window !== undefined) {
     // We are in a browser.
-    window.JDIFF = JDIFF;
+    window.JDELTA = JDELTA;
     _ = window._;
 } else throw new Error('This environment is not yet supported.');
     
-
-
-
-
-
 
 
 
@@ -212,8 +207,8 @@ if(exports !== undefined) {
 
 // If the JSON object does not yet have a stringify method, give it one.
 
-    if (typeof JDIFF.stringify !== 'function') {                                   //////////////////  EDIT by Christopher Sebastian: JSON --> JDIFF
-        JDIFF.stringify = function (value, replacer, space) {                      //////////////////  EDIT by Christopher Sebastian: JSON --> JDIFF
+    if (typeof JDELTA.stringify !== 'function') {                                   //////////////////  EDIT by Christopher Sebastian: JSON --> JDELTA
+        JDELTA.stringify = function (value, replacer, space) {                      //////////////////  EDIT by Christopher Sebastian: JSON --> JDELTA
 
 // The stringify method takes a value and an optional replacer, and an optional
 // space parameter, and returns a JSON text. The replacer can be a function
@@ -246,7 +241,7 @@ if(exports !== undefined) {
             if (replacer && typeof replacer !== 'function' &&
                     (typeof replacer !== 'object' ||
                     typeof replacer.length !== 'number')) {
-                throw new Error('JDIFF.stringify');                                //////////////////  EDIT by Christopher Sebastian: JSON --> JDIFF
+                throw new Error('JDELTA.stringify');                                //////////////////  EDIT by Christopher Sebastian: JSON --> JDELTA
             }
 
 // Make a fake root object containing our value under the key of ''.
@@ -273,7 +268,7 @@ if(exports !== undefined) {
 
 
 
-JDIFF.hash = function(s) {
+JDELTA.hash = function(s) {
     // A fast, simple, (stupid) hash function for detecting errors, NOT for cryptography!
     // Based on: http://stackoverflow.com/questions/811195/fast-open-source-checksum-for-small-strings
     var chk = 0x12345678,

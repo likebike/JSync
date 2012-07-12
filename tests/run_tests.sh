@@ -9,7 +9,7 @@ cd "$MYDIR"
 
 rm -rf cov_lib
 mkdir cov_lib
-./coverage.sh ../jsondiff.js > cov_lib/jsondiff.js
+./coverage.sh ../JsonDelta.js > cov_lib/JsonDelta.js
 cp -rp ../lib cov_lib/lib
 node test.js
 
