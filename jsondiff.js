@@ -6,18 +6,18 @@
 (function() {
 
 
-    // First, install ourselves and import our dependencies:
-    var JDIFF = {},
-        _;
-    if(exports !== undefined) {
-        // We are on Node.
-        exports.JDIFF = JDIFF;
-        _ = require('./lib/underscore.js');
-    } else if(window !== undefined) {
-        // We are in a browser.
-        window.JDIFF = JDIFF;
-        _ = window._;
-    } else throw new Error('This environment is not yet supported.');
+// First, install ourselves and import our dependencies:
+var JDIFF = {},
+    _;
+if(exports !== undefined) {
+    // We are on Node.
+    exports.JDIFF = JDIFF;
+    _ = require('./lib/underscore.js');
+} else if(window !== undefined) {
+    // We are in a browser.
+    window.JDIFF = JDIFF;
+    _ = window._;
+} else throw new Error('This environment is not yet supported.');
     
 
 
@@ -273,8 +273,17 @@
 
 
 
-
-
+JDIFF.hash = function(s) {
+    // A fast, simple, (stupid) hash function for detecting errors, NOT for cryptography!
+    // Based on: http://stackoverflow.com/questions/811195/fast-open-source-checksum-for-small-strings
+    var chk = 0x12345678,
+        i, ii;
+    for(i=0, ii=s.length; i<ii; i++) {
+        chk += (s.charCodeAt(i)+1) * (i+1)
+        chk = chk % 0xffffffff;
+    }
+    return chk;
+};
 
 
 
