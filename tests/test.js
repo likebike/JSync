@@ -59,6 +59,20 @@ startTime = new Date().getTime();
 assert.equal(JDELTA.hash(s), 310928681);
 console.log('hash of %s-char str: %s ms', s.length, new Date().getTime() - startTime);
 
+assert.deepEqual(JDELTA.createDelta({}, []), {"prehash":305420272,"posthash":305420272,"ops":[]});
+assert.deepEqual(JDELTA.createDelta({}, [{op:'add',key:'a',value:'1'}]), {"prehash":305420272,"posthash":305422793,"ops":[{"op":"add","key":"a","value":"1"}]});
+assert.throws(function(){JDELTA.createDelta({}, [{op:'add', path:'$.x', key:'a', value:'1'}])}, /Path not found/);
+assert.throws(function(){JDELTA.createDelta({a:1}, [{op:'add', key:'a', value:2}])}, /Already in target/);
+assert.throws(function(){JDELTA.createDelta({}, [{op:'update', key:'a', value:2}])}, /Not in target/);
+assert.deepEqual(JDELTA.createDelta({a:1}, [{op:'update', key:'a', value:2}]), {"prehash":305422001,"posthash":305422007,"ops":[{"op":"update","key":"a","value":2}]});
+assert.deepEqual(JDELTA.createDelta({a:1}, [{op:'update', key:'a', value:2},
+                                            {op:'add', key:'b', value:3}]), {"prehash":305422001,"posthash":305425872,"ops":[{"op":"update","key":"a","value":2},
+                                                                                                                             {"op":"add","key":"b","value":3}]});
+
+assert.throws(function(){JDELTA.applyDelta({a:2}, JDELTA.createDelta({a:1}, [{op:'update', key:'a', value:3}]))}, /Prehash did not match/);
+assert.deepEqual(JDELTA.applyDelta({a:2}, JDELTA.createDelta({a:2}, [{op:'update', key:'a', value:3}])), {a:3});
+assert.deepEqual(JDELTA.applyDelta({a:2}, JDELTA.createDelta({a:2}, [{op:'remove', key:'a'}])), {});
+assert.deepEqual(JDELTA.applyDelta([1,2,3], JDELTA.createDelta([1,2,3], [{op:'update', key:1, value:4}])), [1,4,3]);
 
 console.log('All Tests Passed.  :)');
 console.log('Generating Code Coverage Reports...');

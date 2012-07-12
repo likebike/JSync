@@ -3,6 +3,9 @@
 //  JsonDelta is freely distributable under the 3-clause BSD license.  (See LICENSE.TXT)
 
 
+// Heavily inspired by: http://tools.ietf.org/html/draft-pbryan-json-patch-00
+
+
 (function() {
 
 
@@ -281,82 +284,94 @@ JDELTA.hash = function(s) {
 };
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
+JDELTA._getTarget = function(o, path) {
+    if(!o)
+        throw new Error('I need an Object or Array!');
+    if(!path)
+        throw new Error('I need a path!');
+    var pieces = path.split('.');
+    if(pieces[0] !== '$')
+        throw new Error('The first path item must be $!');
+    var i, ii;
+    for(i=1, ii=pieces.length; i<ii; i++) {
+        o = o[pieces[i]];
+        if(!o)
+            throw new Error('Path not found');
+    }
+    return o;
+}
+JDELTA._applyOperation = function(o, operation) {
+    var op = operation.op,
+        path = operation.path || '$',
+        key = operation.key,
+        value = operation.value;
+    if(op === undefined)
+        throw new Error('undefined op!');
+    if(key === undefined)
+        throw new Error('undefined key!');
+    var target = JDELTA._getTarget(o, path);
+    switch(op) {
+        case 'add':
+            if(value === undefined)
+                throw new Error('undefined value!');
+            if(key in target)
+                throw new Error('Already in target: '+key);
+            target[key] = value;
+            break;
+        case 'update':
+            if(value === undefined)
+                throw new Error('undefined value!');
+            if(!(key in target))
+                throw new Error('Not in target: '+key);
+            target[key] = value;
+            break;
+        case 'remove':
+            if(!(key in target))
+                throw new Error('Not in target: '+key);
+            delete target[key];
+            break;
+        default:
+            throw new Error('Illegal operation: '+op);
+    }
+};
+JDELTA.createDelta = function(o, operations) {
+    if(!_.isObject(o))
+        throw new Error("Expected 'o' to be an Object or Array.");
+    if(!_.isArray(operations))
+        throw new Error("Expected 'operations' to be an Array of OperationSpecs.");
+    var oCopy = JSON.parse(JSON.stringify(o)),  // There is probably a faster way to deep-copy...
+        i, ii;
+    for(i=0, ii=operations.length; i<ii; i++) {
+        JDELTA._applyOperation(oCopy, operations[i]);
+    }
+    var prehash = JDELTA.hash(JDELTA.stringify(o)),
+        posthash = JDELTA.hash(JDELTA.stringify(oCopy));
+    return {prehash:prehash,
+            posthash:posthash,
+            ops:operations};
+};
+JDELTA.applyDelta = function(o, delta) {
+    var prehash = delta.prehash,
+        posthash = delta.posthash,
+        ops = delta.ops;
+    if(!_.isObject(o))
+        throw new Error("Expected 'o' to be an Object or Array.");
+    if(!prehash)
+        throw new Error('Missing prehash!');
+    if(!posthash)
+        throw new Error('Missing posthash!');
+    if(!_.isArray(ops))
+        throw new Error('ops is not an Array!');
+    if(JDELTA.hash(JDELTA.stringify(o)) !== prehash)
+        throw new Error('Prehash did not match!');
+    var i, ii;
+    for(i=0, ii=ops.length; i<ii; i++) {
+        JDELTA._applyOperation(o, ops[i]);
+    }
+    if(JDELTA.hash(JDELTA.stringify(o)) !== posthash)
+        throw new Error('Posthash did not match!');
+    return o; // For chaining...
+};
 
 
 
