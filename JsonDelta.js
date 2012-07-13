@@ -23,6 +23,8 @@ if(exports !== undefined) {
 } else throw new Error('This environment is not yet supported.');
     
 
+JDELTA.VERSION = '0.1.0'
+
 
 
 ///////////////////////////////////////////////////////////////////////////////////
