@@ -300,84 +300,182 @@ JDELTA._getTarget = function(o, path) {
     }
     return o;
 }
-JDELTA._applyOperation = function(o, operation) {
-    var op = operation.op,
-        path = operation.path || '$',
-        key = operation.key,
-        value = operation.value;
-    if(op === undefined)
-        throw new Error('undefined op!');
-    if(key === undefined)
-        throw new Error('undefined key!');
-    var target = JDELTA._getTarget(o, path);
-    switch(op) {
-        case 'add':
-            if(value === undefined)
-                throw new Error('undefined value!');
-            if(key in target)
-                throw new Error('Already in target: '+key);
-            target[key] = value;
-            break;
-        case 'update':
-            if(value === undefined)
-                throw new Error('undefined value!');
-            if(!(key in target))
-                throw new Error('Not in target: '+key);
-            target[key] = value;
-            break;
-        case 'remove':
-            if(!(key in target))
-                throw new Error('Not in target: '+key);
-            delete target[key];
-            break;
-        default:
-            throw new Error('Illegal operation: '+op);
-    }
+
+JDELTA._deepCopy = function(o) {
+    return JSON.parse(JSON.stringify(o));  // There is probably a faster way to deep-copy...
 };
-JDELTA.createDelta = function(o, operations) {
+
+JDELTA._isInt = function(o) {
+    return parseInt(o) === o;
+};
+
+JDELTA.create = function(o, operations) {
     if(!_.isObject(o))
         throw new Error("Expected 'o' to be an Object or Array.");
     if(!_.isArray(operations))
         throw new Error("Expected 'operations' to be an Array of OperationSpecs.");
-    var oCopy = JSON.parse(JSON.stringify(o)),  // There is probably a faster way to deep-copy...
-        i, ii;
+    var oCopy = JDELTA._deepCopy(o),
+        steps = [],
+        i, ii, step, op, path, key, value, target, before;
     for(i=0, ii=operations.length; i<ii; i++) {
-        JDELTA._applyOperation(oCopy, operations[i]);
+        step = operations[i];
+        op = step.op;
+        path = step.path  ||  '$';
+        key = step.key;
+        value = step.value;
+        if(op === undefined)
+            throw new Error('undefined op!');
+        if(key === undefined)
+                throw new Error('undefined key!');
+        target = JDELTA._getTarget(oCopy, path);
+        switch(op) {
+            case 'add':
+                if(value === undefined)
+                    throw new Error('undefined value!');
+                if(key in target)
+                    throw new Error('Already in target: '+key);
+                steps[steps.length] = {path:path, key:key, after:JDELTA._deepCopy(value)};  // We need to '_deepCopy' because if the object gets modified by future operations, it could affect a reference.
+                target[key] = value;
+                break;
+            case 'update':
+                if(value === undefined)
+                    throw new Error('undefined value!');
+                if(!(key in target))
+                    throw new Error('Not in target: '+key);
+                steps[steps.length] = {path:path, key:key, before:JDELTA._deepCopy(target[key]), after:JDELTA._deepCopy(value)};
+                target[key] = value;
+                break;
+            case 'remove':
+                if(!(key in target))
+                    throw new Error('Not in target: '+key);
+                steps[steps.length] = {path:path, key:key, before:JDELTA._deepCopy(target[key])};
+                delete target[key];
+                break;
+            case 'arrayInsert':
+                if(!JDELTA._isInt(key))
+                    throw new Error('Expected an integer key!');
+                if(!_.isArray(target))
+                    throw new Error('create:arrayInsert: Expected an Array target!');
+                if(key<0  ||  key>target.length)
+                    throw new Error('IndexError');
+                steps[steps.length] = {op:'arrayInsert', path:path, key:key, value:JDELTA._deepCopy(value)};
+                target.splice(key, 0, value);
+                break;
+            case 'arrayRemove':
+                if(!JDELTA._isInt(key))
+                    throw new Error('Expected an integer key!');
+                if(!_.isArray(target))
+                    throw new Error('create:arrayRemove: Expected an Array target!');
+                if(key<0  ||  key>=target.length)
+                    throw new Error('IndexError');
+                steps[steps.length] = {op:'arrayRemove', path:path, key:key, value:JDELTA._deepCopy(target[key])};
+                target.splice(key, 1);
+                break;
+            default:
+                throw new Error('Illegal operation: '+op);
+        }
     }
-    var prehash = JDELTA.hash(JDELTA.stringify(o)),
-        posthash = JDELTA.hash(JDELTA.stringify(oCopy));
-    return {prehash:prehash,
-            posthash:posthash,
-            ops:operations};
+    return {steps:steps};
 };
-JDELTA.applyDelta = function(o, delta) {
-    var prehash = delta.prehash,
-        posthash = delta.posthash,
-        ops = delta.ops;
-    if(!_.isObject(o))
-        throw new Error("Expected 'o' to be an Object or Array.");
-    if(!prehash)
-        throw new Error('Missing prehash!');
-    if(!posthash)
-        throw new Error('Missing posthash!');
-    if(!_.isArray(ops))
-        throw new Error('ops is not an Array!');
-    if(JDELTA.hash(JDELTA.stringify(o)) !== prehash)
-        throw new Error('Prehash did not match!');
-    var i, ii;
-    for(i=0, ii=ops.length; i<ii; i++) {
-        JDELTA._applyOperation(o, ops[i]);
+JDELTA.reverse = function(delta) {
+    if(!_.isObject(delta))
+        throw new Error('Expected a Delta object!');
+    if(delta.steps === undefined)
+        throw new Error("Not a Delta object!");
+    var reversedSteps = [],
+        i, fstep, rstep, op;
+    for(i=delta.steps.length-1; i>=0; i--) {
+        fstep = delta.steps[i];
+        rstep = {path:fstep.path, key:fstep.key};
+        op = fstep.op  ||  'obj';
+        switch(op) {
+            case 'obj':
+                if('after' in fstep)
+                    rstep.before = fstep.after;
+                if('before' in fstep)
+                    rstep.after = fstep.before;
+                break;
+            case 'arrayInsert':
+                rstep.op = 'arrayRemove';
+                rstep.value = fstep.value;
+                break;
+            case 'arrayRemove':
+                rstep.op = 'arrayInsert';
+                rstep.value = fstep.value;
+                break;
+            default:
+                throw new Error('Illegal operation: '+op);
+        }
+        reversedSteps[reversedSteps.length] = rstep;
     }
-    if(JDELTA.hash(JDELTA.stringify(o)) !== posthash)
-        throw new Error('Posthash did not match!');
+    return {steps:reversedSteps};
+};
+JDELTA.patch = function(o, delta) {
+    if(!_.isObject(o))
+        throw new Error("Expected first arg to be an Object or Array.");
+    if(!_.isObject(delta))
+        throw new Error('Expected second arg to be a Delta object.');
+    if(!_.isArray(delta.steps))
+        throw new Error('Invalid Delta object.');
+    var steps = delta.steps,
+        i, ii, step, op, path, key, target;
+    for(i=0, ii=steps.length; i<ii; i++) {
+        step = steps[i];
+        op = step.op  ||  'obj';
+        path = step.path;
+        if(path === undefined)
+            throw new Error('undefined path!');
+        key = step.key;
+        if(key === undefined)
+            throw new Error('undefined key!');
+        target = JDELTA._getTarget(o, path);
+
+        switch(op) {
+            case 'obj':
+                if('before' in step) {
+                    if(!(key in target))
+                        throw new Error('Not in target: '+key);
+                    if( JDELTA.stringify(target[key]) !== JDELTA.stringify(step.before) )
+                        throw new Error("'before' value did not match!");
+                } else {
+                    if(key in target)
+                        throw new Error('Unexpectedly in target: '+key);
+                }
+
+                if('after' in step)
+                    target[key] = JDELTA._deepCopy(step.after);  // We must '_deepCopy', otherwise the object that the delta references could be modified externally, resulting in totally unexpected mutation.
+                else {
+                    if(key in target)
+                        delete target[key];
+                }
+                break;
+            case 'arrayInsert':
+                if(!JDELTA._isInt(key))
+                    throw new Error('Expected an integer key!');
+                if(!_.isArray(target))
+                    throw new Error('patch:arrayInsert: Expected an Array target!');
+                if(key<0  ||  key>target.length)
+                    throw new Error('IndexError');
+                if(step.value === undefined)
+                    throw new Error('undefined value!');
+                target.splice(key, 0, JDELTA._deepCopy(step.value))
+                break;
+            case 'arrayRemove':
+                if(!JDELTA._isInt(key))
+                    throw new Error('Expected an integer key!');
+                if(!_.isArray(target))
+                    throw new Error('patch:arrayRemove: Expected an Array target!');
+                if(key<0  ||  key>=target.length)
+                    throw new Error('IndexError');
+                if( JDELTA.stringify(target[key]) !== JDELTA.stringify(step.value) )
+                    throw new Error('Array value did not match!');
+                target.splice(key, 1);
+                break;
+            default:
+                throw new Error('Illegal operation: '+op);
+        }
+    }
     return o; // For chaining...
 };
-
-
-
-
-
-
-
 
 })();

@@ -59,20 +59,102 @@ startTime = new Date().getTime();
 assert.equal(JDELTA.hash(s), 310928681);
 console.log('hash of %s-char str: %s ms', s.length, new Date().getTime() - startTime);
 
-assert.deepEqual(JDELTA.createDelta({}, []), {"prehash":305420272,"posthash":305420272,"ops":[]});
-assert.deepEqual(JDELTA.createDelta({}, [{op:'add',key:'a',value:'1'}]), {"prehash":305420272,"posthash":305422793,"ops":[{"op":"add","key":"a","value":"1"}]});
-assert.throws(function(){JDELTA.createDelta({}, [{op:'add', path:'$.x', key:'a', value:'1'}])}, /Path not found/);
-assert.throws(function(){JDELTA.createDelta({a:1}, [{op:'add', key:'a', value:2}])}, /Already in target/);
-assert.throws(function(){JDELTA.createDelta({}, [{op:'update', key:'a', value:2}])}, /Not in target/);
-assert.deepEqual(JDELTA.createDelta({a:1}, [{op:'update', key:'a', value:2}]), {"prehash":305422001,"posthash":305422007,"ops":[{"op":"update","key":"a","value":2}]});
-assert.deepEqual(JDELTA.createDelta({a:1}, [{op:'update', key:'a', value:2},
-                                            {op:'add', key:'b', value:3}]), {"prehash":305422001,"posthash":305425872,"ops":[{"op":"update","key":"a","value":2},
-                                                                                                                             {"op":"add","key":"b","value":3}]});
 
-assert.throws(function(){JDELTA.applyDelta({a:2}, JDELTA.createDelta({a:1}, [{op:'update', key:'a', value:3}]))}, /Prehash did not match/);
-assert.deepEqual(JDELTA.applyDelta({a:2}, JDELTA.createDelta({a:2}, [{op:'update', key:'a', value:3}])), {a:3});
-assert.deepEqual(JDELTA.applyDelta({a:2}, JDELTA.createDelta({a:2}, [{op:'remove', key:'a'}])), {});
-assert.deepEqual(JDELTA.applyDelta([1,2,3], JDELTA.createDelta([1,2,3], [{op:'update', key:1, value:4}])), [1,4,3]);
+assert.deepEqual(JDELTA.create(
+                 {a:1}, [{op:'add', key:'b', value:2}, {op:'update', key:'a', value:3}, {op:'remove', key:'b'}]),
+                 {"steps":[{"path":"$","key":"b","after":2},
+                           {"path":"$","key":"a","before":1,"after":3},
+                           {"path":"$","key":"b","before":2}]});
+assert.deepEqual(JDELTA.reverse(JDELTA.create(
+                 {a:1}, [{op:'add', key:'b', value:2}, {op:'update', key:'a', value:3}, {op:'remove', key:'b'}])),
+                 {"steps":[{"path":"$","key":"b","after":2},
+                           {"path":"$","key":"a","before":3,"after":1},
+                           {"path":"$","key":"b","before":2}]});
+assert.deepEqual(JDELTA.reverse(JDELTA.reverse(JDELTA.create(
+                 {a:1}, [{op:'add', key:'b', value:2}, {op:'update', key:'a', value:3}, {op:'remove', key:'b'}]))),
+                 {"steps":[{"path":"$","key":"b","after":2},
+                           {"path":"$","key":"a","before":1,"after":3},
+                           {"path":"$","key":"b","before":2}]});
+
+
+var d = JDELTA.create({a:1}, [{op:'update', key:'a', value:{b:2,c:4}}, {op:'update', path:'$.a', key:'b', value:3}]);
+assert.deepEqual(d, {"steps":[{"path":"$","key":"a","before":1,"after":{"b":2,"c":4}},
+                              {"path":"$.a","key":"b","before":2,"after":3}]});
+var o = JDELTA.patch({a:1}, d);
+// perform some mutations on 'o' to make sure that the original 'd' is not affected via unexpected shared references:
+o.a.b = 5;
+o.a.d = 6;
+o.e = 7;
+assert.deepEqual(JDELTA.patch({a:1}, d), {a:{b:3,c:4}});
+var rd = JDELTA.reverse(d);
+assert.deepEqual(rd, {"steps":[{"path":"$.a","key":"b","before":3,"after":2},
+                               {"path":"$","key":"a","before":{"b":2,"c":4},"after":1}]});
+assert.deepEqual(JDELTA.patch({a:{b:3,c:4}}, rd), {a:1});
+
+
+assert.deepEqual(JDELTA.create({}, []), {"steps":[]});
+assert.deepEqual(JDELTA.create({}, [{op:'add',key:'a',value:'1'}]), {"steps":[{"path":"$","key":"a","after":"1"}]});
+assert.throws(function(){JDELTA.create({}, [{op:'add', path:'$.x', key:'a', value:'1'}])}, /Path not found/);
+assert.throws(function(){JDELTA.create({a:1}, [{op:'add', key:'a', value:2}])}, /Already in target/);
+assert.throws(function(){JDELTA.create({}, [{op:'update', key:'a', value:2}])}, /Not in target/);
+assert.deepEqual(JDELTA.create({a:1}, [{op:'update', key:'a', value:2}]), {"steps":[{"path":"$","key":"a","before":1,"after":2}]});
+assert.deepEqual(JDELTA.create({a:1}, [{op:'update', key:'a', value:2},
+                                       {op:'add', key:'b', value:3}]), {"steps":[{"path":"$","key":"a","before":1,"after":2},
+                                                                                 {"path":"$","key":"b","after":3}]});
+
+assert.throws(function(){JDELTA.patch({a:2}, JDELTA.create({a:1}, [{op:'update', key:'a', value:3}]))}, /'before' value did not match/);
+assert.deepEqual(JDELTA.patch({a:2}, JDELTA.create({a:2}, [{op:'update', key:'a', value:3}])), {a:3});
+assert.deepEqual(JDELTA.patch({a:2}, JDELTA.create({a:2}, [{op:'remove', key:'a'}])), {});
+assert.deepEqual(JDELTA.patch([1,2,3], JDELTA.create([1,2,3], [{op:'update', key:1, value:4}])), [1,4,3]);
+assert.deepEqual(JDELTA.create([1,2,3], [{op:'arrayInsert', key:1, value:'a'}]),
+                 {"steps":[{"op":"arrayInsert","path":"$","key":1,"value":"a"}]});
+assert.deepEqual(JDELTA.create([1,'a',2,3], [{op:'arrayRemove', key:1}]),
+                 {"steps":[{"op":"arrayRemove","path":"$","key":1,"value":"a"}]});
+assert.deepEqual(JDELTA.reverse(JDELTA.create([1,2,3], [{op:'arrayInsert', key:1, value:'a'}])),
+                 {"steps":[{"op":"arrayRemove","path":"$","key":1,"value":"a"}]});
+assert.deepEqual(JDELTA.reverse(JDELTA.create([1,'a',2,3], [{op:'arrayRemove', key:1}])),
+                 {"steps":[{"op":"arrayInsert","path":"$","key":1,"value":"a"}]});
+assert.deepEqual(JDELTA.patch([1,2,3], JDELTA.create([1,2,3], [{op:'arrayInsert', key:1, value:'a'}])),
+                 [1,'a',2,3]);
+assert.deepEqual(JDELTA.patch([1,'a',2,3], JDELTA.create([1,'a',2,3], [{op:'arrayRemove', key:1}])),
+                 [1,2,3]);
+var o = [1,{a:2},3];
+var d = JDELTA.create(o, [{op:'arrayInsert', key:1, value:{x:[4,'5',6]}},
+                          {op:'update', path:'$.2', key:'a', value:[2]},
+                          {op:'arrayRemove', path:'$.1.x', key:0}]);
+var o2 = JDELTA.patch(JDELTA._deepCopy(o), d);
+assert.deepEqual(o2, [1,{x:['5',6]},{a:[2]},3]);
+var rd = JDELTA.reverse(d);
+assert.deepEqual(JDELTA.patch(JDELTA._deepCopy(o2), rd), o);
+// A modification should be detected:
+o2[2]['a'][1] = 10;
+assert.throws(function(){JDELTA.patch(JDELTA._deepCopy(o2), rd)}, /'before' value did not match/);
+
+// I'm using the code coverage report as my guide... writing the following tests to hit lines that have not been tested:
+assert.throws(function(){JDELTA.create()}, /Expected 'o' to be an Object or Array/);
+assert.throws(function(){JDELTA.create({})}, /Expected 'operations' to be an Array of OperationSpecs/);
+assert.throws(function(){JDELTA.create({}, [{}])}, /undefined op/);
+assert.throws(function(){JDELTA.create({}, [{op:''}])}, /undefined key/);
+assert.throws(function(){JDELTA.create({}, [{op:'add', key:1}])}, /undefined value/);
+assert.throws(function(){JDELTA.create({}, [{op:'update', key:1}])}, /undefined value/);
+assert.throws(function(){JDELTA.create({}, [{op:'remove', key:1}])}, /Not in target/);
+assert.throws(function(){JDELTA.create({}, [{op:'arrayInsert', key:'1'}])}, /Expected an integer key/);
+assert.throws(function(){JDELTA.create({}, [{op:'arrayInsert', key:1}])}, /create:arrayInsert: Expected an Array target/);
+assert.throws(function(){JDELTA.create([], [{op:'arrayInsert', key:1}])}, /IndexError/);
+assert.throws(function(){JDELTA.create([], [{op:'arrayInsert', key:-1}])}, /IndexError/);
+assert.throws(function(){JDELTA.create({}, [{op:'arrayRemove', key:'1'}])}, /Expected an integer key/);
+assert.throws(function(){JDELTA.create({}, [{op:'arrayRemove', key:1}])}, /create:arrayRemove: Expected an Array target/);
+assert.throws(function(){JDELTA.create([], [{op:'arrayRemove', key:1}])}, /IndexError/);
+assert.throws(function(){JDELTA.create([], [{op:'xxx', key:1}])}, /Illegal operation/);
+assert.throws(function(){JDELTA.reverse()}, /Expected a Delta object/);
+assert.throws(function(){JDELTA.reverse({})}, /Not a Delta object/);
+assert.throws(function(){JDELTA.reverse({steps:[{op:'xxx'}]})}, /Illegal operation/);
+assert.throws(function(){JDELTA.patch()}, /Expected first arg to be an Object or Array/);
+assert.throws(function(){JDELTA.patch({})}, /Expected second arg to be a Delta object/);
+assert.throws(function(){JDELTA.patch({}, {})}, /Invalid Delta object/);
+
+
+
 
 console.log('All Tests Passed.  :)');
 console.log('Generating Code Coverage Reports...');
