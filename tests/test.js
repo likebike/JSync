@@ -152,6 +152,22 @@ assert.throws(function(){JDELTA.reverse({steps:[{op:'xxx'}]})}, /Illegal operati
 assert.throws(function(){JDELTA.patch()}, /Expected first arg to be an Object or Array/);
 assert.throws(function(){JDELTA.patch({})}, /Expected second arg to be a Delta object/);
 assert.throws(function(){JDELTA.patch({}, {})}, /Invalid Delta object/);
+assert.throws(function(){JDELTA.patch({}, {steps:[{}]})}, /undefined path/);
+assert.throws(function(){JDELTA.patch({}, {steps:[{path:''}]})}, /undefined key/);
+assert.throws(function(){JDELTA.patch({}, {steps:[{path:'$', key:'x', before:''}]})}, /Not in target/);
+assert.throws(function(){JDELTA.patch({x:1}, {steps:[{path:'$', key:'x'}]})}, /Unexpectedly in target/);
+assert.throws(function(){JDELTA.patch({}, {steps:[{op:'arrayInsert', path:'$', key:'1'}]})}, /Expected an integer key/);
+assert.throws(function(){JDELTA.patch({}, {steps:[{op:'arrayInsert', path:'$', key:1}]})}, /patch:arrayInsert: Expected an Array target/);
+assert.throws(function(){JDELTA.patch([], {steps:[{op:'arrayInsert', path:'$', key:1}]})}, /IndexError/);
+assert.throws(function(){JDELTA.patch([], {steps:[{op:'arrayInsert', path:'$', key:0}]})}, /undefined value/);
+assert.throws(function(){JDELTA.patch({}, {steps:[{op:'arrayRemove', path:'$', key:'1'}]})}, /Expected an integer key/);
+assert.throws(function(){JDELTA.patch({}, {steps:[{op:'arrayRemove', path:'$', key:1}]})}, /patch:arrayRemove: Expected an Array target/);
+assert.throws(function(){JDELTA.patch([], {steps:[{op:'arrayRemove', path:'$', key:0}]})}, /IndexError/);
+assert.throws(function(){JDELTA.patch(['x'], {steps:[{op:'arrayRemove', path:'$', key:0}]})}, /Array value did not match/);
+assert.throws(function(){JDELTA.patch({}, {steps:[{op:'xxx', path:'$', key:''}]})}, /Illegal operation/);
+assert.throws(function(){JDELTA._getTarget()}, /I need an Object or Array/);
+assert.throws(function(){JDELTA.patch({}, {steps:[{path:'', key:''}]})}, /I need a path/);
+assert.throws(function(){JDELTA.patch({}, {steps:[{path:'xxx', key:''}]})}, /The first path item must be \$/);
 
 
 
