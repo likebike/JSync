@@ -5,8 +5,6 @@
 
 var coverage = require('./coverage.js'),
     assert = require('assert'),
-    _ = require('underscore'),
-    Backbone = require('backbone'),
     JsonDelta = require('./cov_lib/JsonDelta.js');
 JDELTA = JsonDelta.JDELTA;
 
@@ -171,7 +169,7 @@ assert.throws(function(){JDELTA._getTarget()}, /I need an Object or Array/);
 assert.throws(function(){JDELTA.patch({}, {steps:[{path:'', key:''}]})}, /I need a path/);
 assert.throws(function(){JDELTA.patch({}, {steps:[{path:'xxx', key:''}]})}, /The first path item must be \$/);
 
-var dispatcher = _.clone(Backbone.Events);
+var dispatcher = JDELTA.createDispatcher();
 dispatcher.on('all', function(path, cmd) {
     console.log('ALL:', path, cmd);
 });

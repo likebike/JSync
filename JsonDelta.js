@@ -499,4 +499,9 @@ JDELTA.patch = function(state, delta, dispatcher) {
     return state; // For chaining...
 };
 
+JDELTA.createDispatcher = function() {
+    // This function is here mostly so that our end-users don't need to import Underscore and Backbone just to create a dispatcher.
+    return _.clone(Backbone.Events);
+};
+
 })();
