@@ -37,27 +37,27 @@ o[true] = false;
 assert.deepEqual(JDELTA.stringify(o), '{"0":"number0again","1":"\\\\slash","2":[1,null,3],"3":null,"a":9,"b":3,"c":8,"d":{"x":5,"y":6,"z":4},"e":7,"true":false,"加":"油"}');
 console.log(JDELTA.stringify(o));
 
-assert.equal(JDELTA.hash(''), 0x12345678);  // 0x12345678 == 305419896
-assert.equal(JDELTA.hash('\0'), 305419897);
-assert.equal(JDELTA.hash('a'), 305419994);
-assert.equal(JDELTA.hash('b'), 305419995);
-assert.equal(JDELTA.hash('c'), 305419996);
-assert.equal(JDELTA.hash('aa'), 305420190);
-assert.equal(JDELTA.hash('ab'), 305420192);
-assert.equal(JDELTA.hash('ac'), 305420194);
-assert.equal(JDELTA.hash('The quick brown fox jumps over the lazy dog'), 305510356);
-assert.equal(JDELTA.hash('加油！'), 305692563);
+assert.equal(JDELTA._hash(''), 0x12345678);  // 0x12345678 == 305419896
+assert.equal(JDELTA._hash('\0'), 305419897);
+assert.equal(JDELTA._hash('a'), 305419994);
+assert.equal(JDELTA._hash('b'), 305419995);
+assert.equal(JDELTA._hash('c'), 305419996);
+assert.equal(JDELTA._hash('aa'), 305420190);
+assert.equal(JDELTA._hash('ab'), 305420192);
+assert.equal(JDELTA._hash('ac'), 305420194);
+assert.equal(JDELTA._hash('The quick brown fox jumps over the lazy dog'), 305510356);
+assert.equal(JDELTA._hash('加油！'), 305692563);
 var s = 'The quick brown fox jumps over the lazy dog. 加油！';
 var bigS = '';
 var startTime = new Date().getTime();
 for(var i=0; i<1024*1024; i++) bigS += s;
 console.log('loop time: %s ms', new Date().getTime() - startTime);
 startTime = new Date().getTime();
-assert.equal(JDELTA.hash(bigS), 522514691);
-console.log('hash of %s-char str: %s ms', bigS.length, new Date().getTime() - startTime);
+assert.equal(JDELTA._hash(bigS), 522514691);
+console.log('_hash of %s-char str: %s ms', bigS.length, new Date().getTime() - startTime);
 startTime = new Date().getTime();
-assert.equal(JDELTA.hash(s), 310928681);
-console.log('hash of %s-char str: %s ms', s.length, new Date().getTime() - startTime);
+assert.equal(JDELTA._hash(s), 310928681);
+console.log('_hash of %s-char str: %s ms', s.length, new Date().getTime() - startTime);
 
 
 assert.deepEqual(JDELTA.create(
@@ -131,7 +131,7 @@ o2[2]['a'][1] = 10;
 assert.throws(function(){JDELTA.patch(JDELTA._deepCopy(o2), rd)}, /'before' value did not match/);
 
 // I'm using the code coverage report as my guide... writing the following tests to hit lines that have not been tested:
-assert.throws(function(){JDELTA.create()}, /Expected 'o' to be an Object or Array/);
+assert.throws(function(){JDELTA.create()}, /Expected 'state' to be an Object or Array/);
 assert.throws(function(){JDELTA.create({})}, /Expected 'operations' to be an Array of OperationSpecs/);
 assert.throws(function(){JDELTA.create({}, [{}])}, /undefined op/);
 assert.throws(function(){JDELTA.create({}, [{op:''}])}, /undefined key/);

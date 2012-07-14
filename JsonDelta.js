@@ -15,15 +15,17 @@ var JDELTA = {},
 if(exports !== undefined) {
     // We are on Node.
     exports.JDELTA = JDELTA;
-    _ = require('./lib/underscore.js');
+    _ = require('underscore'),
+    Backbone = require('backbone');
 } else if(window !== undefined) {
     // We are in a browser.
     window.JDELTA = JDELTA;
-    _ = window._;
+    _ = window._,
+    Backbone = window.Backbone;
 } else throw new Error('This environment is not yet supported.');
     
 
-JDELTA.VERSION = '0.1.0'
+JDELTA.VERSION = '0.2.0a';
 
 
 
@@ -273,7 +275,7 @@ JDELTA.VERSION = '0.1.0'
 
 
 
-JDELTA.hash = function(s) {
+JDELTA._hash = function(s) {
     // A fast, simple, (stupid) hash function for detecting errors, NOT for cryptography!
     // Based on: http://stackoverflow.com/questions/811195/fast-open-source-checksum-for-small-strings
     var chk = 0x12345678,
@@ -311,12 +313,12 @@ JDELTA._isInt = function(o) {
     return parseInt(o) === o;
 };
 
-JDELTA.create = function(o, operations) {
-    if(!_.isObject(o))
-        throw new Error("Expected 'o' to be an Object or Array.");
+JDELTA.create = function(state, operations) {
+    if(!_.isObject(state))
+        throw new Error("Expected 'state' to be an Object or Array.");
     if(!_.isArray(operations))
         throw new Error("Expected 'operations' to be an Array of OperationSpecs.");
-    var oCopy = JDELTA._deepCopy(o),
+    var stateCopy = JDELTA._deepCopy(state),
         steps = [],
         i, ii, step, op, path, key, value, target, before;
     for(i=0, ii=operations.length; i<ii; i++) {
@@ -329,7 +331,7 @@ JDELTA.create = function(o, operations) {
             throw new Error('undefined op!');
         if(key === undefined)
                 throw new Error('undefined key!');
-        target = JDELTA._getTarget(oCopy, path);
+        target = JDELTA._getTarget(stateCopy, path);
         switch(op) {
             case 'add':
                 if(value === undefined)
@@ -412,8 +414,9 @@ JDELTA.reverse = function(delta) {
     }
     return {steps:reversedSteps};
 };
-JDELTA.patch = function(o, delta) {
-    if(!_.isObject(o))
+JDELTA.patch = function(state, delta) {
+    // Note: 'state' is modified.
+    if(!_.isObject(state))
         throw new Error("Expected first arg to be an Object or Array.");
     if(!_.isObject(delta))
         throw new Error('Expected second arg to be a Delta object.');
@@ -430,7 +433,7 @@ JDELTA.patch = function(o, delta) {
         key = step.key;
         if(key === undefined)
             throw new Error('undefined key!');
-        target = JDELTA._getTarget(o, path);
+        target = JDELTA._getTarget(state, path);
 
         switch(op) {
             case 'obj':
@@ -477,7 +480,7 @@ JDELTA.patch = function(o, delta) {
                 throw new Error('Illegal operation: '+op);
         }
     }
-    return o; // For chaining...
+    return state; // For chaining...
 };
 
 })();
