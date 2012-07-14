@@ -5,6 +5,8 @@
 
 var coverage = require('./coverage.js'),
     assert = require('assert'),
+    _ = require('underscore'),
+    Backbone = require('backbone'),
     JsonDelta = require('./cov_lib/JsonDelta.js');
 JDELTA = JsonDelta.JDELTA;
 
@@ -61,17 +63,17 @@ console.log('_hash of %s-char str: %s ms', s.length, new Date().getTime() - star
 
 
 assert.deepEqual(JDELTA.create(
-                 {a:1}, [{op:'add', key:'b', value:2}, {op:'update', key:'a', value:3}, {op:'remove', key:'b'}]),
+                 {a:1}, [{op:'create', key:'b', value:2}, {op:'update', key:'a', value:3}, {op:'delete', key:'b'}]),
                  {"steps":[{"path":"$","key":"b","after":2},
                            {"path":"$","key":"a","before":1,"after":3},
                            {"path":"$","key":"b","before":2}]});
 assert.deepEqual(JDELTA.reverse(JDELTA.create(
-                 {a:1}, [{op:'add', key:'b', value:2}, {op:'update', key:'a', value:3}, {op:'remove', key:'b'}])),
+                 {a:1}, [{op:'create', key:'b', value:2}, {op:'update', key:'a', value:3}, {op:'delete', key:'b'}])),
                  {"steps":[{"path":"$","key":"b","after":2},
                            {"path":"$","key":"a","before":3,"after":1},
                            {"path":"$","key":"b","before":2}]});
 assert.deepEqual(JDELTA.reverse(JDELTA.reverse(JDELTA.create(
-                 {a:1}, [{op:'add', key:'b', value:2}, {op:'update', key:'a', value:3}, {op:'remove', key:'b'}]))),
+                 {a:1}, [{op:'create', key:'b', value:2}, {op:'update', key:'a', value:3}, {op:'delete', key:'b'}]))),
                  {"steps":[{"path":"$","key":"b","after":2},
                            {"path":"$","key":"a","before":1,"after":3},
                            {"path":"$","key":"b","before":2}]});
@@ -93,18 +95,18 @@ assert.deepEqual(JDELTA.patch({a:{b:3,c:4}}, rd), {a:1});
 
 
 assert.deepEqual(JDELTA.create({}, []), {"steps":[]});
-assert.deepEqual(JDELTA.create({}, [{op:'add',key:'a',value:'1'}]), {"steps":[{"path":"$","key":"a","after":"1"}]});
-assert.throws(function(){JDELTA.create({}, [{op:'add', path:'$.x', key:'a', value:'1'}])}, /Path not found/);
-assert.throws(function(){JDELTA.create({a:1}, [{op:'add', key:'a', value:2}])}, /Already in target/);
+assert.deepEqual(JDELTA.create({}, [{op:'create',key:'a',value:'1'}]), {"steps":[{"path":"$","key":"a","after":"1"}]});
+assert.throws(function(){JDELTA.create({}, [{op:'create', path:'$.x', key:'a', value:'1'}])}, /Path not found/);
+assert.throws(function(){JDELTA.create({a:1}, [{op:'create', key:'a', value:2}])}, /Already in target/);
 assert.throws(function(){JDELTA.create({}, [{op:'update', key:'a', value:2}])}, /Not in target/);
 assert.deepEqual(JDELTA.create({a:1}, [{op:'update', key:'a', value:2}]), {"steps":[{"path":"$","key":"a","before":1,"after":2}]});
 assert.deepEqual(JDELTA.create({a:1}, [{op:'update', key:'a', value:2},
-                                       {op:'add', key:'b', value:3}]), {"steps":[{"path":"$","key":"a","before":1,"after":2},
+                                       {op:'create', key:'b', value:3}]), {"steps":[{"path":"$","key":"a","before":1,"after":2},
                                                                                  {"path":"$","key":"b","after":3}]});
 
 assert.throws(function(){JDELTA.patch({a:2}, JDELTA.create({a:1}, [{op:'update', key:'a', value:3}]))}, /'before' value did not match/);
 assert.deepEqual(JDELTA.patch({a:2}, JDELTA.create({a:2}, [{op:'update', key:'a', value:3}])), {a:3});
-assert.deepEqual(JDELTA.patch({a:2}, JDELTA.create({a:2}, [{op:'remove', key:'a'}])), {});
+assert.deepEqual(JDELTA.patch({a:2}, JDELTA.create({a:2}, [{op:'delete', key:'a'}])), {});
 assert.deepEqual(JDELTA.patch([1,2,3], JDELTA.create([1,2,3], [{op:'update', key:1, value:4}])), [1,4,3]);
 assert.deepEqual(JDELTA.create([1,2,3], [{op:'arrayInsert', key:1, value:'a'}]),
                  {"steps":[{"op":"arrayInsert","path":"$","key":1,"value":"a"}]});
@@ -135,9 +137,9 @@ assert.throws(function(){JDELTA.create()}, /Expected 'state' to be an Object or 
 assert.throws(function(){JDELTA.create({})}, /Expected 'operations' to be an Array of OperationSpecs/);
 assert.throws(function(){JDELTA.create({}, [{}])}, /undefined op/);
 assert.throws(function(){JDELTA.create({}, [{op:''}])}, /undefined key/);
-assert.throws(function(){JDELTA.create({}, [{op:'add', key:1}])}, /undefined value/);
+assert.throws(function(){JDELTA.create({}, [{op:'create', key:1}])}, /undefined value/);
 assert.throws(function(){JDELTA.create({}, [{op:'update', key:1}])}, /undefined value/);
-assert.throws(function(){JDELTA.create({}, [{op:'remove', key:1}])}, /Not in target/);
+assert.throws(function(){JDELTA.create({}, [{op:'delete', key:1}])}, /Not in target/);
 assert.throws(function(){JDELTA.create({}, [{op:'arrayInsert', key:'1'}])}, /Expected an integer key/);
 assert.throws(function(){JDELTA.create({}, [{op:'arrayInsert', key:1}])}, /create:arrayInsert: Expected an Array target/);
 assert.throws(function(){JDELTA.create([], [{op:'arrayInsert', key:1}])}, /IndexError/);
@@ -169,7 +171,23 @@ assert.throws(function(){JDELTA._getTarget()}, /I need an Object or Array/);
 assert.throws(function(){JDELTA.patch({}, {steps:[{path:'', key:''}]})}, /I need a path/);
 assert.throws(function(){JDELTA.patch({}, {steps:[{path:'xxx', key:''}]})}, /The first path item must be \$/);
 
-
+var dispatcher = _.clone(Backbone.Events);
+dispatcher.on('all', function(path, cmd) {
+    console.log('ALL:', path, cmd);
+});
+dispatcher.on('$.b', function(cmd) {
+    console.log('B:', cmd);
+});
+var state = {a:1, b:[2,'3',4]};
+var d = JDELTA.create(state, [{op:'create', key:'c', value:5},
+                              {op:'arrayRemove', path:'$.b', key:1},
+                              {op:'arrayInsert', path:'$.b', key:1, value:3},
+                              {op:'update', path:'$.b', key:1, value:'three'},
+                              ]);
+JDELTA.patch(state, d, dispatcher);
+assert.deepEqual(state, {"a":1,"b":[2,"three",4],"c":5});
+JDELTA.patch(state, JDELTA.reverse(d), dispatcher);
+assert.deepEqual(state, {a:1, b:[2,'3',4]});
 
 
 console.log('All Tests Passed.  :)');

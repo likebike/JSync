@@ -333,7 +333,7 @@ JDELTA.create = function(state, operations) {
                 throw new Error('undefined key!');
         target = JDELTA._getTarget(stateCopy, path);
         switch(op) {
-            case 'add':
+            case 'create':
                 if(value === undefined)
                     throw new Error('undefined value!');
                 if(key in target)
@@ -349,7 +349,7 @@ JDELTA.create = function(state, operations) {
                 steps[steps.length] = {path:path, key:key, before:JDELTA._deepCopy(target[key]), after:JDELTA._deepCopy(value)};
                 target[key] = value;
                 break;
-            case 'remove':
+            case 'delete':
                 if(!(key in target))
                     throw new Error('Not in target: '+key);
                 steps[steps.length] = {path:path, key:key, before:JDELTA._deepCopy(target[key])};
@@ -414,7 +414,7 @@ JDELTA.reverse = function(delta) {
     }
     return {steps:reversedSteps};
 };
-JDELTA.patch = function(state, delta) {
+JDELTA.patch = function(state, delta, dispatcher) {
     // Note: 'state' is modified.
     if(!_.isObject(state))
         throw new Error("Expected first arg to be an Object or Array.");
@@ -423,6 +423,7 @@ JDELTA.patch = function(state, delta) {
     if(!_.isArray(delta.steps))
         throw new Error('Invalid Delta object.');
     var steps = delta.steps,
+        events = [],  //  Queue the events until the end in case we fail (and roll-back) half-way thru.
         i, ii, step, op, path, key, target;
     for(i=0, ii=steps.length; i<ii; i++) {
         step = steps[i];
@@ -447,11 +448,14 @@ JDELTA.patch = function(state, delta) {
                         throw new Error('Unexpectedly in target: '+key);
                 }
 
-                if('after' in step)
+                if('after' in step) {
                     target[key] = JDELTA._deepCopy(step.after);  // We must '_deepCopy', otherwise the object that the delta references could be modified externally, resulting in totally unexpected mutation.
-                else {
-                    if(key in target)
+                    events[events.length] = [path, {op:'set', path:path, key:key, value:target[key]}];
+                } else {
+                    if(key in target) {
                         delete target[key];
+                        events[events.length] = [path, {op:'delete', path:path, key:key}];
+                    }
                 }
                 break;
             case 'arrayInsert':
@@ -464,6 +468,7 @@ JDELTA.patch = function(state, delta) {
                 if(step.value === undefined)
                     throw new Error('undefined value!');
                 target.splice(key, 0, JDELTA._deepCopy(step.value))
+                events[events.length] = [path, {op:'arrayInsert', path:path, key:key, value:target[key]}];
                 break;
             case 'arrayRemove':
                 if(!JDELTA._isInt(key))
@@ -475,9 +480,20 @@ JDELTA.patch = function(state, delta) {
                 if( JDELTA.stringify(target[key]) !== JDELTA.stringify(step.value) )
                     throw new Error('Array value did not match!');
                 target.splice(key, 1);
+                events[events.length] = [path, {op:'arrayRemove', path:path, key:key}];
                 break;
             default:
                 throw new Error('Illegal operation: '+op);
+        }
+    }
+
+    // TODO: Handle Roll-back on error.
+
+    // We made it thru all the steps.  Now send out the events.
+    // TODO: Maybe add event "compression" (for example, if step 1 sets 'a' to 1, then step 2 sets 'a' to 2, then maybe you only need to send out the second event.)   Not a high priority for now because i don't really expect this functionality to make much of a difference for normal situations.
+    if(dispatcher) {
+        for(i=0, ii=events.length; i<ii; i++) {
+            dispatcher.trigger.apply(dispatcher, events[i]);
         }
     }
     return state; // For chaining...
