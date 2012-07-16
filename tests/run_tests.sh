@@ -10,5 +10,6 @@ cd "$MYDIR"
 rm -rf cov_lib
 mkdir cov_lib
 ./coverage.sh ../JsonDelta.js > cov_lib/JsonDelta.js
+./coverage.sh ../DeltaDB.js > cov_lib/DeltaDB.js
 node test.js
 

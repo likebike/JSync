@@ -10,22 +10,23 @@
 
 
 // First, install ourselves and import our dependencies:
-var JDELTA = {},
-    _;
+var JDelta = {},
+    _,
+    Backbone;
 if(exports !== undefined) {
     // We are on Node.
-    exports.JDELTA = JDELTA;
+    exports.JDelta = JDelta;
     _ = require('underscore'),
     Backbone = require('backbone');
 } else if(window !== undefined) {
     // We are in a browser.
-    window.JDELTA = JDELTA;
+    window.JDelta = JDelta;
     _ = window._,
     Backbone = window.Backbone;
 } else throw new Error('This environment is not yet supported.');
     
 
-JDELTA.VERSION = '0.2.0a';
+JDelta.VERSION = '0.2.0a';
 
 
 
@@ -214,8 +215,8 @@ JDELTA.VERSION = '0.2.0a';
 
 // If the JSON object does not yet have a stringify method, give it one.
 
-    if (typeof JDELTA.stringify !== 'function') {                                   //////////////////  EDIT by Christopher Sebastian: JSON --> JDELTA
-        JDELTA.stringify = function (value, replacer, space) {                      //////////////////  EDIT by Christopher Sebastian: JSON --> JDELTA
+    if (typeof JDelta.stringify !== 'function') {                                   //////////////////  EDIT by Christopher Sebastian: JSON --> JDelta
+        JDelta.stringify = function (value, replacer, space) {                      //////////////////  EDIT by Christopher Sebastian: JSON --> JDelta
 
 // The stringify method takes a value and an optional replacer, and an optional
 // space parameter, and returns a JSON text. The replacer can be a function
@@ -248,7 +249,7 @@ JDELTA.VERSION = '0.2.0a';
             if (replacer && typeof replacer !== 'function' &&
                     (typeof replacer !== 'object' ||
                     typeof replacer.length !== 'number')) {
-                throw new Error('JDELTA.stringify');                                //////////////////  EDIT by Christopher Sebastian: JSON --> JDELTA
+                throw new Error('JDelta.stringify');                                //////////////////  EDIT by Christopher Sebastian: JSON --> JDelta
             }
 
 // Make a fake root object containing our value under the key of ''.
@@ -273,11 +274,12 @@ JDELTA.VERSION = '0.2.0a';
 
 
 
-JDELTA._hash = function(s) {
-    // A fast, simple, hash function for detecting errors, NOT for cryptography!
+JDelta._hash = function(s) {
+    // A fast simple hash function for detecting errors, NOT for cryptography!
     // Currently, out of    10,000 hashes, there will be approximately   0 collisions.
     //            out of   100,000 hashes, there will be approximately   8 collisions.
     //            out of 1,000,000 hashes, there will be approximately 190 collisions.
+    // ...but to find a collision for a *particular* string, it would be quite difficult!
     // In contrast, md5 and sha1 have 0 collisions, even after 1,000,000 hashes, but they are much slower (unless you have access to a C implementation, like on Node.JS).
     var hash = 0x12345678,
         i, ii, charCode, shifts;
@@ -294,7 +296,7 @@ JDELTA._hash = function(s) {
 };
 
 
-JDELTA._getTarget = function(o, path) {
+JDelta._getTarget = function(o, path) {
     if(!o)
         throw new Error('I need an Object or Array!');
     if(!path)
@@ -311,20 +313,20 @@ JDELTA._getTarget = function(o, path) {
     return o;
 }
 
-JDELTA._deepCopy = function(o) {
+JDelta._deepCopy = function(o) {
     return JSON.parse(JSON.stringify(o));  // There is probably a faster way to deep-copy...
 };
 
-JDELTA._isInt = function(o) {
+JDelta._isInt = function(o) {
     return parseInt(o) === o;
 };
 
-JDELTA.create = function(state, operations) {
+JDelta.create = function(state, operations) {
     if(!_.isObject(state))
         throw new Error("Expected 'state' to be an Object or Array.");
     if(!_.isArray(operations))
         throw new Error("Expected 'operations' to be an Array of OperationSpecs.");
-    var stateCopy = JDELTA._deepCopy(state),
+    var stateCopy = JDelta._deepCopy(state),
         steps = [],
         i, ii, step, op, path, key, value, target, before;
     for(i=0, ii=operations.length; i<ii; i++) {
@@ -337,14 +339,14 @@ JDELTA.create = function(state, operations) {
             throw new Error('undefined op!');
         if(key === undefined)
                 throw new Error('undefined key!');
-        target = JDELTA._getTarget(stateCopy, path);
+        target = JDelta._getTarget(stateCopy, path);
         switch(op) {
             case 'create':
                 if(value === undefined)
                     throw new Error('undefined value!');
                 if(key in target)
                     throw new Error('Already in target: '+key);
-                steps[steps.length] = {path:path, key:key, after:JDELTA._deepCopy(value)};  // We need to '_deepCopy' because if the object gets modified by future operations, it could affect a reference.
+                steps[steps.length] = {path:path, key:key, after:JDelta._deepCopy(value)};  // We need to '_deepCopy' because if the object gets modified by future operations, it could affect a reference.
                 target[key] = value;
                 break;
             case 'update':
@@ -352,33 +354,33 @@ JDELTA.create = function(state, operations) {
                     throw new Error('undefined value!');
                 if(!(key in target))
                     throw new Error('Not in target: '+key);
-                steps[steps.length] = {path:path, key:key, before:JDELTA._deepCopy(target[key]), after:JDELTA._deepCopy(value)};
+                steps[steps.length] = {path:path, key:key, before:JDelta._deepCopy(target[key]), after:JDelta._deepCopy(value)};
                 target[key] = value;
                 break;
             case 'delete':
                 if(!(key in target))
                     throw new Error('Not in target: '+key);
-                steps[steps.length] = {path:path, key:key, before:JDELTA._deepCopy(target[key])};
+                steps[steps.length] = {path:path, key:key, before:JDelta._deepCopy(target[key])};
                 delete target[key];
                 break;
             case 'arrayInsert':
-                if(!JDELTA._isInt(key))
+                if(!JDelta._isInt(key))
                     throw new Error('Expected an integer key!');
                 if(!_.isArray(target))
                     throw new Error('create:arrayInsert: Expected an Array target!');
                 if(key<0  ||  key>target.length)
                     throw new Error('IndexError');
-                steps[steps.length] = {op:'arrayInsert', path:path, key:key, value:JDELTA._deepCopy(value)};
+                steps[steps.length] = {op:'arrayInsert', path:path, key:key, value:JDelta._deepCopy(value)};
                 target.splice(key, 0, value);
                 break;
             case 'arrayRemove':
-                if(!JDELTA._isInt(key))
+                if(!JDelta._isInt(key))
                     throw new Error('Expected an integer key!');
                 if(!_.isArray(target))
                     throw new Error('create:arrayRemove: Expected an Array target!');
                 if(key<0  ||  key>=target.length)
                     throw new Error('IndexError');
-                steps[steps.length] = {op:'arrayRemove', path:path, key:key, value:JDELTA._deepCopy(target[key])};
+                steps[steps.length] = {op:'arrayRemove', path:path, key:key, value:JDelta._deepCopy(target[key])};
                 target.splice(key, 1);
                 break;
             default:
@@ -387,7 +389,7 @@ JDELTA.create = function(state, operations) {
     }
     return {steps:steps};
 };
-JDELTA.reverse = function(delta) {
+JDelta.reverse = function(delta) {
     if(!_.isObject(delta))
         throw new Error('Expected a Delta object!');
     if(delta.steps === undefined)
@@ -420,7 +422,7 @@ JDELTA.reverse = function(delta) {
     }
     return {steps:reversedSteps};
 };
-JDELTA.patch = function(state, delta, dispatcher) {
+JDelta.patch = function(state, delta, dispatcher) {
     // Note: 'state' is modified.
     if(!_.isObject(state))
         throw new Error("Expected first arg to be an Object or Array.");
@@ -440,14 +442,14 @@ JDELTA.patch = function(state, delta, dispatcher) {
         key = step.key;
         if(key === undefined)
             throw new Error('undefined key!');
-        target = JDELTA._getTarget(state, path);
+        target = JDelta._getTarget(state, path);
 
         switch(op) {
             case 'obj':
                 if('before' in step) {
                     if(!(key in target))
                         throw new Error('Not in target: '+key);
-                    if( JDELTA.stringify(target[key]) !== JDELTA.stringify(step.before) )
+                    if( JDelta.stringify(target[key]) !== JDelta.stringify(step.before) )
                         throw new Error("'before' value did not match!");
                 } else {
                     if(key in target)
@@ -455,7 +457,7 @@ JDELTA.patch = function(state, delta, dispatcher) {
                 }
 
                 if('after' in step) {
-                    target[key] = JDELTA._deepCopy(step.after);  // We must '_deepCopy', otherwise the object that the delta references could be modified externally, resulting in totally unexpected mutation.
+                    target[key] = JDelta._deepCopy(step.after);  // We must '_deepCopy', otherwise the object that the delta references could be modified externally, resulting in totally unexpected mutation.
                     events[events.length] = [path, {op:'set', path:path, key:key, value:target[key]}];
                 } else {
                     if(key in target) {
@@ -465,7 +467,7 @@ JDELTA.patch = function(state, delta, dispatcher) {
                 }
                 break;
             case 'arrayInsert':
-                if(!JDELTA._isInt(key))
+                if(!JDelta._isInt(key))
                     throw new Error('Expected an integer key!');
                 if(!_.isArray(target))
                     throw new Error('patch:arrayInsert: Expected an Array target!');
@@ -473,17 +475,17 @@ JDELTA.patch = function(state, delta, dispatcher) {
                     throw new Error('IndexError');
                 if(step.value === undefined)
                     throw new Error('undefined value!');
-                target.splice(key, 0, JDELTA._deepCopy(step.value))
+                target.splice(key, 0, JDelta._deepCopy(step.value))
                 events[events.length] = [path, {op:'arrayInsert', path:path, key:key, value:target[key]}];
                 break;
             case 'arrayRemove':
-                if(!JDELTA._isInt(key))
+                if(!JDelta._isInt(key))
                     throw new Error('Expected an integer key!');
                 if(!_.isArray(target))
                     throw new Error('patch:arrayRemove: Expected an Array target!');
                 if(key<0  ||  key>=target.length)
                     throw new Error('IndexError');
-                if( JDELTA.stringify(target[key]) !== JDELTA.stringify(step.value) )
+                if( JDelta.stringify(target[key]) !== JDelta.stringify(step.value) )
                     throw new Error('Array value did not match!');
                 target.splice(key, 1);
                 events[events.length] = [path, {op:'arrayRemove', path:path, key:key}];
@@ -505,7 +507,7 @@ JDELTA.patch = function(state, delta, dispatcher) {
     return state; // For chaining...
 };
 
-JDELTA.createDispatcher = function() {
+JDelta.createDispatcher = function() {
     // This function is here mostly so that our end-users don't need to import Underscore and Backbone just to create a dispatcher.
     return _.clone(Backbone.Events);
 };
