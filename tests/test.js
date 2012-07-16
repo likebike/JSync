@@ -37,27 +37,59 @@ o[true] = false;
 assert.deepEqual(JDELTA.stringify(o), '{"0":"number0again","1":"\\\\slash","2":[1,null,3],"3":null,"a":9,"b":3,"c":8,"d":{"x":5,"y":6,"z":4},"e":7,"true":false,"加":"油"}');
 console.log(JDELTA.stringify(o));
 
-assert.equal(JDELTA._hash(''), 0x12345678);  // 0x12345678 == 305419896
-assert.equal(JDELTA._hash('\0'), 305419897);
-assert.equal(JDELTA._hash('a'), 305419994);
-assert.equal(JDELTA._hash('b'), 305419995);
-assert.equal(JDELTA._hash('c'), 305419996);
-assert.equal(JDELTA._hash('aa'), 305420190);
-assert.equal(JDELTA._hash('ab'), 305420192);
-assert.equal(JDELTA._hash('ac'), 305420194);
-assert.equal(JDELTA._hash('The quick brown fox jumps over the lazy dog'), 305510356);
-assert.equal(JDELTA._hash('加油！'), 305692563);
+
+// A quick study of Javascript bitwise operations and negative numbers:
+console.log(1 << 1);
+console.log(1 << 30);
+console.log(1 << 31);  // The left-most (32) bit controls sign.
+console.log(1 << 32);  // the shift count is modulus 32.
+console.log(1 << 33);
+console.log(0x12345678 << 4);  // = 0x23456780
+console.log( (0x12345678 << 4) | (0x12345678 >>> (32-4)) );  // = 0x23456781
+console.log(0x12345678 << 8);  // = 0x34567800
+console.log( (0x12345678 << 8) | (0x12345678 >>> (32-8)) );  // = 0x34567812
+console.log( (1<<31).toString(16) );  // = -80000000
+console.log( (0x80000000).toString(16) );  // = 80000000
+
+
+// Just for fun, see how difficult it is to find collisions:
+var hashes = {},
+    h, l;
+for(var i=0; i<100000/*00*/; i++) {
+    h = JDELTA._hash(''+i);
+    l = hashes[h] || [];
+    hashes[h] = l.concat([i]);
+}
+for(var h in hashes) if(hashes.hasOwnProperty(h)) {
+    l = hashes[h];
+    if(l.length > 1) {
+        console.log('Collision: ',l.join(','));
+    }
+}
+
+
+assert.equal(JDELTA._hash(''),   0x12345678);  // 0x12345678 == 305419896
+assert.equal(JDELTA._hash('\0'), 610839794);
+assert.equal(JDELTA._hash('a'),  1221679976);
+assert.equal(JDELTA._hash('b'),  0x91a2b6d8);
+assert.equal(JDELTA._hash('c'),  591752641);
+assert.equal(JDELTA._hash('aa'), 591753393);
+assert.equal(JDELTA._hash('ab'), 1183506802);
+assert.equal(JDELTA._hash('ac'), 0x8d15c304);
+assert.equal(JDELTA._hash('The quick brown fox jumps over the lazy dog'), 0xb6aad44c);
+assert.equal(JDELTA._hash('加油！'), 0x625296d2);
 var s = 'The quick brown fox jumps over the lazy dog. 加油！';
 var bigS = '';
 var startTime = new Date().getTime();
 for(var i=0; i<1024*1024; i++) bigS += s;
 console.log('loop time: %s ms', new Date().getTime() - startTime);
 startTime = new Date().getTime();
-assert.equal(JDELTA._hash(bigS), 522514691);
+assert.equal(JDELTA._hash(bigS), 0x42fc6236);
 console.log('_hash of %s-char str: %s ms', bigS.length, new Date().getTime() - startTime);
 startTime = new Date().getTime();
-assert.equal(JDELTA._hash(s), 310928681);
+assert.equal(JDELTA._hash(s), 0xbc4e7448);
 console.log('_hash of %s-char str: %s ms', s.length, new Date().getTime() - startTime);
+
 
 
 assert.deepEqual(JDELTA.create(

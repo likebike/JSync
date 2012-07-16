@@ -273,18 +273,24 @@ JDELTA.VERSION = '0.2.0a';
 
 
 
-
-
 JDELTA._hash = function(s) {
-    // A fast, simple, (stupid) hash function for detecting errors, NOT for cryptography!
-    // Based on: http://stackoverflow.com/questions/811195/fast-open-source-checksum-for-small-strings
-    var chk = 0x12345678,
-        i, ii;
+    // A fast, simple, hash function for detecting errors, NOT for cryptography!
+    // Currently, out of    10,000 hashes, there will be approximately   0 collisions.
+    //            out of   100,000 hashes, there will be approximately   8 collisions.
+    //            out of 1,000,000 hashes, there will be approximately 190 collisions.
+    // In contrast, md5 and sha1 have 0 collisions, even after 1,000,000 hashes, but they are much slower (unless you have access to a C implementation, like on Node.JS).
+    var hash = 0x12345678,
+        i, ii, charCode, shifts;
     for(i=0, ii=s.length; i<ii; i++) {
-        chk += (s.charCodeAt(i)+1) * (i+1)
-        chk = chk % 0xffffffff;
+        charCode = s.charCodeAt(i);
+        hash += (charCode+1) * (i+1)
+        hash = hash % 0xffffffff;
+        shifts = (charCode+1)%32;
+        hash = (hash << shifts) | (hash >>> (32-shifts));
     }
-    return chk;
+    // Finally it is important to convert to hex to avoid negative numbers (which are annoying for our end-user):
+    // We need to treat the upper-most 8 bits differently to avoid losing the sign bit (which, in our case, actually contains data, not a sign).
+    return '0x' + (hash >>> 24).toString(16) + (hash & 0xffffff).toString(16);
 };
 
 
