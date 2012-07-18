@@ -234,7 +234,72 @@ coverage.save_report(JDelta_mod);
 
 
 
-console.log(DeltaDB.VERSION);
+var db = new DeltaDB.DB();
+db.createState('a');
+assert.throws(function(){db.createState('a')}, /State already exists/);
+db.edit('a', [{op:'create', key:'x', value:1}]);
+assert.throws(function(){db.edit('a', [{op:'create', key:'x', value:1}])}, /Already in target/);
+db.edit('a', [{op:'update', key:'x', value:{r:'1'}}]);
+var cb = function(path,event) {
+    console.log('CALLBACK:',path,event,this);
+};
+db.on('a', 'all', cb);
+db.edit('a', [{op:'create', key:'y', value:[1,2,3]},
+              {op:'arrayInsert', path:'$.y', key:1, value:1.5}
+             ]);
+var cb2 = function(event) {
+    console.log('CALLBACK2 for $.y:',event,this);
+};
+db.on('a', '$.y', cb2);
+db.edit('a', [{op:'arrayRemove', path:'$.y', key:1},
+              {op:'create', key:'z', value:'abc'}]);
+
+
+assert.deepEqual(db.render('a'), {"x":{"r":"1"},"y":[1,2,3],"z":"abc"});
+assert.deepEqual(db.render('a', 1), {"x":1});
+assert.deepEqual(db.render('a', 2), {"x":{"r":"1"}});
+assert.deepEqual(db.render('a', 3), {"x":{"r":"1"},"y":[1,1.5,2,3]});
+assert.deepEqual(db.render('a', 4), {"x":{"r":"1"},"y":[1,2,3],"z":"abc"});
+assert.deepEqual(db.render('a', 5), {"x":{"r":"1"},"y":[1,2,3],"z":"abc"});
+
+// Tamper with the state data to cause an error and a roll-back:
+db._states.a.state.tamper='data';
+assert.deepEqual(db._states.a.state, {"tamper":"data","x":{"r":"1"},"y":[1,2,3],"z":"abc"});
+assert.throws(function(){db.edit('a', [{op:'update', key:'z', value:true}])}, /invalid parentHash/);
+db.rollback('a');
+assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,2,3],"z":"abc"});
+db.edit('a', [{op:'update', key:'z', value:true}]);
+assert.throws(function(){db.edit('a', [{op:'delete', key:'w'}])}, /Not in target/);
+
+assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,2,3],"z":true});
+assert.equal(db.canUndo('a'), true);
+db.undo('a');
+assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,2,3],"z":"abc"});
+assert.equal(db.canUndo('a'), true);
+db.undo('a');
+assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,1.5,2,3]});
+assert.equal(db.canUndo('a'), true);
+db.undo('a');
+assert.deepEqual(db._states.a.state, {"x":{"r":"1"}});
+assert.equal(db.canUndo('a'), true);
+db.undo('a');
+assert.deepEqual(db._states.a.state, {"x":1});
+assert.equal(db.canUndo('a'), true);
+db.undo('a');
+assert.deepEqual(db._states.a.state, {});
+assert.equal(db.canUndo('a'), false);
+assert.throws(function(){db.undo('a')}, /unable to undo \(already at beginning\)/);
+
+
+
+
+
+
+db.off('a', 'all', cb);
+db.off('a', null, cb2);  //  null removes all events for that callback.
+JDelta.stringify(db, null, 2);  // We should now be able to stringify the db after the callbacks have been removed.  Before they are removed, there are cyclical references which cause the stringify to crash thru the stack limit.
+
+
 
 
 console.log('Generating DeltaDB Code Coverage Report...');

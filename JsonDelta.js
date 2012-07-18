@@ -458,7 +458,7 @@ JDelta.patch = function(state, delta, dispatcher) {
 
                 if('after' in step) {
                     target[key] = JDelta._deepCopy(step.after);  // We must '_deepCopy', otherwise the object that the delta references could be modified externally, resulting in totally unexpected mutation.
-                    events[events.length] = [path, {op:'set', path:path, key:key, value:target[key]}];
+                    events[events.length] = [path, {op:'set', path:path, key:key, value:JDelta._deepCopy(target[key])}];
                 } else {
                     if(key in target) {
                         delete target[key];
@@ -476,7 +476,7 @@ JDelta.patch = function(state, delta, dispatcher) {
                 if(step.value === undefined)
                     throw new Error('undefined value!');
                 target.splice(key, 0, JDelta._deepCopy(step.value))
-                events[events.length] = [path, {op:'arrayInsert', path:path, key:key, value:target[key]}];
+                events[events.length] = [path, {op:'arrayInsert', path:path, key:key, value:JDelta._deepCopy(target[key])}];
                 break;
             case 'arrayRemove':
                 if(!JDelta._isInt(key))
