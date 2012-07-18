@@ -279,7 +279,7 @@ JDelta._hash = function(s) {
     // Currently, out of    10,000 hashes, there will be approximately   0 collisions.
     //            out of   100,000 hashes, there will be approximately   8 collisions.
     //            out of 1,000,000 hashes, there will be approximately 190 collisions.
-    // ...but to find a collision for a *particular* string, it would be quite difficult!
+    // ...but to find a collision for a *particular* string, it would be a bit difficult.
     // In contrast, md5 and sha1 have 0 collisions, even after 1,000,000 hashes, but they are much slower (unless you have access to a C implementation, like on Node.JS).
     var hash = 0x12345678,
         i, ii, charCode, shifts;
