@@ -129,6 +129,41 @@ DeltaDB.DB.prototype.rollback = function(id, toSeq) {
     state.state = this.render(id, toSeq);
     this._trigger(id, '$', {op:'reset'});
 };
+
+/*******************************************************************************
+ *
+ *  EXAMPLE SEQUENCE of operations, so you can see how the sequence pieces fit together:
+ *
+ *
+ *  seq  undoSeq  redoSeq  parentHash  curHash  steps
+ *  ---  -------  -------  ----------  -------  ------------
+ *    1       -1     null    hash({})        a  #1                       // {} --> a
+ *    2       -2     null           a        b  #2                       // a  --> b
+ *    3       -3     null           b        c  #3                       // b  --> c
+ *    4       -4     null           c        d  #4                       // c  --> d
+ *    5       -5     null           d        e  #5                       // d  --> e
+ *    6       -4       -6           e        d  #6 = rev(#5)  <--- undo  // e  --> d
+ *    7       -3       -7           d        c  #7 = rev(#4)  <--- undo  // d  --> c
+ *    8       -2       -8           c        b  #8 = rev(#3)  <--- undo  // c  --> b
+ *    9       -9       -7           b        c  #9 = rev(#8)  <--- REDO  // b  --> c
+ *   10       -2      -10           c        b  #10= rev(#9)  <--- undo  // c  --> b.  undoSeq=-2 comes from seq 8 (the one previous to 9, which was our undoSeq)
+ *   11       -1      -11           b        a  #11= rev(#2)  <--- undo  // b  --> a
+ *   12     null      -12           a hash({})  #12= rev(#1)  <--- undo  // a  --> {}.  Unable to undo any more because undoSeq == null.
+ *   13      -13      -11    hash({})        a  #13= rev(#12) <--- REDO  // {} --> a
+ *   14      -14      -10           a        b  #14= rev(#11) <--- REDO  // a  --> b
+ *   15      -15       -7           b        c  #15= rev(#10) <--- REDO  // b  --> c.  redoSeq=-7 comes from seq 9 (the one previous to 10, which was our redoSeq).
+ *   16      -16       -6           c        d  #16= rev(#7)  <--- REDO  // c  --> d
+ *   17      -17     null           d        e  #17= rev(#6)  <--- REDO  // d  --> e.  Unable to redo any more because redoSeq == null.
+ *   18      -16      -18           e        d  #18= rev(#17) <--- undo  // e  --> d
+ *   19      -15      -19           d        c  #19= rev(#16) <--- undo  // d  --> c
+ *   20      -20     null           c        f  #20                      // c  --> f
+ *   21      -21     null           f        g  #21                      // f  --> g
+ *   22      -22     null           g        h  #22                      // g  --> h
+ *   23      -21      -23           h        g  #23= rev(#22) <--- undo  // h  --> g
+ *   24      -20      -24           g        f  #24= rev(#21) <--- undo  // g  --> f
+ *   25      -15      -25           f        c  #25= rev(#20) <--- undo  // f  --> c.  Did you notice that either the undoSeq or redoSeq is always equal to -seq?
+ *
+ ******************************************************************************/
 DeltaDB._EMPTY_OBJ_HASH = JDelta._hash('{}');
 DeltaDB.DB.prototype._addHashedDelta = function(id, delta) {
     // Called by the DeltaDB API (not the end user) with a delta object like this:
@@ -171,41 +206,6 @@ DeltaDB.DB.prototype._addDelta = function(id, delta) {
     var hashedDelta = { steps:delta.steps, meta:delta.meta || {}, parentHash:oldHash, curHash:newHash, seq:newSeq, undoSeq:-newSeq, redoSeq:null };
     this._addHashedDelta(id, hashedDelta);
 };
-
-/*******************************************************************************
- *
- *  EXAMPLE SEQUENCE of operations, so you can see how the sequence pieces fit together:
- *
- *
- *  seq  undoSeq  redoSeq  parentHash  curHash  steps
- *  ---  -------  -------  ----------  -------  ------------
- *    1       -1     null    hash({})        a  #1                       // {} --> a
- *    2       -2     null           a        b  #2                       // a  --> b
- *    3       -3     null           b        c  #3                       // b  --> c
- *    4       -4     null           c        d  #4                       // c  --> d
- *    5       -5     null           d        e  #5                       // d  --> e
- *    6       -4       -6           e        d  #6 = rev(#5)  <--- undo  // e  --> d
- *    7       -3       -7           d        c  #7 = rev(#4)  <--- undo  // d  --> c
- *    8       -2       -8           c        b  #8 = rev(#3)  <--- undo  // c  --> b
- *    9       -9       -7           b        c  #9 = rev(#8)  <--- REDO  // b  --> c
- *   10       -2      -10           c        b  #10= rev(#9)  <--- undo  // c  --> b.  undoSeq=-2 comes from seq 8 (the one previous to 9, which was our undoSeq)
- *   11       -1      -11           b        a  #11= rev(#2)  <--- undo  // b  --> a
- *   12     null      -12           a hash({})  #12= rev(#1)  <--- undo  // a  --> {}.  Unable to undo any more because undoSeq == null.
- *   13      -13      -11    hash({})        a  #13= rev(#12) <--- REDO  // {} --> a
- *   14      -14      -10           a        b  #14= rev(#11) <--- REDO  // a  --> b
- *   15      -15       -7           b        c  #15= rev(#10) <--- REDO  // b  --> c.  redoSeq=-7 comes from seq 9 (the one previous to 10, which was our redoSeq).
- *   16      -16       -6           c        d  #16= rev(#7)  <--- REDO  // c  --> d
- *   17      -17     null           d        e  #17= rev(#6)  <--- REDO  // d  --> e.  Unable to redo any more because redoSeq == null.
- *   18      -16      -18           e        d  #18= rev(#17) <--- undo  // e  --> d
- *   19      -15      -19           d        c  #19= rev(#16) <--- undo  // d  --> c
- *   20      -20     null           c        f  #20                      // c  --> f
- *   21      -21     null           f        g  #21                      // f  --> g
- *   22      -22     null           g        h  #22                      // g  --> h
- *   23      -21      -23           h        g  #23= rev(#22) <--- undo  // h  --> g
- *   24      -20      -24           g        f  #24= rev(#21) <--- undo  // g  --> f
- *   25      -15      -25           f        c  #25= rev(#20) <--- undo  // f  --> c.  Did you notice that either the undoSeq or redoSeq is always equal to -seq?
- *
- ******************************************************************************/
 DeltaDB.DB.prototype.edit = function(id, operations, meta) {
     // Called by the end user with an 'operations' arg like JsonDelta.create.
     // Can also include an optional 'meta' object to include info about the change, such as date, user, etc.
@@ -222,31 +222,31 @@ DeltaDB.DB.prototype.undo = function(id) {
     var lastDelta = this._storage.getLastDelta(id);
     if(!lastDelta)
         throw new Error('unable to undo (no deltas)!');
-    if(lastDelta.undoSeq >= 0)
+    if(lastDelta.undoSeq === null)
         throw new Error('unable to undo (already at beginning)!');
     var newSeq = lastDelta.seq + 1;
-    var undoDeltaSteps = JDelta.reverse(this._storage.getDelta(id, -lastDelta.undoSeq));
-    var newUndoSeq = lastDelta.undoSeq + 1;
     var newRedoSeq = -newSeq;
-    var postUndoHash,
-        newMeta;
-    if(newUndoSeq < 0) {
-        // We are able to perform a normal undo.  We have not reached the beginning.
-        postUndoDelta = this._storage.getDelta(id, -lastDelta.undoSeq - 1);
+    var preUndoDelta = this._storage.getDelta(id, -lastDelta.undoSeq);
+    var undoSteps = JDelta.reverse(preUndoDelta);
+    var postUndoSeq = (-lastDelta.undoSeq) - 1,
+        postUndoUndoSeq, postUndoHash, newMeta;
+    if(postUndoSeq > 0) {
+        var postUndoDelta = this._storage.getDelta(id, postUndoSeq);
+        postUndoUndoSeq = postUndoDelta.undoSeq;
         postUndoHash = postUndoDelta.curHash;
-        newMeta = JDelta._deepCopy(postUndoDelta.meta);
+        newMeta = _.extend(JDelta._deepCopy(postUndoDelta.meta), {operation:'undo'});
     } else {
-        // We have reached the beginning.
+        postUndoUndoSeq = null;
         postUndoHash = DeltaDB._EMPTY_OBJ_HASH;
-        newMeta = {};
+        newMeta = {operation:'undo'};
     }
-    newMeta.operation = 'undo';
-    var hashedDelta = { steps:undoDeltaSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postUndoHash, seq:newSeq, undoSeq:newUndoSeq, redoSeq:newRedoSeq };
+    var hashedDelta = { steps:undoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postUndoHash, seq:newSeq, undoSeq:postUndoUndoSeq, redoSeq:newRedoSeq };
     this._addHashedDelta(id, hashedDelta);
 };
 DeltaDB.DB.prototype.canRedo = function(id) {};
 DeltaDB.DB.prototype.redo = function(id) {
 };
+
 
 
 
