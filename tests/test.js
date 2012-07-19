@@ -235,8 +235,8 @@ coverage.save_report(JDelta_mod);
 
 
 var db = new DeltaDB.DB();
-db.createState('a');
-assert.throws(function(){db.createState('a')}, /State already exists/);
+db.createStateSync('a');
+assert.throws(function(){db.createStateSync('a')}, /State already exists/);
 db.edit('a', [{op:'create', key:'x', value:1}]);
 assert.throws(function(){db.edit('a', [{op:'create', key:'x', value:1}])}, /Already in target/);
 db.edit('a', [{op:'update', key:'x', value:{r:'1'}}]);
@@ -255,12 +255,12 @@ db.edit('a', [{op:'arrayRemove', path:'$.y', key:1},
               {op:'create', key:'z', value:'abc'}]);
 
 
-assert.deepEqual(db.render('a'), {"x":{"r":"1"},"y":[1,2,3],"z":"abc"});
-assert.deepEqual(db.render('a', 1), {"x":1});
-assert.deepEqual(db.render('a', 2), {"x":{"r":"1"}});
-assert.deepEqual(db.render('a', 3), {"x":{"r":"1"},"y":[1,1.5,2,3]});
-assert.deepEqual(db.render('a', 4), {"x":{"r":"1"},"y":[1,2,3],"z":"abc"});
-assert.deepEqual(db.render('a', 5), {"x":{"r":"1"},"y":[1,2,3],"z":"abc"});
+db.render('a', null, false, function(o) { assert.deepEqual(o, {"x":{"r":"1"},"y":[1,2,3],"z":"abc"}); });
+db.render('a', 1, false, function(o) { assert.deepEqual(o, {"x":1}); });
+db.render('a', 2, false, function(o) { assert.deepEqual(o, {"x":{"r":"1"}}); });
+db.render('a', 3, false, function(o) { assert.deepEqual(o, {"x":{"r":"1"},"y":[1,1.5,2,3]}); });
+db.render('a', 4, false, function(o) { assert.deepEqual(o, {"x":{"r":"1"},"y":[1,2,3],"z":"abc"}); });
+db.render('a', 5, false, function(o) { assert.deepEqual(o, {"x":{"r":"1"},"y":[1,2,3],"z":"abc"}); });
 
 // Tamper with the state data to cause an error and a roll-back:
 db._states.a.state.tamper='data';
@@ -272,46 +272,46 @@ db.edit('a', [{op:'update', key:'z', value:true}]);
 assert.throws(function(){db.edit('a', [{op:'delete', key:'w'}])}, /Not in target/);
 
 assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,2,3],"z":true});
-assert.equal(db.canUndo('a'), true);
+db.canUndo('a', function(b) { assert.equal(b, true); });
 db.undo('a');
 assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,2,3],"z":"abc"});
-assert.equal(db.canUndo('a'), true);
+db.canUndo('a', function(b) { assert.equal(b, true); });
 db.undo('a');
 assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,1.5,2,3]});
-assert.equal(db.canUndo('a'), true);
+db.canUndo('a', function(b) { assert.equal(b, true); });
 db.undo('a');
 assert.deepEqual(db._states.a.state, {"x":{"r":"1"}});
-assert.equal(db.canUndo('a'), true);
+db.canUndo('a', function(b) { assert.equal(b, true); });
 db.undo('a');
 assert.deepEqual(db._states.a.state, {"x":1});
-assert.equal(db.canUndo('a'), true);
+db.canUndo('a', function(b) { assert.equal(b, true); });
 db.undo('a');
 assert.deepEqual(db._states.a.state, {});
-assert.equal(db.canUndo('a'), false);
+db.canUndo('a', function(b) { assert.equal(b, false); });
 assert.throws(function(){db.undo('a')}, /unable to undo \(already at beginning\)/);
-assert.equal(db.canRedo('a'), true);
+db.canRedo('a', function(b) { assert.equal(b, true); });
 db.redo('a');
 assert.deepEqual(db._states.a.state, {"x":1});
-assert.equal(db.canRedo('a'), true);
+db.canRedo('a', function(b) { assert.equal(b, true); });
 db.redo('a');
 assert.deepEqual(db._states.a.state, {"x":{"r":"1"}});
-assert.equal(db.canRedo('a'), true);
+db.canRedo('a', function(b) { assert.equal(b, true); });
 db.redo('a');
 assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,1.5,2,3]});
-assert.equal(db.canRedo('a'), true);
+db.canRedo('a', function(b) { assert.equal(b, true); });
 db.redo('a');
 assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,2,3],"z":"abc"});
-assert.equal(db.canRedo('a'), true);
+db.canRedo('a', function(b) { assert.equal(b, true); });
 db.redo('a');
 assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,2,3],"z":true});
-assert.equal(db.canRedo('a'), false);
-assert.equal(db.canUndo('a'), true);
+db.canRedo('a', function(b) { assert.equal(b, false); });
+db.canUndo('a', function(b) { assert.equal(b, true); });
 db.undo('a');
 assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,2,3],"z":"abc"});
 db.edit('a', [{op:'arrayRemove', path:'$.y', key:1}]);
 assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,3],"z":"abc"});
-assert.equal(db.canRedo('a'), false);
-assert.equal(db.canUndo('a'), true);
+db.canRedo('a', function(b) { assert.equal(b, false); });
+db.canUndo('a', function(b) { assert.equal(b, true); });
 assert.throws(function(){db.edit('a', [{op:'arrayRemove', path:'$.y', key:5}])}, /IndexError/);
 assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,3],"z":"abc"});
 
