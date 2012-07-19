@@ -31,6 +31,10 @@ DeltaDB.VERSION = '0.1.0a';
 // You can sort of think of DeltaDB like a "Delta Integral"; It maintains the total "sums" of the deltas.
 // It also and manages events, storage, and network synchronization.
 DeltaDB.DB = function(storage) {
+    // Guard against forgetting the 'new' operator:  "var db = DeltaDB.DB();"   instead of   "var db = new DeltaDB.DB();"
+    if(this === DeltaDB)
+        return new DeltaDB.DB(storage);
+    console.log(this);
     this._storage = storage || new DeltaDB.RamStorage();
     this._master = null;
     this._slaves = [];
@@ -216,7 +220,7 @@ DeltaDB.DB.prototype.edit = function(id, operations, meta) {
 };
 DeltaDB.DB.prototype.canUndo = function(id) {
     var lastDelta = this._storage.getLastDelta(id);
-    return lastDelta.undoSeq < 0;
+    return lastDelta.undoSeq !== null;
 };
 DeltaDB.DB.prototype.undo = function(id) {
     var lastDelta = this._storage.getLastDelta(id);
@@ -243,8 +247,27 @@ DeltaDB.DB.prototype.undo = function(id) {
     var hashedDelta = { steps:undoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postUndoHash, seq:newSeq, undoSeq:postUndoUndoSeq, redoSeq:newRedoSeq };
     this._addHashedDelta(id, hashedDelta);
 };
-DeltaDB.DB.prototype.canRedo = function(id) {};
+DeltaDB.DB.prototype.canRedo = function(id) {
+    var lastDelta = this._storage.getLastDelta(id);
+    return lastDelta.redoSeq !== null;
+};
 DeltaDB.DB.prototype.redo = function(id) {
+    var lastDelta = this._storage.getLastDelta(id);
+    if(!lastDelta)
+        throw new Error('unable to redo (no deltas)!');
+    if(lastDelta.redoSeq === null)
+        throw new Error('unable to redo (already at end)!');
+    var newSeq = lastDelta.seq + 1;
+    var newUndoSeq = -newSeq;
+    var preRedoDelta = this._storage.getDelta(id, -lastDelta.redoSeq);
+    var redoSteps = JDelta.reverse(preRedoDelta);
+    var postRedoSeq = (-lastDelta.redoSeq) - 1;
+    var postRedoDelta = this._storage.getDelta(id, postRedoSeq);
+    var postRedoRedoSeq = postRedoDelta.redoSeq;
+    var postRedoHash = postRedoDelta.curHash;
+    var newMeta = _.extend(JDelta._deepCopy(postRedoDelta.meta), {operation:'redo'});
+    var hashedDelta = { steps:redoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postRedoHash, seq:newSeq, undoSeq:newUndoSeq, redoSeq:postRedoRedoSeq };
+    this._addHashedDelta(id, hashedDelta);
 };
 
 

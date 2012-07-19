@@ -289,6 +289,32 @@ db.undo('a');
 assert.deepEqual(db._states.a.state, {});
 assert.equal(db.canUndo('a'), false);
 assert.throws(function(){db.undo('a')}, /unable to undo \(already at beginning\)/);
+assert.equal(db.canRedo('a'), true);
+db.redo('a');
+assert.deepEqual(db._states.a.state, {"x":1});
+assert.equal(db.canRedo('a'), true);
+db.redo('a');
+assert.deepEqual(db._states.a.state, {"x":{"r":"1"}});
+assert.equal(db.canRedo('a'), true);
+db.redo('a');
+assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,1.5,2,3]});
+assert.equal(db.canRedo('a'), true);
+db.redo('a');
+assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,2,3],"z":"abc"});
+assert.equal(db.canRedo('a'), true);
+db.redo('a');
+assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,2,3],"z":true});
+assert.equal(db.canRedo('a'), false);
+assert.equal(db.canUndo('a'), true);
+db.undo('a');
+assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,2,3],"z":"abc"});
+db.edit('a', [{op:'arrayRemove', path:'$.y', key:1}]);
+assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,3],"z":"abc"});
+assert.equal(db.canRedo('a'), false);
+assert.equal(db.canUndo('a'), true);
+assert.throws(function(){db.edit('a', [{op:'arrayRemove', path:'$.y', key:5}])}, /IndexError/);
+assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,3],"z":"abc"});
+
 
 
 
@@ -299,6 +325,10 @@ db.off('a', 'all', cb);
 db.off('a', null, cb2);  //  null removes all events for that callback.
 JDelta.stringify(db, null, 2);  // We should now be able to stringify the db after the callbacks have been removed.  Before they are removed, there are cyclical references which cause the stringify to crash thru the stack limit.
 
+
+
+var db2 = DeltaDB.DB();
+var db3 = new DeltaDB.DB();
 
 
 
