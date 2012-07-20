@@ -13,12 +13,12 @@
 var JDelta = {},
     _,
     Backbone;
-if(exports !== undefined) {
+if(typeof exports !== 'undefined') {
     // We are on Node.
     exports.JDelta = JDelta;
     _ = require('underscore'),
     Backbone = require('backbone');
-} else if(window !== undefined) {
+} else if(typeof window !== 'undefined') {
     // We are in a browser.
     window.JDelta = JDelta;
     _ = window._,
@@ -274,6 +274,11 @@ JDelta.VERSION = '0.2.0a';
 
 
 
+JDelta._pad = function(s, p, n) {
+    while(s.length < n)
+        s = p+s;
+    return s;
+};
 JDelta._hash = function(s) {
     // A fast simple hash function for detecting errors, NOT for cryptography!
     // Currently, out of    10,000 hashes, there will be approximately   0 collisions.
@@ -292,7 +297,7 @@ JDelta._hash = function(s) {
     }
     // Finally it is important to convert to hex to avoid negative numbers (which are annoying for our end-user):
     // We need to treat the upper-most 8 bits differently to avoid losing the sign bit (which, in our case, actually contains data, not a sign).
-    return '0x' + (hash >>> 24).toString(16) + (hash & 0xffffff).toString(16);
+    return '0x' + JDelta._pad((hash >>> 24).toString(16), '0', 2) + JDelta._pad((hash & 0xffffff).toString(16), '0', 6);
 };
 
 

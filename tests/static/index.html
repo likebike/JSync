@@ -1,15 +1,19 @@
-//  JsonDelta - Test Suite
-//  (c) 2012 LikeBike LLC
-//  JsonDelta is freely distributable under the 3-clause BSD license.  (See LICENSE.TXT)
+<!DOCTYPE html>
+<html>
+<head>
+  <meta http-equiv="X-UA-Compatible" content="IE=edge">
+  <title>JsonDelta Test Server</title>
+  <script type="text/javascript" src="js/json2.js"></script>
+  <script type="text/javascript" src="js/jquery.js"></script>
+  <script type="text/javascript" src="js/underscore.js"></script>
+  <script type="text/javascript" src="js/backbone.js"></script>
+  <script type="text/javascript" src="js/JsonDelta.js"></script>
+  <script type="text/javascript" src="js/JDeltaAssert.js"></script>
+  <script type="text/javascript">
+    $(function() {
+        $('p#jdelta_1').text('Running tests.  See console output for any errors...');
 
 
-var coverage = require('./coverage.js'),
-    assert = require('assert'),
-    JDelta_mod = require('./cov_lib/JsonDelta.js'),
-    DeltaDB_mod = require('./cov_lib/DeltaDB.js');
-
-JDelta = JDelta_mod.JDelta;
-DeltaDB = DeltaDB_mod.DeltaDB;
 
 
 var o = {a:1, c:2, b:3, d:{z:4, x:5, y:6}};
@@ -223,8 +227,6 @@ JDelta.patch(state, JDelta.reverse(d), dispatcher);
 assert.deepEqual(state, {a:1, b:[2,'3',4]});
 
 
-console.log('Generating JsonDelta Code Coverage Report...');
-coverage.save_report(JDelta_mod);
 
 
 
@@ -234,105 +236,20 @@ coverage.save_report(JDelta_mod);
 
 
 
-var db = new DeltaDB.DB();
-db.createStateSync('a');
-assert.throws(function(){db.createStateSync('a')}, /State already exists/);
-db.edit('a', [{op:'create', key:'x', value:1}]);
-assert.throws(function(){db.edit('a', [{op:'create', key:'x', value:1}])}, /Already in target/);
-db.edit('a', [{op:'update', key:'x', value:{r:'1'}}]);
-var cb = function(path,event) {
-    console.log('CALLBACK:',path,event,this);
-};
-db.on('a', 'all', cb);
-db.edit('a', [{op:'create', key:'y', value:[1,2,3]},
-              {op:'arrayInsert', path:'$.y', key:1, value:1.5}
-             ]);
-var cb2 = function(event) {
-    console.log('CALLBACK2 for $.y:',event,this);
-};
-db.on('a', '$.y', cb2);
-db.edit('a', [{op:'arrayRemove', path:'$.y', key:1},
-              {op:'create', key:'z', value:'abc'}]);
-
-
-db.render('a', null, function(o) { assert.deepEqual(o, {"x":{"r":"1"},"y":[1,2,3],"z":"abc"}); });
-db.render('a', 1, function(o) { assert.deepEqual(o, {"x":1}); });
-db.render('a', 2, function(o) { assert.deepEqual(o, {"x":{"r":"1"}}); });
-db.render('a', 3, function(o) { assert.deepEqual(o, {"x":{"r":"1"},"y":[1,1.5,2,3]}); });
-db.render('a', 4, function(o) { assert.deepEqual(o, {"x":{"r":"1"},"y":[1,2,3],"z":"abc"}); });
-db.render('a', 5, function(o) { assert.deepEqual(o, {"x":{"r":"1"},"y":[1,2,3],"z":"abc"}); });
-
-// Tamper with the state data to cause an error and a roll-back:
-db._states.a.state.tamper='data';
-assert.deepEqual(db._states.a.state, {"tamper":"data","x":{"r":"1"},"y":[1,2,3],"z":"abc"});
-assert.throws(function(){db.edit('a', [{op:'update', key:'z', value:true}])}, /invalid parentHash/);
-db.rollback('a');
-assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,2,3],"z":"abc"});
-db.edit('a', [{op:'update', key:'z', value:true}]);
-assert.throws(function(){db.edit('a', [{op:'delete', key:'w'}])}, /Not in target/);
-
-assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,2,3],"z":true});
-db.canUndo('a', function(b) { assert.equal(b, true); });
-db.undo('a');
-assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,2,3],"z":"abc"});
-db.canUndo('a', function(b) { assert.equal(b, true); });
-db.undo('a');
-assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,1.5,2,3]});
-db.canUndo('a', function(b) { assert.equal(b, true); });
-db.undo('a');
-assert.deepEqual(db._states.a.state, {"x":{"r":"1"}});
-db.canUndo('a', function(b) { assert.equal(b, true); });
-db.undo('a');
-assert.deepEqual(db._states.a.state, {"x":1});
-db.canUndo('a', function(b) { assert.equal(b, true); });
-db.undo('a');
-assert.deepEqual(db._states.a.state, {});
-db.canUndo('a', function(b) { assert.equal(b, false); });
-assert.throws(function(){db.undo('a')}, /unable to undo \(already at beginning\)/);
-db.canRedo('a', function(b) { assert.equal(b, true); });
-db.redo('a');
-assert.deepEqual(db._states.a.state, {"x":1});
-db.canRedo('a', function(b) { assert.equal(b, true); });
-db.redo('a');
-assert.deepEqual(db._states.a.state, {"x":{"r":"1"}});
-db.canRedo('a', function(b) { assert.equal(b, true); });
-db.redo('a');
-assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,1.5,2,3]});
-db.canRedo('a', function(b) { assert.equal(b, true); });
-db.redo('a');
-assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,2,3],"z":"abc"});
-db.canRedo('a', function(b) { assert.equal(b, true); });
-db.redo('a');
-assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,2,3],"z":true});
-db.canRedo('a', function(b) { assert.equal(b, false); });
-db.canUndo('a', function(b) { assert.equal(b, true); });
-db.undo('a');
-assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,2,3],"z":"abc"});
-db.edit('a', [{op:'arrayRemove', path:'$.y', key:1}]);
-assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,3],"z":"abc"});
-db.canRedo('a', function(b) { assert.equal(b, false); });
-db.canUndo('a', function(b) { assert.equal(b, true); });
-assert.throws(function(){db.edit('a', [{op:'arrayRemove', path:'$.y', key:5}])}, /IndexError/);
-assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,3],"z":"abc"});
 
 
 
 
 
-db.off('a', 'all', cb);
-db.off('a', null, cb2);  //  null removes all events for that callback.
-JDelta.stringify(db, null, 2);  // We should now be able to stringify the db after the callbacks have been removed.  Before they are removed, there are cyclical references which cause the stringify to crash thru the stack limit.
 
 
 
-var db2 = DeltaDB.DB();
-var db3 = new DeltaDB.DB();
 
-
-
-console.log('Generating DeltaDB Code Coverage Report...');
-coverage.save_report(DeltaDB_mod);
-
-
-console.log('All Tests Passed.  :)');
-
+        $('p#jdelta_1').text('All Tests Passed.');
+    });
+  </script>
+</head>
+<body>
+<p id="jdelta_1">Initializing...</p>
+</body>
+</html>

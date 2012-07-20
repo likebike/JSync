@@ -12,12 +12,12 @@
 var DeltaDB = {},
     JDelta,
     _;
-if(exports !== undefined) {
+if(typeof exports !== 'undefined') {
     // We are on Node.
     exports.DeltaDB = DeltaDB;
     JDelta = require('./JsonDelta').JDelta;
     _ = require('underscore');
-} else if(window !== undefined) {
+} else if(typeof window !== 'undefined') {
     // We are in a browser.
     window.DeltaDB = DeltaDB;
     JDelta = window.JDelta;
@@ -28,36 +28,107 @@ DeltaDB.VERSION = '0.1.0a';
 
 
 
+/// // Useful for local testing.  Not that much use for real-world apps.  *Possible* use as a name-spacing tool... but it's really not made for that.
+/// DeltaDB.LocalClientConnection = function() {
+///     // Guard against forgetting the 'new' operator:
+///     if(this === DeltaDB)
+///         return new DeltaDB.LocalConnection();
+///     this._client = null;
+///     this._server = null;
+/// }
+/// DeltaDB.LocalConnection.prototype.setClient = function(client) {
+///     this._client = client;
+/// };
+/// DeltaDB.LocalConnection.prototype.setServer = function(server) {
+///     this._server = server;
+/// };
+/// DeltaDB.LocalConnection.prototype.sendToServer = function(data) {
+/// };
+/// DeltaDB.LocalConnection.prototype.sendToClient = function(data) {
+/// };
+/// 
+/// 
+/// 
+/// 
+/// DeltaDB.Client = function(connection, db) {
+///     // Guard against forgetting the 'new' operator:  "var db = DeltaDB.Client();"   instead of   "var db = new DeltaDB.Client();"
+///     if(this === DeltaDB)
+///         return new DeltaDB.Client(db);
+///     if(!connection)
+///         throw new Error('You must provide a connection!');
+///     this._connection = connection;
+///     this._db = db || new DeltaDB.DB();
+/// };
+/// DeltaDB.Client.prototype._reloadFromMaster = function(id) {
+/// };
+/// DeltaDB.Client.prototype._listMasterItems = function() {
+///     // Master returns a list of IDs and the corresponding seq #'s / hashes to us so we can make sure we are up to date.
+///     // For now, if we are out of date, just reload.  Later, we can consider to just fetch the deltas we are missing.
+/// };
+/// DeltaDB.Client.prototype._pushToMaster = function(id, delta) {
+///     //  Error handler that rolls back if the master does not accept the change.
+/// };
+/// 
+/// 
+/// 
+/// DeltaDB.Server = function(connection, db) {
+///     // Guard against forgetting the 'new' operator:  "var db = DeltaDB.Server();"   instead of   "var db = new DeltaDB.Server();"
+///     if(this == DeltaDB)
+///         return new DeltaDB.Server(db);
+///     if(!connection)
+///         throw new Error('You must provide a connection!');
+///     this._connection = connection;
+///     this._db = db || new DeltaDB.DB();  // Should default to SQLite, once it's implemented.
+/// };
+/// DeltaDB.Server.prototype._pushToSlaves = function(id, delta) {
+/// };
+
+
+
+DeltaDB.ClientCommunicator = function() {
+    // Guard against forgetting the 'new' operator:
+    if(this === DeltaDB)
+        return new DeltaDB.ClientCommunicator();
+    this._sendQueue = [];
+    this._receiveQueue = [];
+};
+DeltaDB.ClientCommunicator.prototype.listStates = function(ids, onSuccess, onError) {
+    // Fetches state infos from server.  Does *not* use/affect the queue.
+    
+    onSuccess([{id:'a', lastDeltaSeq:5, lastDeltaHash:0x12345678},
+               {id:'b', lastDeltaSeq:9, lastDeltaHash:0xabcdefff}]);
+};
+DeltaDB.ClientCommunicator.prototype.fetchDeltas = function(items, onSuccess, onError) {
+    // Fetches state deltas from server.  Does *not* use/affect the queue.
+    items = [{id:'a', seq:3},
+             {id:'a', seq:4},
+             {id:'a', seq:5},
+             {id:'b', seq:9}];
+    onSuccess([{id:'a', delta:{seq:3, curHash:'A', steps:[]}},
+               {id:'a', delta:{seq:4, curHash:'B', steps:[]}},
+               {id:'a', delta:{seq:5, curHash:'C', steps:[]}},
+               {id:'b', delta:{seq:9, curHash:'X', steps:[]}}]);
+};
+
+
+DeltaDB.ServerCommunicator = function() {
+    // Guard against forgetting the 'new' operator:
+    if(this === DeltaDB)
+        return new DeltaDB.ServerCommunicator();
+    this._clientConnections = {};
+};
+DeltaDB.ServerCommunicator.prototype.listStates = function(clientIP, clientConnectionID, items
+
+
+
+
 // You can sort of think of DeltaDB like a "Delta Integral"; It maintains the total "sums" of the deltas.
-// It also and manages events, storage, and network synchronization.
 DeltaDB.DB = function(storage) {
     // Guard against forgetting the 'new' operator:  "var db = DeltaDB.DB();"   instead of   "var db = new DeltaDB.DB();"
     if(this === DeltaDB)
         return new DeltaDB.DB(storage);
     this._storage = storage || new DeltaDB.RamStorage();
-    this._master = null;
-    this._slaves = [];
-    this._cache = {};
     this._states = {}; // State Structure: { state:json, dispatcher:obj }
-};
-DeltaDB.DB.prototype.setMaster = function() {
-};
-DeltaDB.DB.prototype.unsetMaster = function() {
-};
-DeltaDB.DB.prototype.addSlave = function() {
-};
-DeltaDB.DB.prototype.removeSlave = function() {
-};
-DeltaDB.DB.prototype._reloadFromMaster = function(id) {
-};
-DeltaDB.DB.prototype._listMasterItems = function() {
-    // Master returns a list of IDs and the corresponding seq #'s / hashes to us so we can make sure we are up to date.
-    // For now, if we are out of date, just reload.  Later, we can consider to just fetch the deltas we are missing.
-};
-DeltaDB.DB.prototype._pushToMaster = function(id, delta) {
-    //  Error handler that rolls back if the master does not accept the change.
-};
-DeltaDB.DB.prototype._pushToSlaves = function(id, delta) {
 };
 DeltaDB.DB.prototype.on = function(id, event, callback) {
     if(!id)
@@ -85,7 +156,7 @@ DeltaDB.DB.prototype._trigger = function(id, path, data) {
     if(!d) return;
     d.trigger(path, data);
 };
-DeltaDB.DB.prototype.render = function(id, endSeq, saveInCache, onSuccess, onError) {
+DeltaDB.DB.prototype.render = function(id, endSeq, onSuccess, onError) {
     if(endSeq === null) endSeq = undefined;  // Allow the user to specify null too.
     this._storage.getDeltas(id, 0, endSeq,
         function(deltas){
@@ -103,8 +174,6 @@ DeltaDB.DB.prototype.render = function(id, endSeq, saveInCache, onSuccess, onErr
             if(onError) return onError(error);
             else throw error;
         });
-};
-DeltaDB.DB.prototype.clearCache = function(namespace) {
 };
 DeltaDB.DB.prototype.listStates = function() {
     var states = [],
@@ -132,7 +201,7 @@ DeltaDB.DB.prototype.rollback = function(id, toSeq, onSuccess, onError) {
     var that = this;
     var doRender = function(toSeq) {
         var state = that._getRawState(id);
-        that.render(id, toSeq, false,
+        that.render(id, toSeq,
                     function(o){
                         state.state = o;
                         that._trigger(id, '$', {op:'reset'});
@@ -224,8 +293,8 @@ DeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError) {
             }
             that._storage.addDelta(id, delta,
                 function() {
-                    that._pushToMaster(id, delta);
-                    that._pushToSlaves(id, delta);
+                    //that._pushToMaster(id, delta);
+                    //that._pushToSlaves(id, delta);
                     if(onSuccess) onSuccess();
                 }, onError);
         }, onError);
