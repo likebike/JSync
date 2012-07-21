@@ -1,6 +1,6 @@
-//  JsonDelta - Delta-Sequence Database
+//  JDelta - Delta-Sequence Database
 //  (c) 2012 LikeBike LLC
-//  JsonDelta is freely distributable under the 3-clause BSD license.  (See LICENSE.TXT)
+//  JDelta is freely distributable under the 3-clause BSD license.  (See LICENSE.TXT)
 
 
 // Many ideas inspired by CouchDB and GIT.
@@ -9,34 +9,34 @@
 (function() {
 
 // First, install ourselves and import our dependencies:
-var DeltaDB = {},
+var JDeltaDB = {},
     JDelta,
     _;
 if(typeof exports !== 'undefined') {
     // We are on Node.
-    exports.DeltaDB = DeltaDB;
-    JDelta = require('./JsonDelta').JDelta;
+    exports.JDeltaDB = JDeltaDB;
+    JDelta = require('./JDelta.js').JDelta;
     _ = require('underscore');
 } else if(typeof window !== 'undefined') {
     // We are in a browser.
-    window.DeltaDB = DeltaDB;
+    window.JDeltaDB = JDeltaDB;
     JDelta = window.JDelta;
     _ = window._;
 } else throw new Error('This environment is not yet supported.');
 
-DeltaDB.VERSION = '0.1.0a';
+JDeltaDB.VERSION = '0.1.0a';
 
 
 
-// You can sort of think of DeltaDB like a "Delta Integral"; It maintains the total "sums" of the deltas.
-DeltaDB.DB = function(storage) {
-    // Guard against forgetting the 'new' operator:  "var db = DeltaDB.DB();"   instead of   "var db = new DeltaDB.DB();"
-    if(this === DeltaDB)
-        return new DeltaDB.DB(storage);
-    this._storage = storage || new DeltaDB.RamStorage();
+// You can sort of think of JDeltaDB like a "Delta Integral"; It maintains the total "sums" of the deltas.
+JDeltaDB.DB = function(storage) {
+    // Guard against forgetting the 'new' operator:  "var db = JDeltaDB.DB();"   instead of   "var db = new JDeltaDB.DB();"
+    if(this === JDeltaDB)
+        return new JDeltaDB.DB(storage);
+    this._storage = storage || new JDeltaDB.RamStorage();
     this._states = {}; // State Structure: { state:json, dispatcher:obj }
 };
-DeltaDB.DB.prototype.on = function(id, event, callback) {
+JDeltaDB.DB.prototype.on = function(id, event, callback) {
     if(!id)
         throw new Error('Invalid id!');
     if(!event)
@@ -48,7 +48,7 @@ DeltaDB.DB.prototype.on = function(id, event, callback) {
     if(!d) d = state.dispatcher = JDelta.createDispatcher();
     d.on(event, callback, state);  // It is crucial that the callbacks do not modify the state!
 };
-DeltaDB.DB.prototype.off = function(id, event, callback) {
+JDeltaDB.DB.prototype.off = function(id, event, callback) {
     if(!id)
         throw new Error('Invalid id!');
     var state = this._getRawState(id);
@@ -56,13 +56,13 @@ DeltaDB.DB.prototype.off = function(id, event, callback) {
     if(!d) return;
     d.off(event, callback, state);
 };
-DeltaDB.DB.prototype._trigger = function(id, path, data) {
+JDeltaDB.DB.prototype._trigger = function(id, path, data) {
     var state = this._getRawState(id);
     var d = state.dispatcher
     if(!d) return;
     d.trigger(path, data);
 };
-DeltaDB.DB.prototype.render = function(id, endSeq, onSuccess, onError) {
+JDeltaDB.DB.prototype.render = function(id, endSeq, onSuccess, onError) {
     if(endSeq === null) endSeq = undefined;  // Allow the user to specify null too.
     this._storage.getDeltas(id, 0, endSeq,
         function(deltas){
@@ -81,7 +81,7 @@ DeltaDB.DB.prototype.render = function(id, endSeq, onSuccess, onError) {
             else throw error;
         });
 };
-DeltaDB.DB.prototype.listStates = function() {
+JDeltaDB.DB.prototype.listStates = function() {
     var states = [],
         id;
     for(id in this._states) if(this._states.hasOwnProperty(id)) {
@@ -90,18 +90,18 @@ DeltaDB.DB.prototype.listStates = function() {
     states.sort();
     return states;
 };
-DeltaDB.DB.prototype._getRawState = function(id) {
+JDeltaDB.DB.prototype._getRawState = function(id) {
     if(!this._states.hasOwnProperty(id))
         throw new Error('No such state: '+id);
     return this._states[id];
 };
-DeltaDB.DB.prototype.createStateSync = function(id) {
+JDeltaDB.DB.prototype.createStateSync = function(id) {
     if(this._states.hasOwnProperty(id))
         throw new Error('State already exists: '+id);
     this._storage.createSync(id);
     this._states[id] = {state:{}, dispatcher:null};
 };
-DeltaDB.DB.prototype.rollback = function(id, toSeq, onSuccess, onError) {
+JDeltaDB.DB.prototype.rollback = function(id, toSeq, onSuccess, onError) {
     // This function is useful when a state has become corrupted (maybe by external tampering,
     // or by a partial delta application), and you want to revert to the previous good state.
     var that = this;
@@ -162,16 +162,16 @@ DeltaDB.DB.prototype.rollback = function(id, toSeq, onSuccess, onError) {
  *   25      -15      -25           f        c  #25= rev(#20) <--- undo  // f  --> c.  Did you notice that either the undoSeq or redoSeq is always equal to -seq?
  *
  ******************************************************************************/
-DeltaDB._EMPTY_OBJ_HASH = JDelta._hash('{}');
-DeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError) {
-    // Called by the DeltaDB API (not the end user) with a delta object like this:
+JDeltaDB._EMPTY_OBJ_HASH = JDelta._hash('{}');
+JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError) {
+    // Called by the JDeltaDB API (not the end user) with a delta object like this:
     //     { steps:[...], meta:{...}, parentHash:str, curHash:str, seq:int, undoSeq:int, redoSeq:int }
     var that = this;
     this._storage.getLastDelta(id,
         function(lastDelta) {
             var state = that._getRawState(id),
                 parentSeq = 0,
-                parentHash = DeltaDB._EMPTY_OBJ_HASH;
+                parentHash = JDeltaDB._EMPTY_OBJ_HASH;
             if(lastDelta) {
                 parentSeq = lastDelta.seq;
                 parentHash = lastDelta.curHash;
@@ -205,7 +205,7 @@ DeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError) {
                 }, onError);
         }, onError);
 };
-DeltaDB.DB.prototype._addDelta = function(id, delta, onSuccess, onError) {
+JDeltaDB.DB.prototype._addDelta = function(id, delta, onSuccess, onError) {
     var that = this;
     var state = this._getRawState(id);
     var oldHash = JDelta._hash(JDelta.stringify(state.state));
@@ -225,21 +225,21 @@ DeltaDB.DB.prototype._addDelta = function(id, delta, onSuccess, onError) {
             else throw err;
         });
 };
-DeltaDB.DB.prototype.edit = function(id, operations, meta, onSuccess, onError) {
-    // Called by the end user with an 'operations' arg like JsonDelta.create.
+JDeltaDB.DB.prototype.edit = function(id, operations, meta, onSuccess, onError) {
+    // Called by the end user with an 'operations' arg like JDelta.create.
     // Can also include an optional 'meta' object to include info about the change, such as date, user, etc.
     var state = this._getRawState(id);
     var delta = JDelta.create(state.state, operations);
     delta.meta = meta;
     this._addDelta(id, delta, onSuccess, onError);
 };
-DeltaDB.DB.prototype.canUndo = function(id, onSuccess, onError) {
+JDeltaDB.DB.prototype.canUndo = function(id, onSuccess, onError) {
     this._storage.getLastDelta(id,
         function(lastDelta) {
             onSuccess(lastDelta.undoSeq !== null);
         }, onError);
 };
-DeltaDB.DB.prototype.undo = function(id, onSuccess, onError) {
+JDeltaDB.DB.prototype.undo = function(id, onSuccess, onError) {
     var that = this;
     this._storage.getLastDelta(id,
         function(lastDelta) {
@@ -270,7 +270,7 @@ DeltaDB.DB.prototype.undo = function(id, onSuccess, onError) {
                             }, onError);
                     } else {
                         var postUndoUndoSeq = null;
-                        var postUndoHash = DeltaDB._EMPTY_OBJ_HASH;
+                        var postUndoHash = JDeltaDB._EMPTY_OBJ_HASH;
                         var newMeta = {operation:'undo'};
                         var hashedDelta = { steps:undoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postUndoHash, seq:newSeq, undoSeq:postUndoUndoSeq, redoSeq:newRedoSeq };
                         that._addHashedDelta(id, hashedDelta, onSuccess, onError);
@@ -278,13 +278,13 @@ DeltaDB.DB.prototype.undo = function(id, onSuccess, onError) {
                 }, onError);
         }, onError);
 };
-DeltaDB.DB.prototype.canRedo = function(id, onSuccess, onError) {
+JDeltaDB.DB.prototype.canRedo = function(id, onSuccess, onError) {
     this._storage.getLastDelta(id,
         function(lastDelta) {
             onSuccess(lastDelta.redoSeq !== null);
         }, onError);
 };
-DeltaDB.DB.prototype.redo = function(id, onSuccess, onError) {
+JDeltaDB.DB.prototype.redo = function(id, onSuccess, onError) {
     var that = this;
     this._storage.getLastDelta(id,
         function(lastDelta) {
@@ -323,18 +323,18 @@ DeltaDB.DB.prototype.redo = function(id, onSuccess, onError) {
 
 
 // Delta Structure:  { steps:[...], meta:{...}, parentHash:str, curHash:str, seq:int, undoSeq:int, redoSeq:int }
-DeltaDB.RamStorage = function() {
-    // Guard against forgetting the 'new' operator:  "var db = DeltaDB.RamStorage();"   instead of   "var db = new DeltaDB.RamStorage();"
-    if(this === DeltaDB)
-        return new DeltaDB.RamStorage();
+JDeltaDB.RamStorage = function() {
+    // Guard against forgetting the 'new' operator:  "var db = JDeltaDB.RamStorage();"   instead of   "var db = new JDeltaDB.RamStorage();"
+    if(this === JDeltaDB)
+        return new JDeltaDB.RamStorage();
     this._data = {};
 };
-DeltaDB.RamStorage.prototype.createSync = function(id) {
+JDeltaDB.RamStorage.prototype.createSync = function(id) {
     if(this._data.hasOwnProperty(id))
         throw new Error('Already exists: '+id);
     this._data[id] = [];
 };
-DeltaDB.RamStorage.prototype.create = function(id, onSuccess, onError) {
+JDeltaDB.RamStorage.prototype.create = function(id, onSuccess, onError) {
     if(!onSuccess) throw new Error('You need to provide a callback.');
     if(this._data.hasOwnProperty(id)) {
         var err = new Error('Already exists: '+id);
@@ -344,7 +344,7 @@ DeltaDB.RamStorage.prototype.create = function(id, onSuccess, onError) {
     this._data[id] = [];
     onSuccess();
 };
-DeltaDB.RamStorage.prototype._getRawDeltas = function(id, onSuccess, onError) {
+JDeltaDB.RamStorage.prototype._getRawDeltas = function(id, onSuccess, onError) {
     if(!onSuccess) throw new Error('You need to provide a callback.');
     if(!this._data.hasOwnProperty(id)) {
         var err = new Error("'id' not found: "+id);
@@ -353,7 +353,7 @@ DeltaDB.RamStorage.prototype._getRawDeltas = function(id, onSuccess, onError) {
     }
     onSuccess(this._data[id]);
 };
-DeltaDB.RamStorage.prototype.getDelta = function(id, seq, onSuccess, onError) {
+JDeltaDB.RamStorage.prototype.getDelta = function(id, seq, onSuccess, onError) {
     if(!onSuccess) throw new Error('You need to provide a callback.');
     this._getRawDeltas(id,
         function(deltaList) {
@@ -368,7 +368,7 @@ DeltaDB.RamStorage.prototype.getDelta = function(id, seq, onSuccess, onError) {
             else throw err;
         }, onError);
 };
-DeltaDB.RamStorage.prototype.getDeltas = function(id, startSeq, endSeq, onSuccess, onError) {
+JDeltaDB.RamStorage.prototype.getDeltas = function(id, startSeq, endSeq, onSuccess, onError) {
     if(!onSuccess) throw new Error('You need to provide a callback.');
     this._getRawDeltas(id,
         function(deltaList) {
@@ -387,14 +387,14 @@ DeltaDB.RamStorage.prototype.getDeltas = function(id, startSeq, endSeq, onSucces
             onSuccess(out);
         }, onError);
 };
-DeltaDB.RamStorage.prototype.getLastDelta = function(id, onSuccess, onError) {
+JDeltaDB.RamStorage.prototype.getLastDelta = function(id, onSuccess, onError) {
     if(!onSuccess) throw new Error('You need to provide a callback.');
     this._getRawDeltas(id,
         function(deltaList) {
             onSuccess(deltaList[deltaList.length-1]);
         }, onError);
 };
-DeltaDB.RamStorage.prototype.addDelta = function(id, delta, onSuccess, onError) {
+JDeltaDB.RamStorage.prototype.addDelta = function(id, delta, onSuccess, onError) {
     if(!onSuccess) throw new Error('You need to provide a callback.');
     this._getRawDeltas(id,
         function(deltaList) {
@@ -404,7 +404,7 @@ DeltaDB.RamStorage.prototype.addDelta = function(id, delta, onSuccess, onError) 
 };
 
 
-//DeltaDB.RamStorage.prototype.listIDs = function() {
+//JDeltaDB.RamStorage.prototype.listIDs = function() {
 //    var ids = [],
 //        k;
 //    for(k in this._data) if(this._data.hasOwnProperty(k)) {
@@ -426,7 +426,7 @@ DeltaDB.RamStorage.prototype.addDelta = function(id, delta, onSuccess, onError) 
 
 
 
-DeltaDB.SqliteStorage = function() {
+JDeltaDB.SqliteStorage = function() {
     throw new Error('coming soon...');
 };
 

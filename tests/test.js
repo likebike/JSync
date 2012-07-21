@@ -1,15 +1,15 @@
-//  JsonDelta - Test Suite
+//  JDelta - Test Suite
 //  (c) 2012 LikeBike LLC
-//  JsonDelta is freely distributable under the 3-clause BSD license.  (See LICENSE.TXT)
+//  JDelta is freely distributable under the 3-clause BSD license.  (See LICENSE.TXT)
 
 
 var coverage = require('./coverage.js'),
     assert = require('assert'),
-    JDelta_mod = require('./cov_lib/JsonDelta.js'),
-    DeltaDB_mod = require('./cov_lib/DeltaDB.js');
+    JDelta_mod = require('./cov_lib/JDelta.js'),
+    JDeltaDB_mod = require('./cov_lib/JDeltaDB.js');
 
 JDelta = JDelta_mod.JDelta;
-DeltaDB = DeltaDB_mod.DeltaDB;
+JDeltaDB = JDeltaDB_mod.JDeltaDB;
 
 
 var o = {a:1, c:2, b:3, d:{z:4, x:5, y:6}};
@@ -234,7 +234,7 @@ coverage.save_report(JDelta_mod);
 
 
 
-var db = new DeltaDB.DB();
+var db = new JDeltaDB.DB();
 db.createStateSync('a');
 assert.throws(function(){db.createStateSync('a')}, /State already exists/);
 db.edit('a', [{op:'create', key:'x', value:1}]);
@@ -325,13 +325,13 @@ JDelta.stringify(db, null, 2);  // We should now be able to stringify the db aft
 
 
 
-var db2 = DeltaDB.DB();
-var db3 = new DeltaDB.DB();
+var db2 = JDeltaDB.DB();
+var db3 = new JDeltaDB.DB();
 
 
 
-console.log('Generating DeltaDB Code Coverage Report...');
-coverage.save_report(DeltaDB_mod);
+console.log('Generating JDeltaDB Code Coverage Report...');
+coverage.save_report(JDeltaDB_mod);
 
 
 console.log('All Tests Passed.  :)');

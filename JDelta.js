@@ -1,6 +1,6 @@
-//  JsonDelta - JSON Delta Edits
+//  JDelta - JSON Delta Edits
 //  (c) 2012 LikeBike LLC
-//  JsonDelta is freely distributable under the 3-clause BSD license.  (See LICENSE.TXT)
+//  JDelta is freely distributable under the 3-clause BSD license.  (See LICENSE.TXT)
 
 
 // Heavily inspired by: http://tools.ietf.org/html/draft-pbryan-json-patch-00

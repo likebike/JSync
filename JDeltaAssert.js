@@ -1,6 +1,6 @@
-//  JsonDelta - Assert for the browser
+//  JDelta - Assert for the browser
 //  (c) 2012 LikeBike LLC
-//  JsonDelta is freely distributable under the 3-clause BSD license.  (See LICENSE.TXT)
+//  JDelta is freely distributable under the 3-clause BSD license.  (See LICENSE.TXT)
 
 
 // API inspired by Node.JS
@@ -14,7 +14,7 @@ if(typeof assert === 'undefined') {
     if(typeof exports !== 'undefined') {
         // We are on Node.
         exports.assert = assert;
-        JDelta = require('./JsonDelta').JDelta;
+        JDelta = require('./JDelta').JDelta;
     } else if(typeof window !== 'undefined') {
         window.assert = assert;
         JDelta = window.JDelta;
