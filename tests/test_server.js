@@ -6,7 +6,8 @@ var http = require('http'),
     BIND_IP = process.argv[3]  ||  '127.0.0.1';
 
 var router = sebweb.Router([
-    {path:'^/(?<path>.*)$', func:sebweb.StaticDir(__dirname+'/static', {indexFilename:'index.html'})}
+    {path:'^/static_cached/(?<path>.*)$', func:sebweb.StaticDir(__dirname+'/static', {indexFilename:'index.html', forceExpires:true})},
+    {path:'^/(?<path>.*)$', func:sebweb.StaticDir(__dirname+'/static', {indexFilename:'index.html'})},
 ]);
 
 var server = http.createServer(router);

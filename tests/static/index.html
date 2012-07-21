@@ -1,5 +1,5 @@
 <!DOCTYPE html>
-<html>
+<html debug=true>
 <head>
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
   <title>JsonDelta Test Server</title>
@@ -7,8 +7,12 @@
   <script type="text/javascript" src="js/jquery.js"></script>
   <script type="text/javascript" src="js/underscore.js"></script>
   <script type="text/javascript" src="js/backbone.js"></script>
-  <script type="text/javascript" src="js/JsonDelta.js"></script>
+  <script type="text/javascript" src="js/JDelta.js"></script>
   <script type="text/javascript" src="js/JDeltaAssert.js"></script>
+  <script type="text/javascript" src="js/JDeltaAssert.js"></script>
+  <script type="text/javascript" src="js/JDeltaDB.js"></script>
+  <script type="text/javascript" src="js/JDeltaSync.js"></script>
+    <script type="text/javascript" src="/static_cached/js/firebug-lite/build/firebug-lite.js"></script>
   <script type="text/javascript">
     $(function() {
         $('p#jdelta_1').text('Running tests.  See console output for any errors...');
@@ -88,10 +92,10 @@ assert.equal(JDelta._hash('加油！'), 0x625296d2);
 var s = 'The quick brown fox jumps over the lazy dog. 加油！';
 var bigS = '';
 var startTime = new Date().getTime();
-for(var i=0; i<1024*1024; i++) bigS += s;
+for(var i=0; i<1024*2; i++) bigS += s;
 console.log('loop time: %s ms', new Date().getTime() - startTime);
 startTime = new Date().getTime();
-assert.equal(JDelta._hash(bigS), 0x42fc6236);
+assert.equal(JDelta._hash(bigS), 0xbc535c53);
 console.log('_hash of %s-char str: %s ms', bigS.length, new Date().getTime() - startTime);
 startTime = new Date().getTime();
 assert.equal(JDelta._hash(s), 0xbc4e7448);
@@ -219,7 +223,7 @@ var state = {a:1, b:[2,'3',4]};
 var d = JDelta.create(state, [{op:'create', key:'c', value:5},
                               {op:'arrayRemove', path:'$.b', key:1},
                               {op:'arrayInsert', path:'$.b', key:1, value:3},
-                              {op:'update', path:'$.b', key:1, value:'three'},
+                              {op:'update', path:'$.b', key:1, value:'three'}
                               ]);
 JDelta.patch(state, d, dispatcher);
 assert.deepEqual(state, {"a":1,"b":[2,"three",4],"c":5});
