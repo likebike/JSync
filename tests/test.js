@@ -211,6 +211,7 @@ dispatcher.on('all', function(path, cmd) {
 dispatcher.on('$.b', function(cmd) {
     console.log('B:', cmd);
 });
+
 var state = {a:1, b:[2,'3',4]};
 var d = JDelta.create(state, [{op:'create', key:'c', value:5},
                               {op:'arrayRemove', path:'$.b', key:1},
@@ -223,7 +224,7 @@ JDelta.patch(state, JDelta.reverse(d), dispatcher);
 assert.deepEqual(state, {a:1, b:[2,'3',4]});
 
 
-console.log('Generating JsonDelta Code Coverage Report...');
+console.log('Generating JDelta Code Coverage Report...');
 coverage.save_report(JDelta_mod);
 
 
@@ -253,6 +254,14 @@ var cb2 = function(event) {
 db.on('a', '$.y', cb2);
 db.edit('a', [{op:'arrayRemove', path:'$.y', key:1},
               {op:'create', key:'z', value:'abc'}]);
+
+db.onRegex(/^a$/, function(id, cmd) {
+    console.log('REGEX A:', id, cmd);
+});
+db.onRegex(/^b$/, function(id, cmd) {
+    console.log('REGEX B:', id, cmd);
+});
+
 
 
 db.render('a', null, function(o) { assert.deepEqual(o, {"x":{"r":"1"},"y":[1,2,3],"z":"abc"}); });

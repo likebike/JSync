@@ -11,17 +11,29 @@
 // First, install ourselves and import our dependencies:
 var JDeltaDB = {},
     JDelta,
-    _;
+    _,
+    serverTimeOffset = 0;
 if(typeof exports !== 'undefined') {
     // We are on Node.
     exports.JDeltaDB = JDeltaDB;
     JDelta = require('./JDelta.js').JDelta;
     _ = require('underscore');
+    // Assume that we are the time authority.
 } else if(typeof window !== 'undefined') {
     // We are in a browser.
     window.JDeltaDB = JDeltaDB;
     JDelta = window.JDelta;
     _ = window._;
+    jQuery = window.jQuery  ||  window.$;
+    jQuery.ajax({url:'/gettime'}).always(function(arg1, arg2, arg3) {
+        var xhr = arg1;
+        if(typeof arg3 !== undefined  &&  arg3.getResponseHeader !== undefined)
+            xhr = arg3;
+        if(xhr.getResponseHeader === undefined)
+            throw new Error('Unable to find XHR object for server time.');
+        var serverDate = new Date(xhr.getResponseHeader('Date'));
+        serverTimeOffset = serverDate.getTime() - new Date().getTime();
+    });
 } else throw new Error('This environment is not yet supported.');
 
 JDeltaDB.VERSION = '0.1.0a';
@@ -35,6 +47,7 @@ JDeltaDB.DB = function(storage) {
         return new JDeltaDB.DB(storage);
     this._storage = storage || new JDeltaDB.RamStorage();
     this._states = {}; // State Structure: { state:json, dispatcher:obj }
+    this._regexListeners = [];
 };
 JDeltaDB.DB.prototype.on = function(id, event, callback) {
     if(!id)
@@ -55,6 +68,27 @@ JDeltaDB.DB.prototype.off = function(id, event, callback) {
     var d = state.dispatcher;
     if(!d) return;
     d.off(event, callback, state);
+};
+JDeltaDB.DB.prototype.onRegex = function(idRegex, callback) {
+    this._regexListeners[this._regexListeners.length] = {regex:idRegex, func:callback};
+};
+JDeltaDB.DB.prototype.offRegex = function(idRegex, callback) {
+    var i, l;
+    for(i=this._regexListeners.length-1; i>=0; i--) {
+        l = this._regexListeners[i];
+        if(l.regex === idRegex  &&  l.func === callback) {
+            this._regexListeners.splice(i, 1);
+        }
+    }
+};
+JDeltaDB.DB.prototype._regexTrigger = function(id, data) {
+    var state = this._getRawState(id),
+        i, ii, l, j, jj, e;
+    for(i=0, ii=this._regexListeners.length; i<ii; i++) {
+        l = this._regexListeners[i];
+        if(l.regex.test(id)) 
+            l.func.call(state, id, data);
+    }
 };
 JDeltaDB.DB.prototype._trigger = function(id, path, data) {
     var state = this._getRawState(id);
@@ -100,6 +134,7 @@ JDeltaDB.DB.prototype.createStateSync = function(id) {
         throw new Error('State already exists: '+id);
     this._storage.createSync(id);
     this._states[id] = {state:{}, dispatcher:null};
+    this._regexTrigger(id, {op:'createState'});
 };
 JDeltaDB.DB.prototype.rollback = function(id, toSeq, onSuccess, onError) {
     // This function is useful when a state has become corrupted (maybe by external tampering,
@@ -111,6 +146,7 @@ JDeltaDB.DB.prototype.rollback = function(id, toSeq, onSuccess, onError) {
                     function(o){
                         state.state = o;
                         that._trigger(id, '$', {op:'reset'});
+                        that._regexTrigger(id, {op:'reset'});
                         if(onSuccess) onSuccess();
                     },
                     function(err){if(onError) onError(err);
@@ -186,6 +222,7 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError) 
                 if(onError) return onError(err);
                 else throw err;
             }
+            delta.meta.date = new Date(new Date().getTime() + serverTimeOffset).toUTCString();
             try {
                 JDelta.patch(state.state, delta, state.dispatcher);
                 if(JDelta._hash(JDelta.stringify(state.state)) !== delta.curHash) {
@@ -199,6 +236,7 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError) 
             }
             that._storage.addDelta(id, delta,
                 function() {
+                    that._regexTrigger(id, delta);
                     //that._pushToMaster(id, delta);
                     //that._pushToSlaves(id, delta);
                     if(onSuccess) onSuccess();
@@ -315,6 +353,15 @@ JDeltaDB.DB.prototype.redo = function(id, onSuccess, onError) {
                 }, onError);
         }, onError);
 };
+
+JDeltaDB.DB.prototype.multiStateEdit = function(operations, onSuccess, onError) {
+    // "Transactions" across multiple states.  Undo/Redo becomes *really* complicated across multiple states (which could possibly be edited individually), so please just don't do it.  If you really want to undo/redo a multi-state operation, you'll have to do that yourself.  Maybe your particular situation will allow you to accomplish it easily.  But this is a very difficult problem to solve "in general".
+    // Multi-state operations are essential for keeping multiple things in sync.
+    // Also need to be able to create/delete states.  (Like adding a comment item, and also appending the commentID to a user's list.)  Need to be able to handle ID creation/concurrency/error handling here.
+    // ...but VIEWS are usually a better solution.
+    throw new Error('not implemented yet because Views will probably be way better.');
+};
+
 
 
 

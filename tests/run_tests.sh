@@ -9,7 +9,12 @@ cd "$MYDIR"
 
 rm -rf cov_lib
 mkdir cov_lib
-./coverage.sh ../JsonDelta.js > cov_lib/JsonDelta.js
-./coverage.sh ../DeltaDB.js > cov_lib/DeltaDB.js
+echo Instrumenting JDelta.js...
+./coverage.sh ../JDelta.js > cov_lib/JDelta.js
+echo Instrumenting JDeltaDB.js...
+./coverage.sh ../JDeltaDB.js > cov_lib/JDeltaDB.js
+echo Instrumenting JDeltaSync.js...
+./coverage.sh ../JDeltaSync.js > cov_lib/JDeltaSync.js
+echo Running test.js...
 node test.js
 
