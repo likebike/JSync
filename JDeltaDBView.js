@@ -6,6 +6,10 @@
 // Views inspired by CouchDB.
 
 
+
+/////////////   VIEW ARE AN Interesting idea, which I will probably want later... but right now, I just don't know enough of the real-world requirements of them for the specific problem-space that JDelta is made to solve.  I really don't want to turn JDelta into a whole "database" thing if I don't really need to.  I will come back to this after creating my first real-world app.
+
+
 (function() {
 
 var JDeltaDBView = {},
