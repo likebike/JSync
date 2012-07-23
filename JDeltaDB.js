@@ -115,7 +115,7 @@ JDeltaDB.DB.prototype.render = function(id, endSeq, onSuccess, onError) {
             else throw error;
         });
 };
-JDeltaDB.DB.prototype.listStates = function() {
+JDeltaDB.DB.prototype._listStates = function() {
     var states = [],
         id;
     for(id in this._states) if(this._states.hasOwnProperty(id)) {
@@ -124,12 +124,21 @@ JDeltaDB.DB.prototype.listStates = function() {
     states.sort();
     return states;
 };
+JDeltaDB.DB.prototype.iterStates = function(idRegex, func) {
+    var ids = this._listStates(),
+        i, ii, id;
+    for(i=0, ii=ids.length; i<ii; i++) {
+        id = ids[i];
+        if(idRegex.test(id))
+            func(id, this._getRawState(id));
+    }
+};
 JDeltaDB.DB.prototype._getRawState = function(id) {
     if(!this._states.hasOwnProperty(id))
         throw new Error('No such state: '+id);
     return this._states[id];
 };
-JDeltaDB.DB.prototype.createStateSync = function(id) {
+JDeltaDB.DB.prototype.createStateSync = function(id) {   ///////////   Turn this into a delta operation.  stateCreate and stateDelete
     if(this._states.hasOwnProperty(id))
         throw new Error('State already exists: '+id);
     this._storage.createSync(id);
@@ -354,13 +363,14 @@ JDeltaDB.DB.prototype.redo = function(id, onSuccess, onError) {
         }, onError);
 };
 
-JDeltaDB.DB.prototype.multiStateEdit = function(operations, onSuccess, onError) {
-    // "Transactions" across multiple states.  Undo/Redo becomes *really* complicated across multiple states (which could possibly be edited individually), so please just don't do it.  If you really want to undo/redo a multi-state operation, you'll have to do that yourself.  Maybe your particular situation will allow you to accomplish it easily.  But this is a very difficult problem to solve "in general".
-    // Multi-state operations are essential for keeping multiple things in sync.
-    // Also need to be able to create/delete states.  (Like adding a comment item, and also appending the commentID to a user's list.)  Need to be able to handle ID creation/concurrency/error handling here.
-    // ...but VIEWS are usually a better solution.
-    throw new Error('not implemented yet because Views will probably be way better.');
-};
+/////////// If you need multi-state edits, YOU'RE DOING IT WRONG!!!  Multi-state edit is riddled with complexity and cornercase issues.  It is a bad way to do things.
+////  JDeltaDB.DB.prototype.multiStateEdit = function(operations, onSuccess, onError) {
+////      // "Transactions" across multiple states.  Undo/Redo becomes *really* complicated across multiple states (which could possibly be edited individually), so please just don't do it.  If you really want to undo/redo a multi-state operation, you'll have to do that yourself.  Maybe your particular situation will allow you to accomplish it easily.  But this is a very difficult problem to solve "in general".
+////      // Multi-state operations are essential for keeping multiple things in sync.
+////      // Also need to be able to create/delete states.  (Like adding a comment item, and also appending the commentID to a user's list.)  Need to be able to handle ID creation/concurrency/error handling here.
+////      // ...but VIEWS are usually a better solution.
+////      throw new Error('not implemented yet because Views will probably be way better.');
+////  };
 
 
 
