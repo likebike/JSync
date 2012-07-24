@@ -385,9 +385,16 @@ console.log('All Tests Passed.  :)');
 
         $('p#jdelta_1').text('All Tests Passed.');
     });
+
+
+var client_listStates = function() {
+    new JDeltaSync.Client('/rt_test').listStates(['a','b','c'], function(data){console.log('SUCKSESS!', data, data.length)});
+};
+
   </script>
 </head>
 <body>
 <p id="jdelta_1">Initializing...</p>
+<p><button type=button onclick="client_listStates()">JDeltaSync.Client.listStates</button></p>
 </body>
 </html>
