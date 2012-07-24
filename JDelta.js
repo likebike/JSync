@@ -431,12 +431,12 @@ JDelta.reverse = function(delta) {
     }
     return {steps:reversedSteps};
 };
-JDelta.patch = function(state, delta, dispatcher) {
+JDelta.patch = function(id, state, delta, dispatcher) {
     // Note: 'state' is modified.
     if(!_.isObject(state))
-        throw new Error("Expected first arg to be an Object or Array.");
+        throw new Error("Expected 'state' to be an Object or Array.");
     if(!_.isObject(delta))
-        throw new Error('Expected second arg to be a Delta object.');
+        throw new Error("Expected 'delta' to be a Delta object.");
     if(!_.isArray(delta.steps))
         throw new Error('Invalid Delta object.');
     var steps = delta.steps,
@@ -467,11 +467,11 @@ JDelta.patch = function(state, delta, dispatcher) {
 
                 if('after' in step) {
                     target[key] = JDelta._deepCopy(step.after);  // We must '_deepCopy', otherwise the object that the delta references could be modified externally, resulting in totally unexpected mutation.
-                    events[events.length] = [path, {op:'set', path:path, key:key, value:JDelta._deepCopy(target[key])}];
+                    events[events.length] = [path, id, {op:'set', path:path, key:key, value:JDelta._deepCopy(target[key])}];
                 } else {
                     if(key in target) {
                         delete target[key];
-                        events[events.length] = [path, {op:'delete', path:path, key:key}];
+                        events[events.length] = [path, id, {op:'delete', path:path, key:key}];
                     }
                 }
                 break;
@@ -485,7 +485,7 @@ JDelta.patch = function(state, delta, dispatcher) {
                 if(step.value === undefined)
                     throw new Error('undefined value!');
                 target.splice(key, 0, JDelta._deepCopy(step.value))
-                events[events.length] = [path, {op:'arrayInsert', path:path, key:key, value:JDelta._deepCopy(target[key])}];
+                events[events.length] = [path, id, {op:'arrayInsert', path:path, key:key, value:JDelta._deepCopy(target[key])}];
                 break;
             case 'arrayRemove':
                 if(!JDelta._isInt(key))
@@ -497,7 +497,7 @@ JDelta.patch = function(state, delta, dispatcher) {
                 if( JDelta.stringify(target[key]) !== JDelta.stringify(step.value) )
                     throw new Error('Array value did not match!');
                 target.splice(key, 1);
-                events[events.length] = [path, {op:'arrayRemove', path:path, key:key}];
+                events[events.length] = [path, id, {op:'arrayRemove', path:path, key:key}];
                 break;
             default:
                 throw new Error('Illegal operation: '+op);

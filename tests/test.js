@@ -115,16 +115,16 @@ assert.deepEqual(JDelta.reverse(JDelta.reverse(JDelta.create(
 var d = JDelta.create({a:1}, [{op:'update', key:'a', value:{b:2,c:4}}, {op:'update', path:'$.a', key:'b', value:3}]);
 assert.deepEqual(d, {"steps":[{"path":"$","key":"a","before":1,"after":{"b":2,"c":4}},
                               {"path":"$.a","key":"b","before":2,"after":3}]});
-var o = JDelta.patch({a:1}, d);
+var o = JDelta.patch(null, {a:1}, d);
 // perform some mutations on 'o' to make sure that the original 'd' is not affected via unexpected shared references:
 o.a.b = 5;
 o.a.d = 6;
 o.e = 7;
-assert.deepEqual(JDelta.patch({a:1}, d), {a:{b:3,c:4}});
+assert.deepEqual(JDelta.patch(null, {a:1}, d), {a:{b:3,c:4}});
 var rd = JDelta.reverse(d);
 assert.deepEqual(rd, {"steps":[{"path":"$.a","key":"b","before":3,"after":2},
                                {"path":"$","key":"a","before":{"b":2,"c":4},"after":1}]});
-assert.deepEqual(JDelta.patch({a:{b:3,c:4}}, rd), {a:1});
+assert.deepEqual(JDelta.patch(null, {a:{b:3,c:4}}, rd), {a:1});
 
 
 assert.deepEqual(JDelta.create({}, []), {"steps":[]});
@@ -137,10 +137,10 @@ assert.deepEqual(JDelta.create({a:1}, [{op:'update', key:'a', value:2},
                                        {op:'create', key:'b', value:3}]), {"steps":[{"path":"$","key":"a","before":1,"after":2},
                                                                                  {"path":"$","key":"b","after":3}]});
 
-assert.throws(function(){JDelta.patch({a:2}, JDelta.create({a:1}, [{op:'update', key:'a', value:3}]))}, /'before' value did not match/);
-assert.deepEqual(JDelta.patch({a:2}, JDelta.create({a:2}, [{op:'update', key:'a', value:3}])), {a:3});
-assert.deepEqual(JDelta.patch({a:2}, JDelta.create({a:2}, [{op:'delete', key:'a'}])), {});
-assert.deepEqual(JDelta.patch([1,2,3], JDelta.create([1,2,3], [{op:'update', key:1, value:4}])), [1,4,3]);
+assert.throws(function(){JDelta.patch(null, {a:2}, JDelta.create({a:1}, [{op:'update', key:'a', value:3}]))}, /'before' value did not match/);
+assert.deepEqual(JDelta.patch(null, {a:2}, JDelta.create({a:2}, [{op:'update', key:'a', value:3}])), {a:3});
+assert.deepEqual(JDelta.patch(null, {a:2}, JDelta.create({a:2}, [{op:'delete', key:'a'}])), {});
+assert.deepEqual(JDelta.patch(null, [1,2,3], JDelta.create([1,2,3], [{op:'update', key:1, value:4}])), [1,4,3]);
 assert.deepEqual(JDelta.create([1,2,3], [{op:'arrayInsert', key:1, value:'a'}]),
                  {"steps":[{"op":"arrayInsert","path":"$","key":1,"value":"a"}]});
 assert.deepEqual(JDelta.create([1,'a',2,3], [{op:'arrayRemove', key:1}]),
@@ -149,21 +149,21 @@ assert.deepEqual(JDelta.reverse(JDelta.create([1,2,3], [{op:'arrayInsert', key:1
                  {"steps":[{"op":"arrayRemove","path":"$","key":1,"value":"a"}]});
 assert.deepEqual(JDelta.reverse(JDelta.create([1,'a',2,3], [{op:'arrayRemove', key:1}])),
                  {"steps":[{"op":"arrayInsert","path":"$","key":1,"value":"a"}]});
-assert.deepEqual(JDelta.patch([1,2,3], JDelta.create([1,2,3], [{op:'arrayInsert', key:1, value:'a'}])),
+assert.deepEqual(JDelta.patch(null, [1,2,3], JDelta.create([1,2,3], [{op:'arrayInsert', key:1, value:'a'}])),
                  [1,'a',2,3]);
-assert.deepEqual(JDelta.patch([1,'a',2,3], JDelta.create([1,'a',2,3], [{op:'arrayRemove', key:1}])),
+assert.deepEqual(JDelta.patch(null, [1,'a',2,3], JDelta.create([1,'a',2,3], [{op:'arrayRemove', key:1}])),
                  [1,2,3]);
 var o = [1,{a:2},3];
 var d = JDelta.create(o, [{op:'arrayInsert', key:1, value:{x:[4,'5',6]}},
                           {op:'update', path:'$.2', key:'a', value:[2]},
                           {op:'arrayRemove', path:'$.1.x', key:0}]);
-var o2 = JDelta.patch(JDelta._deepCopy(o), d);
+var o2 = JDelta.patch(null, JDelta._deepCopy(o), d);
 assert.deepEqual(o2, [1,{x:['5',6]},{a:[2]},3]);
 var rd = JDelta.reverse(d);
-assert.deepEqual(JDelta.patch(JDelta._deepCopy(o2), rd), o);
+assert.deepEqual(JDelta.patch(null, JDelta._deepCopy(o2), rd), o);
 // A modification should be detected:
 o2[2]['a'][1] = 10;
-assert.throws(function(){JDelta.patch(JDelta._deepCopy(o2), rd)}, /'before' value did not match/);
+assert.throws(function(){JDelta.patch(null, JDelta._deepCopy(o2), rd)}, /'before' value did not match/);
 
 // I'm using the code coverage report as my guide... writing the following tests to hit lines that have not been tested:
 assert.throws(function(){JDelta.create()}, /Expected 'state' to be an Object or Array/);
@@ -184,32 +184,32 @@ assert.throws(function(){JDelta.create([], [{op:'xxx', key:1}])}, /Illegal opera
 assert.throws(function(){JDelta.reverse()}, /Expected a Delta object/);
 assert.throws(function(){JDelta.reverse({})}, /Not a Delta object/);
 assert.throws(function(){JDelta.reverse({steps:[{op:'xxx'}]})}, /Illegal operation/);
-assert.throws(function(){JDelta.patch()}, /Expected first arg to be an Object or Array/);
-assert.throws(function(){JDelta.patch({})}, /Expected second arg to be a Delta object/);
-assert.throws(function(){JDelta.patch({}, {})}, /Invalid Delta object/);
-assert.throws(function(){JDelta.patch({}, {steps:[{}]})}, /undefined path/);
-assert.throws(function(){JDelta.patch({}, {steps:[{path:''}]})}, /undefined key/);
-assert.throws(function(){JDelta.patch({}, {steps:[{path:'$', key:'x', before:''}]})}, /Not in target/);
-assert.throws(function(){JDelta.patch({x:1}, {steps:[{path:'$', key:'x'}]})}, /Unexpectedly in target/);
-assert.throws(function(){JDelta.patch({}, {steps:[{op:'arrayInsert', path:'$', key:'1'}]})}, /Expected an integer key/);
-assert.throws(function(){JDelta.patch({}, {steps:[{op:'arrayInsert', path:'$', key:1}]})}, /patch:arrayInsert: Expected an Array target/);
-assert.throws(function(){JDelta.patch([], {steps:[{op:'arrayInsert', path:'$', key:1}]})}, /IndexError/);
-assert.throws(function(){JDelta.patch([], {steps:[{op:'arrayInsert', path:'$', key:0}]})}, /undefined value/);
-assert.throws(function(){JDelta.patch({}, {steps:[{op:'arrayRemove', path:'$', key:'1'}]})}, /Expected an integer key/);
-assert.throws(function(){JDelta.patch({}, {steps:[{op:'arrayRemove', path:'$', key:1}]})}, /patch:arrayRemove: Expected an Array target/);
-assert.throws(function(){JDelta.patch([], {steps:[{op:'arrayRemove', path:'$', key:0}]})}, /IndexError/);
-assert.throws(function(){JDelta.patch(['x'], {steps:[{op:'arrayRemove', path:'$', key:0}]})}, /Array value did not match/);
-assert.throws(function(){JDelta.patch({}, {steps:[{op:'xxx', path:'$', key:''}]})}, /Illegal operation/);
+assert.throws(function(){JDelta.patch(null)}, /Expected 'state' to be an Object or Array./);
+assert.throws(function(){JDelta.patch(null, {})}, /Expected 'delta' to be a Delta object./);
+assert.throws(function(){JDelta.patch(null, {}, {})}, /Invalid Delta object/);
+assert.throws(function(){JDelta.patch(null, {}, {steps:[{}]})}, /undefined path/);
+assert.throws(function(){JDelta.patch(null, {}, {steps:[{path:''}]})}, /undefined key/);
+assert.throws(function(){JDelta.patch(null, {}, {steps:[{path:'$', key:'x', before:''}]})}, /Not in target/);
+assert.throws(function(){JDelta.patch(null, {x:1}, {steps:[{path:'$', key:'x'}]})}, /Unexpectedly in target/);
+assert.throws(function(){JDelta.patch(null, {}, {steps:[{op:'arrayInsert', path:'$', key:'1'}]})}, /Expected an integer key/);
+assert.throws(function(){JDelta.patch(null, {}, {steps:[{op:'arrayInsert', path:'$', key:1}]})}, /patch:arrayInsert: Expected an Array target/);
+assert.throws(function(){JDelta.patch(null, [], {steps:[{op:'arrayInsert', path:'$', key:1}]})}, /IndexError/);
+assert.throws(function(){JDelta.patch(null, [], {steps:[{op:'arrayInsert', path:'$', key:0}]})}, /undefined value/);
+assert.throws(function(){JDelta.patch(null, {}, {steps:[{op:'arrayRemove', path:'$', key:'1'}]})}, /Expected an integer key/);
+assert.throws(function(){JDelta.patch(null, {}, {steps:[{op:'arrayRemove', path:'$', key:1}]})}, /patch:arrayRemove: Expected an Array target/);
+assert.throws(function(){JDelta.patch(null, [], {steps:[{op:'arrayRemove', path:'$', key:0}]})}, /IndexError/);
+assert.throws(function(){JDelta.patch(null, ['x'], {steps:[{op:'arrayRemove', path:'$', key:0}]})}, /Array value did not match/);
+assert.throws(function(){JDelta.patch(null, {}, {steps:[{op:'xxx', path:'$', key:''}]})}, /Illegal operation/);
 assert.throws(function(){JDelta._getTarget()}, /I need an Object or Array/);
-assert.throws(function(){JDelta.patch({}, {steps:[{path:'', key:''}]})}, /I need a path/);
-assert.throws(function(){JDelta.patch({}, {steps:[{path:'xxx', key:''}]})}, /The first path item must be \$/);
+assert.throws(function(){JDelta.patch(null, {}, {steps:[{path:'', key:''}]})}, /I need a path/);
+assert.throws(function(){JDelta.patch(null, {}, {steps:[{path:'xxx', key:''}]})}, /The first path item must be \$/);
 
 var dispatcher = JDelta.createDispatcher();
-dispatcher.on('all', function(path, cmd) {
-    console.log('ALL:', path, cmd);
+dispatcher.on('all', function(path, id, cmd) {
+    console.log('ALL:', path, id, cmd);
 });
-dispatcher.on('$.b', function(cmd) {
-    console.log('B:', cmd);
+dispatcher.on('$.b', function(id, cmd) {
+    console.log('B:', id, cmd);
 });
 
 var state = {a:1, b:[2,'3',4]};
@@ -218,9 +218,9 @@ var d = JDelta.create(state, [{op:'create', key:'c', value:5},
                               {op:'arrayInsert', path:'$.b', key:1, value:3},
                               {op:'update', path:'$.b', key:1, value:'three'},
                               ]);
-JDelta.patch(state, d, dispatcher);
+JDelta.patch(null, state, d, dispatcher);
 assert.deepEqual(state, {"a":1,"b":[2,"three",4],"c":5});
-JDelta.patch(state, JDelta.reverse(d), dispatcher);
+JDelta.patch(null, state, JDelta.reverse(d), dispatcher);
 assert.deepEqual(state, {a:1, b:[2,'3',4]});
 
 
@@ -236,8 +236,8 @@ coverage.save_report(JDelta_mod);
 
 
 var db = new JDeltaDB.DB();
-db.createStateSync('a');
-assert.throws(function(){db.createStateSync('a')}, /State already exists/);
+db.createState('a');
+assert.throws(function(){db.createState('a')}, /State already exists/);
 db.edit('a', [{op:'create', key:'x', value:1}]);
 assert.throws(function(){db.edit('a', [{op:'create', key:'x', value:1}])}, /Already in target/);
 db.edit('a', [{op:'update', key:'x', value:{r:'1'}}]);
@@ -255,12 +255,16 @@ db.on('a', '$.y', cb2);
 db.edit('a', [{op:'arrayRemove', path:'$.y', key:1},
               {op:'create', key:'z', value:'abc'}]);
 
-db.onRegex(/^a$/, function(id, cmd) {
-    console.log('REGEX A:', id, cmd);
-});
-db.onRegex(/^b$/, function(id, cmd) {
-    console.log('REGEX B:', id, cmd);
-});
+var re3 = /^a$/;
+var cb3 = function(path, id, cmd) {
+    console.log('REGEX A:', path, id, cmd);
+};
+db.on(re3, 'all', cb3);
+var re4 = /^b$/;
+var cb4 = function(path, id, cmd) {
+    console.log('REGEX B:', path, id, cmd);
+};
+db.on(re4, 'all', cb4);
 
 
 
@@ -330,6 +334,8 @@ assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,3],"z":"abc"});
 
 db.off('a', 'all', cb);
 db.off('a', null, cb2);  //  null removes all events for that callback.
+db.off(re3, 'all', cb3);  // For regex events, we need to use the exact same objects because javascript doesn't support equality testing of regexes.
+db.off(re4, 'all', cb4);
 JDelta.stringify(db, null, 2);  // We should now be able to stringify the db after the callbacks have been removed.  Before they are removed, there are cyclical references which cause the stringify to crash thru the stack limit.
 
 

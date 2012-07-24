@@ -56,6 +56,8 @@ JDeltaDB.DB.prototype.on = function(id, event, callback) {
         throw new Error('Invalid event!');
     if(!callback)
         throw new Error('Invalid callback!');
+    if(_.isRegExp(id))
+        return this._onRegex(id, event, callback);
     var state = this._getRawState(id);
     var d = state.dispatcher;
     if(!d) d = state.dispatcher = JDelta.createDispatcher();
@@ -64,37 +66,38 @@ JDeltaDB.DB.prototype.on = function(id, event, callback) {
 JDeltaDB.DB.prototype.off = function(id, event, callback) {
     if(!id)
         throw new Error('Invalid id!');
+    if(_.isRegExp(id))
+        return this._offRegex(id, event, callback);
     var state = this._getRawState(id);
     var d = state.dispatcher;
     if(!d) return;
     d.off(event, callback, state);
 };
-JDeltaDB.DB.prototype.onRegex = function(idRegex, callback) {
-    this._regexListeners[this._regexListeners.length] = {regex:idRegex, func:callback};
+JDeltaDB.DB.prototype._onRegex = function(idRegex, event, callback) {
+    this._regexListeners[this._regexListeners.length] = {idRegex:idRegex, event:event, callback:callback};
+    var that = this;
+    this.iterStates(idRegex, function(id, state) {
+        that.on(id, event, callback);
+    });
 };
-JDeltaDB.DB.prototype.offRegex = function(idRegex, callback) {
+JDeltaDB.DB.prototype._offRegex = function(idRegex, event, callback) {
+    var that = this;
+    this.iterStates(idRegex, function(id, state) {
+        that.off(id, event, callback);
+    });
     var i, l;
     for(i=this._regexListeners.length-1; i>=0; i--) {
         l = this._regexListeners[i];
-        if(l.regex === idRegex  &&  l.func === callback) {
+        if(l.idRegex === idRegex  &&  l.event === event  &&  l.callback === callback) {
             this._regexListeners.splice(i, 1);
         }
     }
 };
-JDeltaDB.DB.prototype._regexTrigger = function(id, data) {
-    var state = this._getRawState(id),
-        i, ii, l, j, jj, e;
-    for(i=0, ii=this._regexListeners.length; i<ii; i++) {
-        l = this._regexListeners[i];
-        if(l.regex.test(id)) 
-            l.func.call(state, id, data);
-    }
-};
-JDeltaDB.DB.prototype._trigger = function(id, path, data) {
+JDeltaDB.DB.prototype._trigger = function(path, id, data) {
     var state = this._getRawState(id);
     var d = state.dispatcher
     if(!d) return;
-    d.trigger(path, data);
+    d.trigger(path, id, data);
 };
 JDeltaDB.DB.prototype.render = function(id, endSeq, onSuccess, onError) {
     if(endSeq === null) endSeq = undefined;  // Allow the user to specify null too.
@@ -107,7 +110,7 @@ JDeltaDB.DB.prototype.render = function(id, endSeq, onSuccess, onError) {
             var o = {},
                 i, ii;
             for(i=0, ii=deltas.length; i<ii; i++) {
-                JDelta.patch(o, deltas[i]);
+                JDelta.patch(id, o, deltas[i]);
             }
             onSuccess(o);
         }, function(error){
@@ -138,12 +141,31 @@ JDeltaDB.DB.prototype._getRawState = function(id) {
         throw new Error('No such state: '+id);
     return this._states[id];
 };
-JDeltaDB.DB.prototype.createStateSync = function(id) {   ///////////   Turn this into a delta operation.  stateCreate and stateDelete
+JDeltaDB.DB.prototype.createState = function(id) {
     if(this._states.hasOwnProperty(id))
         throw new Error('State already exists: '+id);
     this._storage.createSync(id);
     this._states[id] = {state:{}, dispatcher:null};
-    this._regexTrigger(id, {op:'createState'});
+    var i, ii, l;
+    for(i=0, ii=this._regexListeners.length; i<ii; i++) {
+        l = this._regexListeners[i];
+        if(l.idRegex.test(id)) {
+            this.on(id, l.event, l.callback);
+        }
+    }
+    this._trigger('$', id, {op:'createState'});
+    //this._pushToMaster(id, delta);
+};
+JDeltaDB.DB.prototype.deleteState = function(id, onSuccess, onError) {
+    if(!this._states.hasOwnProperty(id))
+        throw new Error('State does not exist: '+id);
+    var that = this;
+    this._storage.delete(id, function() {
+        that._trigger('$', id, {op:'deleteState'});
+        delete that._states[id];
+        //that._pushToMaster(id, delta);
+        onSuccess();
+    }, onError);
 };
 JDeltaDB.DB.prototype.rollback = function(id, toSeq, onSuccess, onError) {
     // This function is useful when a state has become corrupted (maybe by external tampering,
@@ -154,8 +176,7 @@ JDeltaDB.DB.prototype.rollback = function(id, toSeq, onSuccess, onError) {
         that.render(id, toSeq,
                     function(o){
                         state.state = o;
-                        that._trigger(id, '$', {op:'reset'});
-                        that._regexTrigger(id, {op:'reset'});
+                        that._trigger('$', id, {op:'reset'});
                         if(onSuccess) onSuccess();
                     },
                     function(err){if(onError) onError(err);
@@ -233,7 +254,7 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError) 
             }
             delta.meta.date = new Date(new Date().getTime() + serverTimeOffset).toUTCString();
             try {
-                JDelta.patch(state.state, delta, state.dispatcher);
+                JDelta.patch(id, state.state, delta, state.dispatcher);
                 if(JDelta._hash(JDelta.stringify(state.state)) !== delta.curHash) {
                     var err = new Error('invalid curHash!');
                     if(onError) return onError(err);
@@ -245,7 +266,6 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError) 
             }
             that._storage.addDelta(id, delta,
                 function() {
-                    that._regexTrigger(id, delta);
                     //that._pushToMaster(id, delta);
                     //that._pushToSlaves(id, delta);
                     if(onSuccess) onSuccess();
@@ -256,7 +276,7 @@ JDeltaDB.DB.prototype._addDelta = function(id, delta, onSuccess, onError) {
     var that = this;
     var state = this._getRawState(id);
     var oldHash = JDelta._hash(JDelta.stringify(state.state));
-    var newStateCopy = JDelta.patch(JDelta._deepCopy(state.state), delta);
+    var newStateCopy = JDelta.patch(id, JDelta._deepCopy(state.state), delta);
     var newHash = JDelta._hash(JDelta.stringify(newStateCopy));
     if(newHash === oldHash)
         return;     // No change.  Let's just pretend this never happend...
@@ -391,14 +411,13 @@ JDeltaDB.RamStorage.prototype.createSync = function(id) {
         throw new Error('Already exists: '+id);
     this._data[id] = [];
 };
-JDeltaDB.RamStorage.prototype.create = function(id, onSuccess, onError) {
-    if(!onSuccess) throw new Error('You need to provide a callback.');
-    if(this._data.hasOwnProperty(id)) {
-        var err = new Error('Already exists: '+id);
+JDeltaDB.RamStorage.prototype.delete = function(id, onSuccess, onError) {
+    if(!this._data.hasOwnProperty(id)) {
+        var err = new Error('Does not exist: '+id);
         if(onError) return onError(err);
         else throw err;
     }
-    this._data[id] = [];
+    delete this._data[id];
     onSuccess();
 };
 JDeltaDB.RamStorage.prototype._getRawDeltas = function(id, onSuccess, onError) {
