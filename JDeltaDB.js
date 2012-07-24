@@ -164,7 +164,7 @@ JDeltaDB.DB.prototype.deleteState = function(id, onSuccess, onError) {
         that._trigger('$', id, {op:'deleteState'});
         delete that._states[id];
         //that._pushToMaster(id, delta);
-        onSuccess();
+        if(onSuccess) onSuccess();
     }, onError);
 };
 JDeltaDB.DB.prototype.rollback = function(id, toSeq, onSuccess, onError) {

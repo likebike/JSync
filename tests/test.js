@@ -84,10 +84,16 @@ assert.equal(JDelta._hash('加油！'), 0x625296d2);
 var s = 'The quick brown fox jumps over the lazy dog. 加油！';
 var bigS = '';
 var startTime = new Date().getTime();
-for(var i=0; i<1024*1024; i++) bigS += s;
+var loopsToDo = 1024*1024;
+var bigSHash = 0x42fc6236;
+if(typeof window !== 'undefined') {
+    loopsToDo = 1024*2;  // Browser.  Take it easy.
+    bigSHash = 0xbc535c53;
+}
+for(var i=0; i<loopsToDo; i++) bigS += s;
 console.log('loop time: %s ms', new Date().getTime() - startTime);
 startTime = new Date().getTime();
-assert.equal(JDelta._hash(bigS), 0x42fc6236);
+assert.equal(JDelta._hash(bigS), bigSHash);
 console.log('_hash of %s-char str: %s ms', bigS.length, new Date().getTime() - startTime);
 startTime = new Date().getTime();
 assert.equal(JDelta._hash(s), 0xbc4e7448);
@@ -224,8 +230,10 @@ JDelta.patch(null, state, JDelta.reverse(d), dispatcher);
 assert.deepEqual(state, {a:1, b:[2,'3',4]});
 
 
-console.log('Generating JDelta Code Coverage Report...');
-coverage.save_report(JDelta_mod);
+if(typeof exports !== 'undefined') {
+    console.log('Generating JDelta Code Coverage Report...');
+    coverage.save_report(JDelta_mod);
+}
 
 
 
@@ -328,6 +336,8 @@ db.canUndo('a', function(b) { assert.equal(b, true); });
 assert.throws(function(){db.edit('a', [{op:'arrayRemove', path:'$.y', key:5}])}, /IndexError/);
 assert.deepEqual(db._states.a.state, {"x":{"r":"1"},"y":[1,3],"z":"abc"});
 
+db.createState('b');
+db.deleteState('b');
 
 
 
@@ -345,8 +355,10 @@ var db3 = new JDeltaDB.DB();
 
 
 
-console.log('Generating JDeltaDB Code Coverage Report...');
-coverage.save_report(JDeltaDB_mod);
+if(typeof exports !== 'undefined') {
+    console.log('Generating JDeltaDB Code Coverage Report...');
+    coverage.save_report(JDeltaDB_mod);
+}
 
 
 console.log('All Tests Passed.  :)');
