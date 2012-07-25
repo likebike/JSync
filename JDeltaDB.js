@@ -102,7 +102,7 @@ JDeltaDB.DB.prototype._trigger = function(path, id, data) {
 JDeltaDB.DB.prototype.render = function(id, endSeq, onSuccess, onError) {
     if(endSeq === null) endSeq = undefined;  // Allow the user to specify null too.
     this._storage.getDeltas(id, 0, endSeq,
-        function(deltas){
+        function(id, deltas){
             // For now, we just use a simplistic algorithm of iterating thru all the deltas.
             // It is easily possible to optimize this algorithm by using the undo-hashes to
             // find the minimum number of deltas that we need to merge.  But I'll wait for
@@ -132,10 +132,8 @@ JDeltaDB.DB.prototype.iterStates = function(idRegex, func) {
         i, ii, id;
     for(i=0, ii=ids.length; i<ii; i++) {
         id = ids[i];
-        if(idRegex.test(id)) {
-            console.log('YES:',id);
+        if(idRegex.test(id))
             func(id, this._getRawState(id));
-        } else console.log('NO:',id);
     }
 };
 JDeltaDB.DB.prototype._getRawState = function(id) {
@@ -325,12 +323,12 @@ JDeltaDB.DB.prototype.undo = function(id, onSuccess, onError) {
             var newSeq = lastDelta.seq + 1;
             var newRedoSeq = -newSeq;
             that._storage.getDelta(id, -lastDelta.undoSeq,
-                function(preUndoDelta) {
+                function(id, preUndoDelta) {
                     var undoSteps = JDelta.reverse(preUndoDelta);
                     var postUndoSeq = (-lastDelta.undoSeq) - 1;
                     if(postUndoSeq > 0) {
                         that._storage.getDelta(id, postUndoSeq,
-                            function(postUndoDelta) {
+                            function(id, postUndoDelta) {
                                 var postUndoUndoSeq = postUndoDelta.undoSeq;
                                 var postUndoHash = postUndoDelta.curHash;
                                 var newMeta = _.extend(JDelta._deepCopy(postUndoDelta.meta), {operation:'undo'});
@@ -370,11 +368,11 @@ JDeltaDB.DB.prototype.redo = function(id, onSuccess, onError) {
             var newSeq = lastDelta.seq + 1;
             var newUndoSeq = -newSeq;
             that._storage.getDelta(id, -lastDelta.redoSeq,
-                function(preRedoDelta) {
+                function(id, preRedoDelta) {
                     var redoSteps = JDelta.reverse(preRedoDelta);
                     var postRedoSeq = (-lastDelta.redoSeq) - 1;
                     that._storage.getDelta(id, postRedoSeq,
-                        function(postRedoDelta) {
+                        function(id, postRedoDelta) {
                             var postRedoRedoSeq = postRedoDelta.redoSeq;
                             var postRedoHash = postRedoDelta.curHash;
                             var newMeta = _.extend(JDelta._deepCopy(postRedoDelta.meta), {operation:'redo'});
@@ -439,7 +437,7 @@ JDeltaDB.RamStorage.prototype.getDelta = function(id, seq, onSuccess, onError) {
             var i, ii, d;
             for(i=0, ii=deltaList.length; i<ii; i++) {
                 d = deltaList[i];
-                if(d.seq === seq) return onSuccess(d);
+                if(d.seq === seq) return onSuccess(id, d);
             }
             var err = new Error('Not Found: '+id+', '+seq);
             if(onError) return onError(err);
@@ -462,7 +460,7 @@ JDeltaDB.RamStorage.prototype.getDeltas = function(id, startSeq, endSeq, onSucce
                 if(inRange)
                     out[out.length] = deltaList[i];
             }
-            onSuccess(out);
+            onSuccess(id, out);
         }, onError);
 };
 JDeltaDB.RamStorage.prototype.getLastDelta = function(id, onSuccess, onError) {

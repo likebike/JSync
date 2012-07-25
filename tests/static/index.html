@@ -388,7 +388,13 @@ console.log('All Tests Passed.  :)');
 
 
 var client_listStates = function() {
-    new JDeltaSync.Client('/rt_test').listStates(['a','b','c'], function(data){console.log('SUCKSESS!', data, data.length)});
+    JDeltaSync.Client('/rt_test').listStates(['a','b','c'], function(data){console.log('listStates!', data, data.length)});
+};
+var client_listStatesRegex = function() {
+    JDeltaSync.Client('/rt_test').listStates(/^a$|^b$|^c$/, function(data){console.log('listStatesRegex!', data, data.length)});
+};
+var client_fetchDeltas = function() {
+    JDeltaSync.Client('/rt_test').fetchDeltas([{id:'a'},{id:'b', seq:1},{id:'c'}], function(data){console.log('fetchDeltas!', data, data.length)});
 };
 
   </script>
@@ -396,5 +402,7 @@ var client_listStates = function() {
 <body>
 <p id="jdelta_1">Initializing...</p>
 <p><button type=button onclick="client_listStates()">JDeltaSync.Client.listStates</button></p>
+<p><button type=button onclick="client_listStatesRegex()">JDeltaSync.Client.listStatesRegex</button></p>
+<p><button type=button onclick="client_fetchDeltas()">JDeltaSync.Client.fetchDeltas</button></p>
 </body>
 </html>
