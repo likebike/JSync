@@ -5,8 +5,10 @@
 
 // Many ideas inspired by CouchDB and GIT.
 
+console.log('AT MODULE START');
 
 (function() {
+"use strict";
 
 // First, install ourselves and import our dependencies:
 var JDeltaDB = {},
@@ -21,6 +23,7 @@ if(typeof exports !== 'undefined') {
     // Assume that we are the time authority.
 } else if(typeof window !== 'undefined') {
     // We are in a browser.
+    console.log('IN WINDOW LOAD SECTION');
     window.JDeltaDB = JDeltaDB;
     JDelta = window.JDelta;
     _ = window._;
@@ -43,7 +46,7 @@ JDeltaDB.VERSION = '0.1.0a';
 // You can sort of think of JDeltaDB like a "Delta Integral"; It maintains the total "sums" of the deltas.
 JDeltaDB.DB = function(storage) {
     // Guard against forgetting the 'new' operator:  "var db = JDeltaDB.DB();"   instead of   "var db = new JDeltaDB.DB();"
-    if(this === JDeltaDB)
+    if(!(this instanceof JDeltaDB.DB))
         return new JDeltaDB.DB(storage);
     this._storage = storage || new JDeltaDB.RamStorage();
     this._states = {}; // State Structure: { state:json, dispatcher:obj }
@@ -75,15 +78,15 @@ JDeltaDB.DB.prototype.off = function(id, event, callback) {
 };
 JDeltaDB.DB.prototype._onRegex = function(idRegex, event, callback) {
     this._regexListeners[this._regexListeners.length] = {idRegex:idRegex, event:event, callback:callback};
-    var that = this;
+    var self = this;
     this.iterStates(idRegex, function(id, state) {
-        that.on(id, event, callback);
+        self.on(id, event, callback);
     });
 };
 JDeltaDB.DB.prototype._offRegex = function(idRegex, event, callback) {
-    var that = this;
+    var self = this;
     this.iterStates(idRegex, function(id, state) {
-        that.off(id, event, callback);
+        self.off(id, event, callback);
     });
     var i, l;
     for(i=this._regexListeners.length-1; i>=0; i--) {
@@ -144,7 +147,7 @@ JDeltaDB.DB.prototype._getRawState = function(id) {
 JDeltaDB.DB.prototype.createState = function(id) {
     if(this._states.hasOwnProperty(id))
         throw new Error('State already exists: '+id);
-    this._storage.createSync(id);
+    this._storage.createStateSync(id);
     this._states[id] = {state:{}, dispatcher:null};
     var i, ii, l;
     for(i=0, ii=this._regexListeners.length; i<ii; i++) {
@@ -153,30 +156,28 @@ JDeltaDB.DB.prototype.createState = function(id) {
             this.on(id, l.event, l.callback);
         }
     }
-    this._trigger('$', id, {op:'createState'});
-    //this._pushToMaster(id, delta);
+    this._trigger('!', id, {op:'createState'});
 };
 JDeltaDB.DB.prototype.deleteState = function(id, onSuccess, onError) {
     if(!this._states.hasOwnProperty(id))
         throw new Error('State does not exist: '+id);
-    var that = this;
-    this._storage.delete(id, function() {
-        that._trigger('$', id, {op:'deleteState'});
-        delete that._states[id];
-        //that._pushToMaster(id, delta);
+    var self = this;
+    this._storage.deleteState(id, function() {
+        self._trigger('!', id, {op:'deleteState'});
+        delete self._states[id];
         if(onSuccess) onSuccess();
     }, onError);
 };
 JDeltaDB.DB.prototype.rollback = function(id, toSeq, onSuccess, onError) {
     // This function is useful when a state has become corrupted (maybe by external tampering,
     // or by a partial delta application), and you want to revert to the previous good state.
-    var that = this;
+    var self = this;
     var doRender = function(toSeq) {
-        var state = that._getRawState(id);
-        that.render(id, toSeq,
+        var state = self._getRawState(id);
+        self.render(id, toSeq,
                     function(o){
                         state.state = o;
-                        that._trigger('$', id, {op:'reset'});
+                        self._trigger('!', id, {op:'reset'});
                         if(onSuccess) onSuccess();
                     },
                     function(err){if(onError) onError(err);
@@ -232,10 +233,10 @@ JDeltaDB._EMPTY_OBJ_HASH = JDelta._hash('{}');
 JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError) {
     // Called by the JDeltaDB API (not the end user) with a delta object like this:
     //     { steps:[...], meta:{...}, parentHash:str, curHash:str, seq:int, undoSeq:int, redoSeq:int }
-    var that = this;
+    var self = this;
     this._storage.getLastDelta(id,
         function(id, lastDelta) {
-            var state = that._getRawState(id),
+            var state = self._getRawState(id),
                 parentSeq = 0,
                 parentHash = JDeltaDB._EMPTY_OBJ_HASH;
             if(lastDelta) {
@@ -261,19 +262,18 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError) 
                     else throw err;
                 }
             } catch(e) {
-                that.rollback(id, parentSeq);
+                self.rollback(id, parentSeq);
                 throw e;
             }
-            that._storage.addDelta(id, delta,
+            self._storage.addDelta(id, delta,
                 function() {
-                    //that._pushToMaster(id, delta);
-                    //that._pushToSlaves(id, delta);
+                    self._trigger('!', id, {op:'deltaApplied', delta:delta});
                     if(onSuccess) onSuccess();
                 }, onError);
         }, onError);
 };
 JDeltaDB.DB.prototype._addDelta = function(id, delta, onSuccess, onError) {
-    var that = this;
+    var self = this;
     var state = this._getRawState(id);
     var oldHash = JDelta._hash(JDelta.stringify(state.state));
     var newStateCopy = JDelta.patch(id, JDelta._deepCopy(state.state), delta);
@@ -286,7 +286,7 @@ JDeltaDB.DB.prototype._addDelta = function(id, delta, onSuccess, onError) {
             if(lastDelta) parentSeq = lastDelta.seq;
             var newSeq = parentSeq + 1;
             var hashedDelta = { steps:delta.steps, meta:delta.meta || {}, parentHash:oldHash, curHash:newHash, seq:newSeq, undoSeq:-newSeq, redoSeq:null };
-            that._addHashedDelta(id, hashedDelta, onSuccess, onError);
+            self._addHashedDelta(id, hashedDelta, onSuccess, onError);
         }, function(err) {
             if(onError) onError(err);
             else throw err;
@@ -307,7 +307,7 @@ JDeltaDB.DB.prototype.canUndo = function(id, onSuccess, onError) {
         }, onError);
 };
 JDeltaDB.DB.prototype.undo = function(id, onSuccess, onError) {
-    var that = this;
+    var self = this;
     this._storage.getLastDelta(id,
         function(id, lastDelta) {
             if(!lastDelta) {
@@ -322,25 +322,25 @@ JDeltaDB.DB.prototype.undo = function(id, onSuccess, onError) {
             }
             var newSeq = lastDelta.seq + 1;
             var newRedoSeq = -newSeq;
-            that._storage.getDelta(id, -lastDelta.undoSeq,
+            self._storage.getDelta(id, -lastDelta.undoSeq,
                 function(id, preUndoDelta) {
                     var undoSteps = JDelta.reverse(preUndoDelta);
                     var postUndoSeq = (-lastDelta.undoSeq) - 1;
                     if(postUndoSeq > 0) {
-                        that._storage.getDelta(id, postUndoSeq,
+                        self._storage.getDelta(id, postUndoSeq,
                             function(id, postUndoDelta) {
                                 var postUndoUndoSeq = postUndoDelta.undoSeq;
                                 var postUndoHash = postUndoDelta.curHash;
                                 var newMeta = _.extend(JDelta._deepCopy(postUndoDelta.meta), {operation:'undo'});
                                 var hashedDelta = { steps:undoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postUndoHash, seq:newSeq, undoSeq:postUndoUndoSeq, redoSeq:newRedoSeq };
-                                that._addHashedDelta(id, hashedDelta, onSuccess, onError);
+                                self._addHashedDelta(id, hashedDelta, onSuccess, onError);
                             }, onError);
                     } else {
                         var postUndoUndoSeq = null;
                         var postUndoHash = JDeltaDB._EMPTY_OBJ_HASH;
                         var newMeta = {operation:'undo'};
                         var hashedDelta = { steps:undoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postUndoHash, seq:newSeq, undoSeq:postUndoUndoSeq, redoSeq:newRedoSeq };
-                        that._addHashedDelta(id, hashedDelta, onSuccess, onError);
+                        self._addHashedDelta(id, hashedDelta, onSuccess, onError);
                     }
                 }, onError);
         }, onError);
@@ -352,7 +352,7 @@ JDeltaDB.DB.prototype.canRedo = function(id, onSuccess, onError) {
         }, onError);
 };
 JDeltaDB.DB.prototype.redo = function(id, onSuccess, onError) {
-    var that = this;
+    var self = this;
     this._storage.getLastDelta(id,
         function(id, lastDelta) {
             if(!lastDelta) {
@@ -367,17 +367,17 @@ JDeltaDB.DB.prototype.redo = function(id, onSuccess, onError) {
             }
             var newSeq = lastDelta.seq + 1;
             var newUndoSeq = -newSeq;
-            that._storage.getDelta(id, -lastDelta.redoSeq,
+            self._storage.getDelta(id, -lastDelta.redoSeq,
                 function(id, preRedoDelta) {
                     var redoSteps = JDelta.reverse(preRedoDelta);
                     var postRedoSeq = (-lastDelta.redoSeq) - 1;
-                    that._storage.getDelta(id, postRedoSeq,
+                    self._storage.getDelta(id, postRedoSeq,
                         function(id, postRedoDelta) {
                             var postRedoRedoSeq = postRedoDelta.redoSeq;
                             var postRedoHash = postRedoDelta.curHash;
                             var newMeta = _.extend(JDelta._deepCopy(postRedoDelta.meta), {operation:'redo'});
                             var hashedDelta = { steps:redoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postRedoHash, seq:newSeq, undoSeq:newUndoSeq, redoSeq:postRedoRedoSeq };
-                            that._addHashedDelta(id, hashedDelta, onSuccess, onError);
+                            self._addHashedDelta(id, hashedDelta, onSuccess, onError);
                         }, onError);
                 }, onError);
         }, onError);
@@ -402,16 +402,16 @@ JDeltaDB.DB.prototype.redo = function(id, onSuccess, onError) {
 // Delta Structure:  { steps:[...], meta:{...}, parentHash:str, curHash:str, seq:int, undoSeq:int, redoSeq:int }
 JDeltaDB.RamStorage = function() {
     // Guard against forgetting the 'new' operator:  "var db = JDeltaDB.RamStorage();"   instead of   "var db = new JDeltaDB.RamStorage();"
-    if(this === JDeltaDB)
+    if(!(this instanceof JDeltaDB.RamStorage))
         return new JDeltaDB.RamStorage();
     this._data = {};
 };
-JDeltaDB.RamStorage.prototype.createSync = function(id) {
+JDeltaDB.RamStorage.prototype.createStateSync = function(id) {
     if(this._data.hasOwnProperty(id))
         throw new Error('Already exists: '+id);
     this._data[id] = [];
 };
-JDeltaDB.RamStorage.prototype.delete = function(id, onSuccess, onError) {
+JDeltaDB.RamStorage.prototype.deleteState = function(id, onSuccess, onError) {  // function cannot be named 'delete' because that is a reserved keyword in IE.
     if(!this._data.hasOwnProperty(id)) {
         var err = new Error('Does not exist: '+id);
         if(onError) return onError(err);

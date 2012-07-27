@@ -7,7 +7,7 @@
 
 
 (function() {
-
+"use strict";
 
 // First, install ourselves and import our dependencies:
 var JDelta = {},
@@ -337,8 +337,8 @@ JDelta.create = function(state, operations) {
     for(i=0, ii=operations.length; i<ii; i++) {
         step = operations[i];
         if(step === undefined) {
-            console.log('STEP IS UNDEFINED!  Occurs on Internet Explorer...');
             console.log(operations);
+            throw new Error('STEP IS UNDEFINED!  Occurs on Internet Explorer when you have a trailing comma in one of your data structures.');
         }
         op = step.op;
         path = step.path  ||  '$';

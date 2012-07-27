@@ -4,6 +4,7 @@
 
 
 (function() {
+"use strict";
 
 // First, install ourselves and import our dependencies:
 var JDeltaSync = {},
@@ -31,17 +32,115 @@ if(typeof exports !== 'undefined') {
 JDeltaSync.VERSION = '0.1.0a';
 
 
-
-JDeltaSync.Client = function(url) {
+JDeltaSync._generateMsgID = function() {
+    var hexStr = Math.floor(Math.random()*0xffffffff).toString(16);
+    while(hexStr.length < 8) hexStr = '0'+hexStr;
+    return '0x' + hexStr;
+};
+JDeltaSync.Client = function(db, url) {
     // Guard against forgetting the 'new' operator:
-    if(this === JDeltaSync)
-        return new JDeltaSync.Client(url);
+    if(!(this instanceof JDeltaSync.Client))
+        return new JDeltaSync.Client(db, url);
     if(!url)
         throw new Error('You must provide a base url.');
     this._url = url;
     this._sendQueue = [];
-    this._sentQueue = [];
-    this._receiveQueue = [];
+    this._resetQueue = {};
+    this._MATCH_ALL_REGEX = /.*/;
+    this._MAX_SEND_BUNDLE_BYTES = 100*1024;
+    this._dbEventCallback = _.bind(JDeltaSync.Client.prototype._addToSendQueue, this);
+    this._setDB(db);
+    this._sending = false;
+    this._doSend = _.debounce(_.bind(JDeltaSync.Client.prototype._rawDoSend, this), 10);
+};
+JDeltaSync.Client.prototype._setDB = function(db) {
+    if(this._db) {
+        this._db.off(this._MATCH_ALL_REGEX, '!', this._dbEventCallback);
+        // Do i need to clear the send/reset queues?
+        throw new Error('unregistration of old DB is not fully implemented yet.');
+    }
+    this._db = db;
+    db.on(this._MATCH_ALL_REGEX, '!', this._dbEventCallback);
+};
+JDeltaSync.Client.prototype._triggerSend = function() {
+    if(!this._sending)
+        this._doSend();
+};
+JDeltaSync.Client.prototype._rawDoSend = function() {
+    var self = this;
+    if(!this._sendQueue.length) return;  // Nothing to send.
+    if(this._sending) return;            // Already sending.
+    this._sending = true;
+    var bundle = [],
+        bundleBytes = 0,
+        i, ii;
+    for(i=0, ii=this._sendQueue.length; i<ii; i++) {
+        bundle[bundle.length] = this._sendQueue[i];
+        bundleBytes += JSON.stringify(this._sendQueue[i]).length;  // Not really bytes... but, whatever.
+        if(bundleBytes > this._MAX_SEND_BUNDLE_BYTES) break;
+    }
+    jQuery.ajax({
+        url:this._url+'/clientSend',
+        type:'POST',
+        data:{bundle:JSON.stringify(bundle)},
+        dataType:'json',
+        success:function(data, retCodeStr, jqXHR) {
+            if(!_.isArray(data))
+                throw new Error('Expected array from server!');
+            var needToReset = {};
+            while(data.length) {
+                if(data[0].msgID !== self._sendQueue[0].msgID)
+                    throw new Error('msgID did not match!');
+                switch(data[0].result) {
+
+                    case 'ok':
+                        self._sendQueue.splice(0, 1);
+                        data.splice(0, 1);
+                        break;
+
+                    case 'fail':
+                        needToReset[self._sendQueue[0].id] = true;
+                        self._sendQueue.splice(0, 1);
+                        data.splice(0, 1);
+                        break;
+
+                    default:
+                        throw new Error('Unknown result: '+result);
+                }
+            }
+            var id;
+            for(id in needToReset) if(needToReset.hasOwnProperty(id)) {
+                self._addToResetQueue(id);
+            }
+        },
+        error:function(jqXHR, retCodeStr, exceptionObj) {
+            // Receiving exceptionObj = 'Service Unavailable'.
+            throw exceptionObj;
+        },
+        complete:function(jqXHR, retCodeStr) {
+            self._sending = false;
+            if(self._sendQueue.length) {
+                setTimeout(_.bind(JDeltaSync.Client.prototype._rawDoSend, self), 1);
+            }
+        }
+    });
+};
+JDeltaSync.Client.prototype._startResetQueueWorker = function() {
+};
+JDeltaSync.Client.prototype._startReceiveWorker = function() {
+};
+JDeltaSync.Client.prototype._addToResetQueue = function(id) {
+    this._resetQueue[id] = true;
+    // Clear from send queue:
+    for(var i=this._sendQueue.length-1; i>=0; i--) {
+        if(this._sendQueue[i].id === id)
+            this._sendQueue.splice(i, 1);
+    }
+};
+JDeltaSync.Client.prototype._addToSendQueue = function(id, data) {
+    if(this._resetQueue.hasOwnProperty(id)) return;  // Drop the item cuz we're going to reset anyway.
+    this._sendQueue[this._sendQueue.length] = {msgID:JDeltaSync._generateMsgID(), id:id, data:data};
+    this._triggerSend();
 };
 JDeltaSync.Client.prototype.listStates = function(ids, onSuccess, onError) {
     // Fetches state infos from server.  Does *not* use/affect the queue.
@@ -55,9 +154,7 @@ JDeltaSync.Client.prototype.listStates = function(ids, onSuccess, onError) {
     if(!ids.length)
         return onSuccess([]);
     jQuery.ajax({
-        url:this._url,
-        data:{cmd:'listStates',
-              ids:JSON.stringify(ids)},
+        url:this._url+'/query?cmd=listStates&ids='+JSON.stringify(ids),
         type:'GET',
         dataType:'json',
         success:function(data, retCodeStr, jqXHR) {
@@ -88,9 +185,7 @@ JDeltaSync.Client.prototype.listStates = function(ids, onSuccess, onError) {
 JDeltaSync.Client.prototype._listStatesRegex = function(idRegex, onSuccess, onError) {
     var regexStr = idRegex.toString();
     jQuery.ajax({
-        url:this._url,
-        data:{cmd:'listStatesRegex',
-              idRegex:regexStr},
+        url:this._url+'/query?cmd=listStatesRegex&ids='+regexStr,
         type:'GET',
         dataType:'json',
         success:function(data, retCodeStr, jqXHR) {
@@ -119,9 +214,7 @@ JDeltaSync.Client.prototype.fetchDeltas = function(items, onSuccess, onError) {
     if(!items.length)
         return onSucceess([]);
     jQuery.ajax({
-        url:this._url,
-        data:{cmd:'fetchDeltas',
-              items:JSON.stringify(items)},
+        url:this._url+'/query?cmd=fetchDeltas&items='+JSON.stringify(items),
         type:'GET',
         dataType:'json',
         success:function(data, retCodeStr, jqXHR) {
@@ -146,7 +239,44 @@ JDeltaSync.Client.prototype.fetchDeltas = function(items, onSuccess, onError) {
 
 
 
-JDeltaSync.sebwebHandler = function(syncServer) {
+JDeltaSync.sebwebHandler_clientSend = function(syncServer) {
+    var sebweb = require('sebweb');
+    return sebweb.PostParser(function(req, res, onSuccess, onError) {
+        var bundleArray = req.formidable_form.fields.bundle;
+        if(!_.isArray(bundleArray)) {
+            var err = new Error('No Bundle!');
+            if(onError) return onError(err);
+            else throw err;
+        }
+        if(bundleArray.length !== 1) {
+            var err = new Error('Wrong Bundle Length!');
+            if(onError) return onError(err);
+            else throw err;
+        }
+        var bundleStr = bundleArray[0];
+        if(!bundleStr) {
+            var err = new Error('Blank Bundle!');
+            if(onError) return onError(err);
+            else throw err;
+        }
+        if(bundleStr.charAt(0) !== '['  ||  bundleStr.charAt(bundleStr.length-1) !== ']') {
+            var err = new Error('Bundle missing [] chars!');
+            if(onError) return onError(err);
+            else throw err;
+        }
+        var bundle = JSON.parse(bundleStr),
+            result = [],
+            i, ii;
+        for(i=0, ii=bundle.length; i<ii; i++) {
+            result[result.length] = {msgID:bundle[i].msgID, result:'ok'};
+        }
+        res.setHeader('Content-Type', 'application/json');
+        res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+        res.end(JSON.stringify(result));
+        onSuccess();
+    });
+};
+JDeltaSync.sebwebHandler_query = function(syncServer) {
     return function(req, res, onSuccess, onError) {
         var standardOnSuccess = function(result) {
             res.setHeader('Content-Type', 'application/json');
@@ -202,7 +332,7 @@ JDeltaSync.sebwebHandler = function(syncServer) {
 
 
 JDeltaSync._AsyncTracker = function(onSuccess) {
-    if(this === JDeltaSync) 
+    if(!(this instanceof JDeltaSync._AsyncTracker)) 
         return new JDeltaSync._AsyncTracker(onSuccess);
     if(!onSuccess)
         throw new Error('You must provide an onSuccess function.');
@@ -226,7 +356,7 @@ JDeltaSync._AsyncTracker.prototype.checkForEnd = function() {
 
 JDeltaSync.Server = function(db) {
     // Guard against forgetting the 'new' operator:
-    if(this === JDeltaSync)
+    if(!(this instanceof JDeltaSync.Server))
         return new JDeltaSync.Server(db);
     if(!db)
         throw new Error("Expected a 'db' arg.");
@@ -263,12 +393,12 @@ JDeltaSync.Server.prototype.listStatesRegex = function(idRegex, onSuccess, onErr
         if(onError) return onError(err);
         else throw err;
     }
-    var that = this;
+    var self = this;
     var tracker = JDeltaSync._AsyncTracker(onSuccess);
     this._db.iterStates(idRegex, function(id, state) {
         if(tracker.thereWasAnError) return;
         tracker.numOfPendingCallbacks++;
-        that._db._storage.getLastDelta(id, function(id, delta) {
+        self._db._storage.getLastDelta(id, function(id, delta) {
             tracker.out[tracker.out.length] = {id:id, lastDeltaSeq:delta.seq, lastDeltaHash:delta.curHash};
             tracker.checkForEnd();
         }, function(err) {

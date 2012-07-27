@@ -3,6 +3,7 @@
 <head>
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
   <title>JDelta Test Server</title>
+  <script type="text/javascript" src="/static_cached/js/firebug-lite/build/firebug-lite.js"></script>
   <script type="text/javascript" src="js/json2.js"></script>
   <script type="text/javascript" src="js/jquery.js"></script>
   <script type="text/javascript" src="js/underscore.js"></script>
@@ -12,7 +13,6 @@
   <script type="text/javascript" src="js/JDeltaAssert.js"></script>
   <script type="text/javascript" src="js/JDeltaDB.js"></script>
   <script type="text/javascript" src="js/JDeltaSync.js"></script>
-    <script type="text/javascript" src="/static_cached/js/firebug-lite/build/firebug-lite.js"></script>
   <script type="text/javascript">
     $(function() {
         $('p#jdelta_1').text('Running tests.  See console output for any errors...');
@@ -231,7 +231,7 @@ var state = {a:1, b:[2,'3',4]};
 var d = JDelta.create(state, [{op:'create', key:'c', value:5},
                               {op:'arrayRemove', path:'$.b', key:1},
                               {op:'arrayInsert', path:'$.b', key:1, value:3},
-                              {op:'update', path:'$.b', key:1, value:'three'},
+                              {op:'update', path:'$.b', key:1, value:'three'}
                               ]);
 JDelta.patch(null, state, d, dispatcher);
 assert.deepEqual(state, {"a":1,"b":[2,"three",4],"c":5});
@@ -386,15 +386,27 @@ console.log('All Tests Passed.  :)');
         $('p#jdelta_1').text('All Tests Passed.');
     });
 
+var db = JDeltaDB.DB();
+var syncClient = JDeltaSync.Client(db, '/rt_test');
 
 var client_listStates = function() {
-    JDeltaSync.Client('/rt_test').listStates(['a','b','c'], function(data){console.log('listStates!', data, data.length)});
+    syncClient.listStates(['a','b','c'], function(data){console.log('listStates!', data, data.length)});
 };
 var client_listStatesRegex = function() {
-    JDeltaSync.Client('/rt_test').listStates(/^a$|^b$|^c$/, function(data){console.log('listStatesRegex!', data, data.length)});
+    syncClient.listStates(/^a$|^b$|^c$/, function(data){console.log('listStatesRegex!', data, data.length)});
 };
 var client_fetchDeltas = function() {
-    JDeltaSync.Client('/rt_test').fetchDeltas([{id:'a'},{id:'b', seq:1},{id:'c'}], function(data){console.log('fetchDeltas!', data, data.length)});
+    syncClient.fetchDeltas([{id:'a'},{id:'b', seq:1},{id:'c'}], function(data){console.log('fetchDeltas!', data, data.length)});
+};
+var db_createX = function() {
+    db.createState('x');
+    db.edit('x', [{op:'create', key:'A', value:[]}]);
+};
+var db_prependX = function() {
+    db.edit('x', [{op:'arrayInsert', path:'$.A', key:0, value:new Date().getTime()}]);
+};
+var db_deleteX = function() {
+    db.deleteState('x');
 };
 
   </script>
@@ -404,5 +416,8 @@ var client_fetchDeltas = function() {
 <p><button type=button onclick="client_listStates()">JDeltaSync.Client.listStates</button></p>
 <p><button type=button onclick="client_listStatesRegex()">JDeltaSync.Client.listStatesRegex</button></p>
 <p><button type=button onclick="client_fetchDeltas()">JDeltaSync.Client.fetchDeltas</button></p>
+<p><button type=button onclick="db_createX()">JDeltaDB.DB.createState</button></p>
+<p><button type=button onclick="db_prependX()">JDeltaDB.DB.edit</button></p>
+<p><button type=button onclick="db_deleteX()">JDeltaDB.DB.deleteState</button></p>
 </body>
 </html>

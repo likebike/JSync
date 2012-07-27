@@ -222,7 +222,7 @@ var state = {a:1, b:[2,'3',4]};
 var d = JDelta.create(state, [{op:'create', key:'c', value:5},
                               {op:'arrayRemove', path:'$.b', key:1},
                               {op:'arrayInsert', path:'$.b', key:1, value:3},
-                              {op:'update', path:'$.b', key:1, value:'three'},
+                              {op:'update', path:'$.b', key:1, value:'three'}
                               ]);
 JDelta.patch(null, state, d, dispatcher);
 assert.deepEqual(state, {"a":1,"b":[2,"three",4],"c":5});
