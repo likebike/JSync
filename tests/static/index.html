@@ -3,7 +3,9 @@
 <head>
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
   <title>JDelta Test Server</title>
-  <script type="text/javascript" src="/static_cached/js/firebug-lite/build/firebug-lite.js"></script>
+  <!--
+    <script type="text/javascript" src="/static_cached/js/firebug-lite/build/firebug-lite.js"></script>
+       -->
   <script type="text/javascript" src="js/json2.js"></script>
   <script type="text/javascript" src="js/jquery.js"></script>
   <script type="text/javascript" src="js/underscore.js"></script>
@@ -399,14 +401,22 @@ var client_fetchDeltas = function() {
     syncClient.fetchDeltas([{id:'a'},{id:'b', seq:1},{id:'c'}], function(data){console.log('fetchDeltas!', data, data.length)});
 };
 var db_createX = function() {
-    db.createState('x');
-    db.edit('x', [{op:'create', key:'A', value:[]}]);
+    db.createState('X');
+    db.edit('X', [{op:'create', key:'A', value:[]}]);
 };
 var db_prependX = function() {
-    db.edit('x', [{op:'arrayInsert', path:'$.A', key:0, value:new Date().getTime()}]);
+    db.edit('X', [{op:'arrayInsert', path:'$.A', key:0, value:new Date().getTime()}]);
 };
 var db_deleteX = function() {
-    db.deleteState('x');
+    db.deleteState('X');
+};
+var db_resetAll = function() {
+    syncClient.listStates(/^.*$/, function(data){
+        var i, ii;
+        for(i=0, ii=data.length; i<ii; i++) {
+            syncClient.reset(data[i].id);
+        }
+    });
 };
 
   </script>
@@ -419,5 +429,6 @@ var db_deleteX = function() {
 <p><button type=button onclick="db_createX()">JDeltaDB.DB.createState</button></p>
 <p><button type=button onclick="db_prependX()">JDeltaDB.DB.edit</button></p>
 <p><button type=button onclick="db_deleteX()">JDeltaDB.DB.deleteState</button></p>
+<p><button type=button onclick="db_resetAll()">Reset All</button></p>
 </body>
 </html>

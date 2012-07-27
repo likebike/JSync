@@ -21,7 +21,7 @@ var router = sebweb.Router([
     {path:'^/rt_test/clientSend$', func:JDeltaSync.sebwebHandler_clientSend(syncServer)},
     {path:'^/static_cached/(?<path>.*)$', func:sebweb.StaticDir(__dirname+'/static', {indexFilename:'index.html', forceExpires:true})},
     {path:'^/(?<path>.*)$', func:sebweb.StaticDir(__dirname+'/static', {indexFilename:'index.html'})},
-]);
+], {logReqStart:true});
 
 var server = http.createServer(router);
 server.listen(BIND_PORT, BIND_IP);

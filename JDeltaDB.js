@@ -5,7 +5,6 @@
 
 // Many ideas inspired by CouchDB and GIT.
 
-console.log('AT MODULE START');
 
 (function() {
 "use strict";
@@ -23,7 +22,6 @@ if(typeof exports !== 'undefined') {
     // Assume that we are the time authority.
 } else if(typeof window !== 'undefined') {
     // We are in a browser.
-    console.log('IN WINDOW LOAD SECTION');
     window.JDeltaDB = JDeltaDB;
     JDelta = window.JDelta;
     _ = window._;
@@ -159,10 +157,13 @@ JDeltaDB.DB.prototype.createState = function(id) {
     this._trigger('!', id, {op:'createState'});
 };
 JDeltaDB.DB.prototype.deleteState = function(id, onSuccess, onError) {
-    if(!this._states.hasOwnProperty(id))
-        throw new Error('State does not exist: '+id);
+    if(!this._states.hasOwnProperty(id)) {
+        var err = new Error('State does not exist: '+id);
+        if(onError) return onError(err);
+        else throw err;
+    }
     var self = this;
-    this._storage.deleteState(id, function() {
+    this._storage.deleteState(id, function(id) {
         self._trigger('!', id, {op:'deleteState'});
         delete self._states[id];
         if(onSuccess) onSuccess();
@@ -244,7 +245,7 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError) 
                 parentHash = lastDelta.curHash;
             }
             if(delta.seq !== parentSeq + 1) {
-                var err = new Error('invalid sequence!');
+                var err = new Error('invalid sequence! '+delta.seq+' != '+(parentSeq+1));
                 if(onError) return onError(err);
                 else throw err;
             }
@@ -418,7 +419,7 @@ JDeltaDB.RamStorage.prototype.deleteState = function(id, onSuccess, onError) {  
         else throw err;
     }
     delete this._data[id];
-    onSuccess();
+    onSuccess(id);
 };
 JDeltaDB.RamStorage.prototype._getRawDeltas = function(id, onSuccess, onError) {
     if(!onSuccess) throw new Error('You need to provide a callback.');
@@ -471,11 +472,10 @@ JDeltaDB.RamStorage.prototype.getLastDelta = function(id, onSuccess, onError) {
         }, onError);
 };
 JDeltaDB.RamStorage.prototype.addDelta = function(id, delta, onSuccess, onError) {
-    if(!onSuccess) throw new Error('You need to provide a callback.');
     this._getRawDeltas(id,
         function(deltaList) {
             deltaList[deltaList.length] = delta;
-            onSuccess();
+            if(onSuccess) onSuccess();
         }, onError);
 };
 

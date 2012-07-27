@@ -52,6 +52,7 @@ JDeltaSync.Client = function(db, url) {
     this._setDB(db);
     this._sending = false;
     this._doSend = _.debounce(_.bind(JDeltaSync.Client.prototype._rawDoSend, this), 10);
+    this._doReset = _.debounce(_.bind(JDeltaSync.Client.prototype._rawDoReset, this), 10);
 };
 JDeltaSync.Client.prototype._setDB = function(db) {
     if(this._db) {
@@ -61,6 +62,11 @@ JDeltaSync.Client.prototype._setDB = function(db) {
     }
     this._db = db;
     db.on(this._MATCH_ALL_REGEX, '!', this._dbEventCallback);
+};
+JDeltaSync.Client.prototype._addToSendQueue = function(id, data) {
+    if(this._resetQueue.hasOwnProperty(id)) return;  // Drop the item cuz we're going to reset anyway.
+    this._sendQueue[this._sendQueue.length] = {msgID:JDeltaSync._generateMsgID(), id:id, data:data};
+    this._triggerSend();
 };
 JDeltaSync.Client.prototype._triggerSend = function() {
     if(!this._sending)
@@ -110,7 +116,7 @@ JDeltaSync.Client.prototype._rawDoSend = function() {
             }
             var id;
             for(id in needToReset) if(needToReset.hasOwnProperty(id)) {
-                self._addToResetQueue(id);
+                self.reset(id);
             }
         },
         error:function(jqXHR, retCodeStr, exceptionObj) {
@@ -125,22 +131,99 @@ JDeltaSync.Client.prototype._rawDoSend = function() {
         }
     });
 };
-JDeltaSync.Client.prototype._startResetQueueWorker = function() {
-};
-JDeltaSync.Client.prototype._startReceiveWorker = function() {
-};
-JDeltaSync.Client.prototype._addToResetQueue = function(id) {
+JDeltaSync.Client.prototype.reset = function(id) {
     this._resetQueue[id] = true;
     // Clear from send queue:
     for(var i=this._sendQueue.length-1; i>=0; i--) {
         if(this._sendQueue[i].id === id)
             this._sendQueue.splice(i, 1);
     }
+    this._triggerReset();
 };
-JDeltaSync.Client.prototype._addToSendQueue = function(id, data) {
-    if(this._resetQueue.hasOwnProperty(id)) return;  // Drop the item cuz we're going to reset anyway.
-    this._sendQueue[this._sendQueue.length] = {msgID:JDeltaSync._generateMsgID(), id:id, data:data};
-    this._triggerSend();
+JDeltaSync.Client.prototype._triggerReset = function() {
+    if(!this._resetting)
+        this._doReset();
+};
+JDeltaSync.Client.prototype._rawDoReset = function() {
+    var self = this;
+    var idsToReset = [],
+        id;
+    for(id in this._resetQueue) if(this._resetQueue.hasOwnProperty(id)) {
+        idsToReset[idsToReset.length] = {id:id};
+    }
+    if(!idsToReset.length) return; // Nothing to reset.
+    if(this._resetting) return;    // Already resetting.
+    this._resetting = true;
+    this.fetchDeltas(idsToReset, function(data) {
+        var idsIRequested = {},
+            idsIReceived = {},
+            i, ii, id;
+        for(i=0, ii=idsToReset.length; i<ii; i++) {
+            idsIRequested[idsToReset[i].id] = true;
+        }
+        for(i=0, ii=data.length; i<ii; i++) {
+            idsIReceived[data[i].id] = true;
+        }
+        // Delete items that went away:
+        for(id in idsIRequested) if(idsIRequested.hasOwnProperty(id)) {
+            if(!idsIReceived.hasOwnProperty(id)) {
+                if(self._db._states.hasOwnProperty(id))
+                    self._db.deleteState(id);
+            }
+        }
+        // Create new items:
+        for(id in idsIReceived) if(idsIReceived.hasOwnProperty(id)) {
+            if(!self._db._states.hasOwnProperty(id))
+                self._db.createState(id);
+        }
+        // Reset items I got data for:
+        var tracker = JDeltaSync._AsyncTracker(function(out) {
+            var id2;
+            for(id2 in idsIReceived) if(idsIReceived.hasOwnProperty(id2)) {
+                self._db._storage.createStateSync(id2);
+            }
+            var tracker2 = JDeltaSync._AsyncTracker(function(out2) {
+                var id3;
+                for(id3 in idsIReceived) if(idsIReceived.hasOwnProperty(id3)) {
+                    self._db.rollback(id3);
+                    delete self._resetQueue[id3];
+                }
+                var i, ii;
+                for(i=0, ii=idsToReset; i<ii; i++) {
+                    delete self._resetQueue[idsToReset[i]];
+                }
+                self._resetting = false;
+                setTimeout(_.bind(JDeltaSync.Client.prototype._rawDoReset, self), 1);
+            });
+            var i, ii;
+            for(i=0, ii=data.length; i<ii; i++) {
+                tracker2.numOfPendingCallbacks++;
+                self._db._storage.addDelta(data[i].id, data[i].delta, function() {
+                    tracker2.checkForEnd();
+                },
+                function(err) {
+                    if(typeof console !== 'undefined') console.log('RESET-ERROR2:', err);
+                    tracker2.checkForEnd();
+                });
+            }
+            tracker2.checkForEnd();
+        });
+        for(id in idsIReceived) if(idsIReceived.hasOwnProperty(id)) {
+            tracker.numOfPendingCallbacks++;
+            self._db._storage.deleteState(id, function(id) {
+                tracker.checkForEnd();
+            },
+            (function(id) {
+                return function(err) {
+                    if(typeof console !== 'undefined') console.log('RESET-ERROR:', id, err);
+                    tracker.checkForEnd();
+                };
+             })(id));
+        }
+        tracker.checkForEnd();
+    });
+};
+JDeltaSync.Client.prototype._startReceiveWorker = function() {
 };
 JDeltaSync.Client.prototype.listStates = function(ids, onSuccess, onError) {
     // Fetches state infos from server.  Does *not* use/affect the queue.
@@ -185,7 +268,7 @@ JDeltaSync.Client.prototype.listStates = function(ids, onSuccess, onError) {
 JDeltaSync.Client.prototype._listStatesRegex = function(idRegex, onSuccess, onError) {
     var regexStr = idRegex.toString();
     jQuery.ajax({
-        url:this._url+'/query?cmd=listStatesRegex&ids='+regexStr,
+        url:this._url+'/query?cmd=listStatesRegex&idRegex='+regexStr,
         type:'GET',
         dataType:'json',
         success:function(data, retCodeStr, jqXHR) {
@@ -264,16 +347,13 @@ JDeltaSync.sebwebHandler_clientSend = function(syncServer) {
             if(onError) return onError(err);
             else throw err;
         }
-        var bundle = JSON.parse(bundleStr),
-            result = [],
-            i, ii;
-        for(i=0, ii=bundle.length; i<ii; i++) {
-            result[result.length] = {msgID:bundle[i].msgID, result:'ok'};
-        }
-        res.setHeader('Content-Type', 'application/json');
-        res.setHeader('Cache-Control', 'no-cache, must-revalidate');
-        res.end(JSON.stringify(result));
-        onSuccess();
+        var bundle = JSON.parse(bundleStr);
+        var result = syncServer.clientSend(bundle, function(result) {
+            res.setHeader('Content-Type', 'application/json');
+            res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+            res.end(JSON.stringify(result));
+            onSuccess();
+        }, onError);
     });
 };
 JDeltaSync.sebwebHandler_query = function(syncServer) {
@@ -331,7 +411,7 @@ JDeltaSync.sebwebHandler_query = function(syncServer) {
 };
 
 
-JDeltaSync._AsyncTracker = function(onSuccess) {
+JDeltaSync._AsyncTracker = function(onSuccess) {  // Especially useful for tracking parallel async actions.
     if(!(this instanceof JDeltaSync._AsyncTracker)) 
         return new JDeltaSync._AsyncTracker(onSuccess);
     if(!onSuccess)
@@ -353,6 +433,25 @@ JDeltaSync._AsyncTracker.prototype.checkForEnd = function() {
     }
 };
 
+JDeltaSync._runAsyncChain = function(chain, onSuccess, onError) {
+    var i=-1;
+    if(!_.isArray(chain)) throw new Error("Expected 'chain' to be an Array.");
+    onSuccess = onSuccess || function(){};
+    onError = onError || function(err) { throw err };
+    var next = function() {
+        i += 1;
+        if(i>chain.length) throw new Error('i>chain.length!'); // Should never happen.
+        if(i==chain.length) {
+            onSuccess();
+            return;
+        }
+        chain[i](next, onError);
+    };
+    next();
+};
+
+
+
 
 JDeltaSync.Server = function(db) {
     // Guard against forgetting the 'new' operator:
@@ -362,6 +461,64 @@ JDeltaSync.Server = function(db) {
         throw new Error("Expected a 'db' arg.");
     this._db = db;
     this._clientConnections = {};
+};
+JDeltaSync.Server.prototype.clientSend = function(bundle, onSuccess, onError) {
+    var self = this,
+        chain = [],
+        result = [],
+        i, ii;
+    for(i=0, ii=bundle.length; i<ii; i++) {
+        chain[chain.length] = (function(bundleItem) {
+            return function(next, onError) {
+                switch(bundleItem.data.op) {
+
+                    case 'createState':
+                        if(self._db._states.hasOwnProperty(bundleItem.id)) {
+                            console.log('State already exists: '+bundleItem.id);
+                            result[result.length] = {msgID:bundleItem.msgID, result:'fail'};
+                        } else {
+                            self._db.createState(bundleItem.id);
+                            result[result.length] = {msgID:bundleItem.msgID, result:'ok'};
+                        }
+                        next();
+                        break;
+
+                    case 'deltaApplied':
+                        try {
+                            self._db._addHashedDelta(bundleItem.id, bundleItem.data.delta, function() {
+                                result[result.length] = {msgID:bundleItem.msgID, result:'ok'};
+                                next();
+                            }, function(err) {
+                                result[result.length] = {msgID:bundleItem.msgID, result:'fail'};
+                                next();
+                            });
+                        } catch(e) {
+                            result[result.length] = {msgID:bundleItem.msgID, result:'fail'};
+                            next();
+                        }
+                        break;
+
+                    case 'deleteState':
+                        self._db.deleteState(bundleItem.id, function() {
+                            result[result.length] = {msgID:bundleItem.msgID, result:'ok'};
+                            next();
+                        }, function(err) {
+                            result[result.length] = {msgID:bundleItem.msgID, result:'fail'};
+                            next();
+                        });
+                        break;
+
+                    default:
+                        console.log('Unknown sendClient op: '+bundleItem.data.op);
+                        result[result.length] = {msgID:bundleItem.msgID, result:'fail'};
+                        next();
+                }
+            };
+        })(bundle[i]);
+    }
+    JDeltaSync._runAsyncChain(chain, function() {
+        onSuccess(result);
+    }, onError);
 };
 JDeltaSync.Server.prototype.listStates = function(ids, onSuccess, onError) {
     if(!_.isArray(ids)) {
