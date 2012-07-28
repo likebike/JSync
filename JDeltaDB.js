@@ -13,18 +13,24 @@
 var JDeltaDB = {},
     JDelta,
     _,
+    fs,
+    path,
     serverTimeOffset = 0;
 if(typeof exports !== 'undefined') {
     // We are on Node.
     exports.JDeltaDB = JDeltaDB;
     JDelta = require('./JDelta.js').JDelta;
     _ = require('underscore');
+    fs = require('fs');
+    path = require('path');
     // Assume that we are the time authority.
 } else if(typeof window !== 'undefined') {
     // We are in a browser.
     window.JDeltaDB = JDeltaDB;
     JDelta = window.JDelta;
     _ = window._;
+    fs = null;
+    path = null;
     jQuery = window.jQuery  ||  window.$;
     jQuery.ajax({url:'/gettime'}).always(function(arg1, arg2, arg3) {
         var xhr = arg1;
@@ -42,13 +48,40 @@ JDeltaDB.VERSION = '0.1.0a';
 
 
 // You can sort of think of JDeltaDB like a "Delta Integral"; It maintains the total "sums" of the deltas.
-JDeltaDB.DB = function(storage) {
+JDeltaDB.DB = function(storage, onSuccess, onError) {
     // Guard against forgetting the 'new' operator:  "var db = JDeltaDB.DB();"   instead of   "var db = new JDeltaDB.DB();"
     if(!(this instanceof JDeltaDB.DB))
-        return new JDeltaDB.DB(storage);
-    this._storage = storage || new JDeltaDB.RamStorage();
+        return new JDeltaDB.DB(storage, onSuccess, onError);
     this._states = {}; // State Structure: { state:json, dispatcher:obj }
     this._regexListeners = [];
+    this._storage = storage || new JDeltaDB.RamStorage();
+    this._load(onSuccess, onError);
+};
+JDeltaDB.DB.prototype._load = function(onSuccess, onError) {
+    var self = this;
+    this._storage.listIDs(function(ids) {
+        var tracker = JDeltaDB._AsyncTracker(function(out) {
+            if(onSuccess) onSuccess(self);
+        });
+        var id, i, ii;
+        for(i=0, ii=ids.length; i<ii; i++) {
+            tracker.numOfPendingCallbacks++;
+            id = ids[i];
+            if(!self._states.hasOwnProperty(id))
+                self.createState(id, true);
+            self.rollback(id, undefined, function(id) {
+                tracker.checkForEnd();
+            }, function(err) {
+                tracker.thereWasAnError = true;
+                if(onError) return onError(err);
+                else throw err;
+                tracker.checkForEnd();
+            });
+        }
+        tracker.checkForEnd();
+    }, function(err) {
+        throw err;
+    });
 };
 JDeltaDB.DB.prototype.on = function(id, event, callback) {
     if(!id)
@@ -142,10 +175,10 @@ JDeltaDB.DB.prototype._getRawState = function(id) {
         throw new Error('No such state: '+id);
     return this._states[id];
 };
-JDeltaDB.DB.prototype.createState = function(id) {
+JDeltaDB.DB.prototype.createState = function(id, doNotCreateInStorage) {
     if(this._states.hasOwnProperty(id))
         throw new Error('State already exists: '+id);
-    this._storage.createStateSync(id);
+    if(!doNotCreateInStorage) this._storage.createStateSync(id);  // 'doNotCreateInStorage' is useful when loading a storage database and re-creating the equivalent states in the DB.  In this case, the data is already in the storage, so no need to add it again (plus, it would cause an error).
     this._states[id] = {state:{}, dispatcher:null};
     var i, ii, l;
     for(i=0, ii=this._regexListeners.length; i<ii; i++) {
@@ -179,7 +212,7 @@ JDeltaDB.DB.prototype.rollback = function(id, toSeq, onSuccess, onError) {
                     function(o){
                         state.state = o;
                         self._trigger('!', id, {op:'reset'});
-                        if(onSuccess) onSuccess();
+                        if(onSuccess) onSuccess(id);
                     },
                     function(err){if(onError) onError(err);
                                   else throw err;});
@@ -402,16 +435,40 @@ JDeltaDB.DB.prototype.redo = function(id, onSuccess, onError) {
 
 
 // Delta Structure:  { steps:[...], meta:{...}, parentHash:str, curHash:str, seq:int, undoSeq:int, redoSeq:int }
-JDeltaDB.RamStorage = function() {
+JDeltaDB.RamStorage = function(filepath) {
     // Guard against forgetting the 'new' operator:  "var db = JDeltaDB.RamStorage();"   instead of   "var db = new JDeltaDB.RamStorage();"
     if(!(this instanceof JDeltaDB.RamStorage))
-        return new JDeltaDB.RamStorage();
+        return new JDeltaDB.RamStorage(filepath);
     this._data = {};
+    this._filepath = filepath;
+    this.save = _.debounce(_.bind(this._rawSave, this), 1000);
+    this._loadSync();
+};
+JDeltaDB.RamStorage.prototype._loadSync = function() {
+    if(!this._filepath) return;
+    if(path.existsSync(this._filepath))
+        this._data = JSON.parse(fs.readFileSync(this._filepath));
+};
+JDeltaDB.RamStorage.prototype._rawSave = function() {
+    if(!this._filepath) return;
+    var newFilepath = this._filepath + '.new';
+    fs.writeFileSync(newFilepath, JDelta.stringify(this._data, undefined, 2));
+    fs.renameSync(newFilepath, this._filepath);
+};
+JDeltaDB.RamStorage.prototype.listIDs = function(onSuccess, onError) {
+    var ids = [],
+        k;
+    for(k in this._data) if(this._data.hasOwnProperty(k)) {
+        ids[ids.length] = k;
+    }
+    ids.sort();
+    onSuccess(ids);
 };
 JDeltaDB.RamStorage.prototype.createStateSync = function(id) {
     if(this._data.hasOwnProperty(id))
         throw new Error('Already exists: '+id);
     this._data[id] = [];
+    this.save();
 };
 JDeltaDB.RamStorage.prototype.deleteState = function(id, onSuccess, onError) {  // function cannot be named 'delete' because that is a reserved keyword in IE.
     if(!this._data.hasOwnProperty(id)) {
@@ -420,6 +477,7 @@ JDeltaDB.RamStorage.prototype.deleteState = function(id, onSuccess, onError) {  
         else throw err;
     }
     delete this._data[id];
+    this.save();
     onSuccess(id);
 };
 JDeltaDB.RamStorage.prototype._getRawDeltas = function(id, onSuccess, onError) {
@@ -473,23 +531,14 @@ JDeltaDB.RamStorage.prototype.getLastDelta = function(id, onSuccess, onError) {
         }, onError);
 };
 JDeltaDB.RamStorage.prototype.addDelta = function(id, delta, onSuccess, onError) {
+    var self = this;
     this._getRawDeltas(id,
         function(deltaList) {
             deltaList[deltaList.length] = delta;
+            self.save();
             if(onSuccess) onSuccess();
         }, onError);
 };
-
-
-//JDeltaDB.RamStorage.prototype.listIDs = function() {
-//    var ids = [],
-//        k;
-//    for(k in this._data) if(this._data.hasOwnProperty(k)) {
-//        ids[ids.length] = k;
-//    }
-//    ids.sort();
-//    return ids;
-//};
 
 
 
@@ -507,6 +556,57 @@ JDeltaDB.SqliteStorage = function() {
     throw new Error('coming soon...');
 };
 
+
+
+
+
+
+
+
+
+
+
+
+JDeltaDB._AsyncTracker = function(onSuccess) {  // Especially useful for tracking parallel async actions.
+    if(!(this instanceof JDeltaDB._AsyncTracker)) 
+        return new JDeltaDB._AsyncTracker(onSuccess);
+    if(!onSuccess)
+        throw new Error('You must provide an onSuccess function.');
+    this.out = [];
+    this.thereWasAnError = false;
+    this.numOfPendingCallbacks = 1;  // You need to make an additional call to checkForEnd() after the iteration.
+    this._onSuccess = onSuccess;
+    this._onSuccessAlreadyCalled = false;
+};
+JDeltaDB._AsyncTracker.prototype.checkForEnd = function() {
+    this.numOfPendingCallbacks--;
+    if(this.thereWasAnError) return;
+    if(this.numOfPendingCallbacks < 0) throw new Error('This should never happen');
+    if(!this.numOfPendingCallbacks) {
+        if(this._onSuccessAlreadyCalled) throw new Error('This should never happen');
+        this._onSuccessAlreadyCalled = true;
+        this._onSuccess(this.out);
+    }
+};
+JDeltaDB._runAsyncChain = function(chain, onSuccess, onError) {
+    var i=-1;
+    if(!_.isArray(chain)) throw new Error("Expected 'chain' to be an Array.");
+    onSuccess = onSuccess || function(){};
+    onError = onError || function(err) { throw err };
+    var next = function() {
+        i += 1;
+        if(i>chain.length) throw new Error('i>chain.length!'); // Should never happen.
+        if(i==chain.length) {
+            onSuccess();
+            return;
+        }
+        chain[i](next, onError);
+    };
+    next();
+};
+
+
+
+
+
 })();
-
-

@@ -208,12 +208,12 @@ JDeltaSync.Client.prototype._rawDoReset = function() {
                 self._db.createState(id);
         }
         // Reset items I got data for:
-        var tracker = JDeltaSync._AsyncTracker(function(out) {
+        var tracker = JDeltaDB._AsyncTracker(function(out) {
             var id2;
             for(id2 in idsIReceived) if(idsIReceived.hasOwnProperty(id2)) {
                 self._db._storage.createStateSync(id2);
             }
-            var tracker2 = JDeltaSync._AsyncTracker(function(out2) {
+            var tracker2 = JDeltaDB._AsyncTracker(function(out2) {
                 var id3;
                 for(id3 in idsIReceived) if(idsIReceived.hasOwnProperty(id3)) {
                     self._db.rollback(id3);
@@ -318,7 +318,7 @@ JDeltaSync.Client.prototype._rawDoReceive = function() {
                     };
                 })(data[i]);
             }
-            JDeltaSync._runAsyncChain(chain, function() {
+            JDeltaDB._runAsyncChain(chain, function() {
                 self._receiving = false;
                 setTimeout(_.bind(JDeltaSync.Client.prototype._rawDoReceive, self), self.successLongPollReconnectMS);
             });
@@ -564,44 +564,6 @@ JDeltaSync.sebwebHandler_query = function(syncServer) {
 };
 
 
-JDeltaSync._AsyncTracker = function(onSuccess) {  // Especially useful for tracking parallel async actions.
-    if(!(this instanceof JDeltaSync._AsyncTracker)) 
-        return new JDeltaSync._AsyncTracker(onSuccess);
-    if(!onSuccess)
-        throw new Error('You must provide an onSuccess function.');
-    this.out = [];
-    this.thereWasAnError = false;
-    this.numOfPendingCallbacks = 1;  // You need to make an additional call to checkForEnd() after the iteration.
-    this._onSuccess = onSuccess;
-    this._onSuccessAlreadyCalled = false;
-};
-JDeltaSync._AsyncTracker.prototype.checkForEnd = function() {
-    this.numOfPendingCallbacks--;
-    if(this.thereWasAnError) return;
-    if(this.numOfPendingCallbacks < 0) throw new Error('This should never happen');
-    if(!this.numOfPendingCallbacks) {
-        if(this._onSuccessAlreadyCalled) throw new Error('This should never happen');
-        this._onSuccessAlreadyCalled = true;
-        this._onSuccess(this.out);
-    }
-};
-
-JDeltaSync._runAsyncChain = function(chain, onSuccess, onError) {
-    var i=-1;
-    if(!_.isArray(chain)) throw new Error("Expected 'chain' to be an Array.");
-    onSuccess = onSuccess || function(){};
-    onError = onError || function(err) { throw err };
-    var next = function() {
-        i += 1;
-        if(i>chain.length) throw new Error('i>chain.length!'); // Should never happen.
-        if(i==chain.length) {
-            onSuccess();
-            return;
-        }
-        chain[i](next, onError);
-    };
-    next();
-};
 
 
 
@@ -669,8 +631,12 @@ JDeltaSync.Server.prototype.clientReceive = function(clientID, req, onSuccess, o
             onSuccess(result);
             clientConn.lastActivityTime = new Date().getTime();
         };
+        var sendToLongPoll = clientConn.sendToLongPoll;
+        setTimeout(function() {  // Force the long-poll to execute before the server or filewalls close our connection.  The reason we need to do this from the server is becasue Chrome does not support the ajax 'timeout' option.
+            if(clientConn.sendToLongPoll === sendToLongPoll)
+                sendToLongPoll();
+        }, 100000);
     }
-
 };
 JDeltaSync.Server.prototype.clientSend = function(clientID, bundle, onSuccess, onError) {
     var self = this,
@@ -731,7 +697,7 @@ JDeltaSync.Server.prototype.clientSend = function(clientID, bundle, onSuccess, o
             };
         })(bundle[i]);
     }
-    JDeltaSync._runAsyncChain(chain, function() {
+    JDeltaDB._runAsyncChain(chain, function() {
         onSuccess(result);
     }, onError);
 };
@@ -741,7 +707,7 @@ JDeltaSync.Server.prototype.listStates = function(ids, onSuccess, onError) {
         if(onError) return onError(err);
         else throw err;
     }
-    var tracker = JDeltaSync._AsyncTracker(onSuccess);
+    var tracker = JDeltaDB._AsyncTracker(onSuccess);
     var i, ii;
     for(i=0, ii=ids.length; i<ii; i++) {
         if(tracker.thereWasAnError) break;
@@ -766,7 +732,7 @@ JDeltaSync.Server.prototype.listStatesRegex = function(idRegex, onSuccess, onErr
         else throw err;
     }
     var self = this;
-    var tracker = JDeltaSync._AsyncTracker(onSuccess);
+    var tracker = JDeltaDB._AsyncTracker(onSuccess);
     this._db.iterStates(idRegex, function(id, state) {
         if(tracker.thereWasAnError) return;
         tracker.numOfPendingCallbacks++;
@@ -791,7 +757,7 @@ JDeltaSync.Server.prototype.fetchDeltas = function(items, onSuccess, onError) {
         if(onError) return onError(err);
         else throw err;
     }
-    var tracker = JDeltaSync._AsyncTracker(onSuccess);
+    var tracker = JDeltaDB._AsyncTracker(onSuccess);
     var i, ii, item, id, seq;
     for(i=0, ii=items.length; i<ii; i++) {
         if(tracker.thereWasAnError) break;
