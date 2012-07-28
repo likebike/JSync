@@ -254,7 +254,8 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError) 
                 if(onError) return onError(err);
                 else throw err;
             }
-            delta.meta.date = new Date(new Date().getTime() + serverTimeOffset).toUTCString();
+            if(!delta.meta.hasOwnProperty('date'))
+                delta.meta.date = new Date(new Date().getTime() + serverTimeOffset).toUTCString();
             try {
                 JDelta.patch(id, state.state, delta, state.dispatcher);
                 if(JDelta._hash(JDelta.stringify(state.state)) !== delta.curHash) {

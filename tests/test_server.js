@@ -19,6 +19,7 @@ var syncServer = JDeltaSync.Server(db);
 var router = sebweb.Router([
     {path:'^/rt_test/query$',      func:JDeltaSync.sebwebHandler_query(syncServer)},
     {path:'^/rt_test/clientSend$', func:JDeltaSync.sebwebHandler_clientSend(syncServer)},
+    {path:'^/rt_test/clientReceive$', func:JDeltaSync.sebwebHandler_clientReceive(syncServer)},
     {path:'^/static_cached/(?<path>.*)$', func:sebweb.StaticDir(__dirname+'/static', {indexFilename:'index.html', forceExpires:true})},
     {path:'^/(?<path>.*)$', func:sebweb.StaticDir(__dirname+'/static', {indexFilename:'index.html'})},
 ], {logReqStart:true});

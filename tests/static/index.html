@@ -3,9 +3,9 @@
 <head>
   <meta http-equiv="X-UA-Compatible" content="IE=edge">
   <title>JDelta Test Server</title>
-  <!--
+  <!--[if IE]>
     <script type="text/javascript" src="/static_cached/js/firebug-lite/build/firebug-lite.js"></script>
-       -->
+  <![endif]-->
   <script type="text/javascript" src="js/json2.js"></script>
   <script type="text/javascript" src="js/jquery.js"></script>
   <script type="text/javascript" src="js/underscore.js"></script>
@@ -92,23 +92,28 @@ assert.equal(JDelta._hash('ab'), 1183506802);
 assert.equal(JDelta._hash('ac'), 0x8d15c304);
 assert.equal(JDelta._hash('The quick brown fox jumps over the lazy dog'), 0xb6aad44c);
 assert.equal(JDelta._hash('加油！'), 0x625296d2);
-var s = 'The quick brown fox jumps over the lazy dog. 加油！';
-var bigS = '';
-var startTime = new Date().getTime();
-var loopsToDo = 1024*1024;
-var bigSHash = 0x42fc6236;
-if(typeof window !== 'undefined') {
-    loopsToDo = 1024*2;  // Browser.  Take it easy.
-    bigSHash = 0xbc535c53;
+
+if(jQuery.browser.msie  &&  jQuery.browser.version.substr(0,1)<7) {
+    // The 'bigS' section takes a long time to run on IE6.  Only enable that section when you have time to spare and you want to do a full test.
+} else {
+    var s = 'The quick brown fox jumps over the lazy dog. 加油！';
+    var bigS = '';
+    var startTime = new Date().getTime();
+    var loopsToDo = 1024*1024;
+    var bigSHash = 0x42fc6236;
+    if(typeof window !== 'undefined') {
+        loopsToDo = 1024*2;  // Browser.  Take it easy.
+        bigSHash = 0xbc535c53;
+    }
+    for(var i=0; i<loopsToDo; i++) bigS += s;
+    console.log('loop time: %s ms', new Date().getTime() - startTime);
+    startTime = new Date().getTime();
+    assert.equal(JDelta._hash(bigS), bigSHash);
+    console.log('_hash of %s-char str: %s ms', bigS.length, new Date().getTime() - startTime);
+    startTime = new Date().getTime();
+    assert.equal(JDelta._hash(s), 0xbc4e7448);
+    console.log('_hash of %s-char str: %s ms', s.length, new Date().getTime() - startTime);
 }
-for(var i=0; i<loopsToDo; i++) bigS += s;
-console.log('loop time: %s ms', new Date().getTime() - startTime);
-startTime = new Date().getTime();
-assert.equal(JDelta._hash(bigS), bigSHash);
-console.log('_hash of %s-char str: %s ms', bigS.length, new Date().getTime() - startTime);
-startTime = new Date().getTime();
-assert.equal(JDelta._hash(s), 0xbc4e7448);
-console.log('_hash of %s-char str: %s ms', s.length, new Date().getTime() - startTime);
 
 
 
