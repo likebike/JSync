@@ -2,12 +2,12 @@
 //  (c) 2012 LikeBike LLC
 //  JDelta is freely distributable under the 3-clause BSD license.  (See LICENSE.TXT)
 
+"use strict";
 
 // Heavily inspired by: http://tools.ietf.org/html/draft-pbryan-json-patch-00
 
 
 (function() {
-"use strict";
 
 // First, install ourselves and import our dependencies:
 var JDelta = {},

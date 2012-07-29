@@ -2,12 +2,12 @@
 //  (c) 2012 LikeBike LLC
 //  JDelta is freely distributable under the 3-clause BSD license.  (See LICENSE.TXT)
 
+"use strict";
 
 // Many ideas inspired by CouchDB and GIT.
 
 
 (function() {
-"use strict";
 
 // First, install ourselves and import our dependencies:
 var JDeltaDB = {},
@@ -15,7 +15,18 @@ var JDeltaDB = {},
     _,
     fs,
     path,
-    serverTimeOffset = 0;
+    serverTimeOffset = 0,
+    getServerTimeOffset = function() {
+        jQuery.ajax({
+            url:'/jdelta_gettime',
+            type:'GET',
+            complete:function(jqXHR, retCodeStr) {
+                // 'complete' is always called, whether the ajax is successful or not.
+                var serverDate = new Date(jqXHR.getResponseHeader('Date'));
+                serverTimeOffset = serverDate.getTime() - new Date().getTime();
+            }
+        });
+    };
 if(typeof exports !== 'undefined') {
     // We are on Node.
     exports.JDeltaDB = JDeltaDB;
@@ -32,15 +43,7 @@ if(typeof exports !== 'undefined') {
     fs = null;
     path = null;
     jQuery = window.jQuery  ||  window.$;
-    jQuery.ajax({url:'/gettime'}).always(function(arg1, arg2, arg3) {
-        var xhr = arg1;
-        if(typeof arg3 !== undefined  &&  arg3.getResponseHeader !== undefined)
-            xhr = arg3;
-        if(xhr.getResponseHeader === undefined)
-            throw new Error('Unable to find XHR object for server time.');
-        var serverDate = new Date(xhr.getResponseHeader('Date'));
-        serverTimeOffset = serverDate.getTime() - new Date().getTime();
-    });
+    getServerTimeOffset();
 } else throw new Error('This environment is not yet supported.');
 
 JDeltaDB.VERSION = '0.1.0a';

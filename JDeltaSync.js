@@ -2,9 +2,9 @@
 //  (c) 2012 LikeBike LLC
 //  JDelta is freely distributable under the 3-clause BSD license.  (See LICENSE.TXT)
 
+"use strict";
 
 (function() {
-"use strict";
 
 // First, install ourselves and import our dependencies:
 var JDeltaSync = {},
@@ -577,6 +577,18 @@ JDeltaSync.Server = function(db) {
     this._db = db;
     this._clientConnections = {};
     this.clientReceiveThrottleMS = 100;
+    this.longPollTimeoutMS = 100000;
+};
+JDeltaSync.Server.prototype.installIntoSebwebRouter = function(router, baseURL) {
+    if(!_.isString(baseURL)) throw new Error('Expected a baseURL');
+    if(!baseURL.length) throw new Error('Empty baseURL!');
+    if(baseURL.charAt(0) !== '/') throw new Error("baseURL should start with '/'.");
+    if(baseURL.charAt(baseURL.length-1) === '/') throw new Error("baseURL should not end with '/'.");
+    router.prependRoutes([
+        {path:'^'+baseURL+'/query$',         func:JDeltaSync.sebwebHandler_query(this)},
+        {path:'^'+baseURL+'/clientSend$',    func:JDeltaSync.sebwebHandler_clientSend(this)},
+        {path:'^'+baseURL+'/clientReceive$', func:JDeltaSync.sebwebHandler_clientReceive(this)},
+    ]);
 };
 JDeltaSync.Server.prototype._broadcast = function(item, excludes) {
     for(var id in this._clientConnections) if(this._clientConnections.hasOwnProperty(id)) {
@@ -588,6 +600,7 @@ JDeltaSync.Server.prototype._broadcast = function(item, excludes) {
     }
 };
 JDeltaSync.Server.prototype.clientReceive = function(clientID, req, onSuccess, onError) {
+    var self = this;
     var clientConn = this._clientConnections[clientID];
     if(!clientConn) {
         this._clientConnections[clientID] = clientConn = {remoteAddress:'MAYBE_DO_LATER', queue:[]};
@@ -635,7 +648,7 @@ JDeltaSync.Server.prototype.clientReceive = function(clientID, req, onSuccess, o
         setTimeout(function() {  // Force the long-poll to execute before the server or filewalls close our connection.  The reason we need to do this from the server is becasue Chrome does not support the ajax 'timeout' option.
             if(clientConn.sendToLongPoll === sendToLongPoll)
                 sendToLongPoll();
-        }, 100000);
+        }, self.longPollTimeoutMS);
     }
 };
 JDeltaSync.Server.prototype.clientSend = function(clientID, bundle, onSuccess, onError) {
