@@ -173,6 +173,9 @@ JDeltaDB.DB.prototype.iterStates = function(idRegex, func) {
             func(id, this._getRawState(id));
     }
 };
+JDeltaDB.DB.prototype.contains = function(id) {
+    return this._states.hasOwnProperty(id);
+};
 JDeltaDB.DB.prototype._getRawState = function(id) {
     if(!this._states.hasOwnProperty(id))
         throw new Error('No such state: '+id);
