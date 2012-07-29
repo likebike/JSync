@@ -450,7 +450,7 @@ JDeltaSync.sebwebHandler_clientReceive = function(syncServer) {
 };
 JDeltaSync.sebwebHandler_clientSend = function(syncServer) {
     var sebweb = require('sebweb');
-    return sebweb.PostParser(function(req, res, onSuccess, onError) {
+    return sebweb.BodyParser(function(req, res, onSuccess, onError) {
         var clientIDArray = req.formidable_form.fields.clientID;
         if(!_.isArray(clientIDArray)) {
             var err = new Error('No clientID!');
