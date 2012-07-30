@@ -51,6 +51,7 @@ JDeltaSync.Client = function(db, url) {
     this._MATCH_ALL_REGEX = /.*/;
     this._MAX_SEND_BUNDLE_BYTES = 100*1024;
     this._dbEventCallback = _.bind(JDeltaSync.Client.prototype._addToSendQueue, this);
+    this._messageListeners = [];
     this._setDB(db);
     this._sending = false;
     this._resetting = false;
@@ -58,6 +59,7 @@ JDeltaSync.Client = function(db, url) {
     this._doSend = _.debounce(_.bind(JDeltaSync.Client.prototype._rawDoSend, this), 10);
     this._doReset = _.debounce(_.bind(JDeltaSync.Client.prototype._rawDoReset, this), 10);
     this.successLongPollReconnectMS = 10;
+    this.errorResetReconnectMS = 5000;
     var self = this;
     setTimeout(function() { self._rawDoReceive(); }, 1000);
 };
@@ -198,8 +200,9 @@ JDeltaSync.Client.prototype._rawDoReset = function() {
         // Delete items that went away:
         for(id in idsIRequested) if(idsIRequested.hasOwnProperty(id)) {
             if(!idsIReceived.hasOwnProperty(id)) {
-                if(self._db._states.hasOwnProperty(id))
+                if(self._db._states.hasOwnProperty(id)) {
                     self._db.deleteState(id);
+                }
             }
         }
         // Create new items:
@@ -220,8 +223,8 @@ JDeltaSync.Client.prototype._rawDoReset = function() {
                     delete self._resetQueue[id3];
                 }
                 var i, ii;
-                for(i=0, ii=idsToReset; i<ii; i++) {
-                    delete self._resetQueue[idsToReset[i]];
+                for(i=0, ii=idsToReset.length; i<ii; i++) {
+                    delete self._resetQueue[idsToReset[i].id];
                 }
                 self._resetting = false;
                 setTimeout(_.bind(JDeltaSync.Client.prototype._rawDoReset, self), 1);
@@ -252,6 +255,10 @@ JDeltaSync.Client.prototype._rawDoReset = function() {
              })(id));
         }
         tracker.checkForEnd();
+    }, function(err) {
+        // For example, this occurs when we try to reset something, but the server is down.
+        self._resetting = false;
+        setTimeout(_.bind(self._triggerReset, self), self.errorResetReconnectMS);
     });
 };
 JDeltaSync.Client.prototype._rawDoReceive = function() {
@@ -309,6 +316,11 @@ JDeltaSync.Client.prototype._rawDoReceive = function() {
                                     self.reset(item.id);
                                     next();
                                 });
+                                break;
+
+                            case 'message':
+                                self._triggerMessage(item.id, item.data.data, item.fromClientID);
+                                next();
                                 break;
 
                             default:
@@ -427,6 +439,48 @@ JDeltaSync.Client.prototype.fetchDeltas = function(items, onSuccess, onError) {
     //           {id:'a', delta:{seq:5, curHash:'C', steps:[]}},
     //           {id:'b', delta:{seq:9, curHash:'X', steps:[]}}]);
 };
+JDeltaSync.Client.prototype.subscribe = function(idRegex, subscriptionGroup) {
+    this._addToSendQueue(null, {op:'subscribe', idRegex:idRegex.toString(), subscriptionGroup:subscriptionGroup});
+};
+JDeltaSync.Client.prototype.unsubscribe = function(subscriptionGroup) {
+    this._addToSendQueue(null, {op:'unsubscribe', subscriptionGroup:subscriptionGroup});
+};
+JDeltaSync.Client.prototype.publish = function(id, data) {
+    this._addToSendQueue(id, {op:'publish', data:data});
+};
+JDeltaSync.Client.prototype.onMessage = function(id, callback) {
+    if(!id) throw new Error('Invalid id');
+    if(!callback) throw new Error('Invalid callback');
+    this._messageListeners[this._messageListeners.length] = {id:id, callback:callback};
+};
+JDeltaSync.Client.prototype.offMessage = function(id, callback) {
+    var i, l;
+    for(i=this._messageListeners.length-1; i>=0; i--) {
+        l = this._messageListeners[i];
+        if(l.id === id  &&  l.callback === callback) {
+            this._messageListeners.splice(i, 1);
+        }
+    }
+};
+JDeltaSync.Client.prototype._triggerMessage = function(id, data, fromClientID) {
+    var i, ii, l, matches;
+    for(i=0, ii=this._messageListeners.length; i<ii; i++) {
+        l = this._messageListeners[i];
+        matches = false;
+        if(_.isRegExp(l.id)) matches = l.id.test(id);
+        else if(l.id === id) matches = true;
+        if(matches) {
+            try {
+                l.callback(id, data, fromClientID);
+            } catch(e) {
+                if(typeof console !== 'undefined') console.log('Error in message listener:',e);
+            }
+        }
+    }
+};
+
+
+
 
 
 
@@ -509,6 +563,20 @@ JDeltaSync.sebwebHandler_clientSend = function(syncServer) {
         }, onError);
     });
 };
+JDeltaSync._parseRegexString = function(regexStr, expectCaretDollar) {
+    if(!_.isString(regexStr))
+        throw new Error('Illegal regexStr');
+    if(!regexStr.length)
+        throw new Error('Blank regexStr');
+    if(regexStr.charAt(0)!=='/'  ||  regexStr.charAt(regexStr.length-1)!=='/')
+        throw new Error('regexStr missing /^...$/ chars: '+regexStr);
+    if(expectCaretDollar) {
+        if(regexStr.charAt(1)!=='^'  ||  regexStr.charAt(regexStr.length-2)!=='$')
+            throw new Error('regexStr missing ^...$ chars: '+regexStr);
+    }
+    regexStr = regexStr.substring(1, regexStr.length-1); // Chop off the surrounding '/' chars.
+    return RegExp(regexStr);
+};
 JDeltaSync.sebwebHandler_query = function(syncServer) {
     return function(req, res, onSuccess, onError) {
         var standardOnSuccess = function(result) {
@@ -533,15 +601,7 @@ JDeltaSync.sebwebHandler_query = function(syncServer) {
                 break;
 
             case 'listStatesRegex':
-                var idRegexStr = url.query.idRegex;
-                if(!_.isString(idRegexStr))
-                    return onError(new Error('Illegal idRegex'));
-                if(!idRegexStr.length)
-                    return onError(new Error('Blank idRegex'));
-                if(idRegexStr.charAt(0)!=='/'  ||  idRegexStr.charAt(1)!=='^'  ||  idRegexStr.charAt(idRegexStr.length-2)!=='$'  ||  idRegexStr.charAt(idRegexStr.length-1)!=='/')
-                    return onError(new Error('idRegex missing /^...$/ chars: '+idRegexStr));
-                idRegexStr = idRegexStr.substring(1, idRegexStr.length-1); // Chop off the surrounding '/' chars.
-                var idRegex = RegExp(idRegexStr);
+                var idRegex = JDeltaSync._parseRegexString(url.query.idRegex, true);
                 syncServer.listStatesRegex(idRegex, standardOnSuccess, onError);
                 break;
 
@@ -578,6 +638,23 @@ JDeltaSync.Server = function(db) {
     this._clientConnections = {};
     this.clientReceiveThrottleMS = 100;
     this.longPollTimeoutMS = 100000;
+    this.clientConnectionIdleTime = 1000*60*10;
+    this.removeStaleConnectionsInterval = setInterval(_.bind(this._removeStaleConnections, this), 10000);
+};
+JDeltaSync.Server.prototype._removeStaleConnections = function() {
+    var curTime = new Date().getTime(),
+        conn, connTime;
+    for(var clientID in this._clientConnections) if(this._clientConnections.hasOwnProperty(clientID)) {
+        conn = this._clientConnections[clientID];
+        connTime = conn.lastActivityTime  || 0;
+        if(curTime - connTime  >  this.clientConnectionIdleTime) {
+            console.log('Removing Stale Client Connection:',clientID);
+            conn.sendToLongPoll();  // Allow the connection to clean up.
+            //if(conn.req  &&  !conn.req.socket.destroyed)
+            //    conn.req.destroy();
+            delete this._clientConnections[clientID];
+        }
+    }
 };
 JDeltaSync.Server.prototype.installIntoSebwebRouter = function(router, baseURL) {
     if(!_.isString(baseURL)) throw new Error('Expected a baseURL');
@@ -591,28 +668,39 @@ JDeltaSync.Server.prototype.installIntoSebwebRouter = function(router, baseURL) 
     ]);
 };
 JDeltaSync.Server.prototype._broadcast = function(item, excludes) {
+    var itemID = item.id;
     for(var id in this._clientConnections) if(this._clientConnections.hasOwnProperty(id)) {
         if(excludes.hasOwnProperty(id)) continue;
         var clientConn = this._clientConnections[id];
-        var q = clientConn.queue;
-        q[q.length] = item;
-        if(clientConn.sendToLongPoll) clientConn.sendToLongPoll();
+        var matchesSubscription = true;  // If the client has no subscriptions, then send them everything.
+        if(clientConn.subscriptions.length) {
+            matchesSubscription = false;
+            var i, ii;
+            for(i=0, ii=clientConn.subscriptions.length; i<ii; i++) {
+                if(clientConn.subscriptions[i].idRegex.test(itemID)) {
+                    matchesSubscription = true;
+                    break;
+                }
+            }
+        }
+        if(matchesSubscription) {
+            var q = clientConn.queue;
+            q[q.length] = item;
+            if(clientConn.sendToLongPoll) clientConn.sendToLongPoll();
+        }
     }
+};
+JDeltaSync.Server.prototype._getClientConnection = function(clientID) {
+    var clientConn = this._clientConnections[clientID];
+    if(!clientConn) {
+        this._clientConnections[clientID] = clientConn = {remoteAddress:'MAYBE_DO_LATER', queue:[], subscriptions:[]};
+    }
+    clientConn.lastActivityTime = new Date().getTime();
+    return clientConn;
 };
 JDeltaSync.Server.prototype.clientReceive = function(clientID, req, onSuccess, onError) {
     var self = this;
-    var clientConn = this._clientConnections[clientID];
-    if(!clientConn) {
-        this._clientConnections[clientID] = clientConn = {remoteAddress:'MAYBE_DO_LATER', queue:[]};
-        clientConn.send = _.throttle(function() {
-            clientConn.lastActivityTime = new Date().getTime();
-            var result = clientConn.queue.splice(0, clientConn.queue.length);
-            onSuccess(result);
-            clientConn.lastActivityTime = new Date().getTime();
-        }, this.clientReceiveThrottleMS);
-    }
-
-    clientConn.lastActivityTime = new Date().getTime();
+    var clientConn = this._getClientConnection(clientID);
 
     // Check whether there is an old long-poll function waiting to be called:
     if(clientConn.sendToLongPoll) {
@@ -632,6 +720,7 @@ JDeltaSync.Server.prototype.clientReceive = function(clientID, req, onSuccess, o
         // long poll.
         clientConn.req = req;
         clientConn.sendToLongPoll = function() {
+            clientConn.lastActivityTime = new Date().getTime();
             // Make sure this is only called once:
             clientConn.sendToLongPoll = null;
             clientConn.req = null;
@@ -656,6 +745,7 @@ JDeltaSync.Server.prototype.clientSend = function(clientID, bundle, onSuccess, o
         chain = [],
         result = [],
         i, ii;
+    this._getClientConnection(clientID);  // Trigger the lastActivityTime update that occurs in the _getClientConnection function.
     for(i=0, ii=bundle.length; i<ii; i++) {
         chain[chain.length] = (function(bundleItem) {
             return function(next, onError) {
@@ -700,6 +790,40 @@ JDeltaSync.Server.prototype.clientSend = function(clientID, bundle, onSuccess, o
                             result[result.length] = {msgID:bundleItem.msgID, result:'fail'};
                             next();
                         });
+                        break;
+
+                    case 'subscribe':
+                        var idRegex;
+                        try {
+                            idRegex = JDeltaSync._parseRegexString(bundleItem.data.idRegex, true);
+                        } catch(e) {
+                            console.log('Subscribe Error:',e, bundleItem);
+                            result[result.length] = {msgID:bundleItem.msgID, result:'fail'};
+                            next();
+                            break;
+                        }
+                        var clientConn = self._getClientConnection(clientID);
+                        clientConn.subscriptions[clientConn.subscriptions.length] = {idRegex:idRegex, subscriptionGroup:bundleItem.data.subscriptionGroup};
+                        result[result.length] = {msgID:bundleItem.msgID, result:'ok'};
+                        next();
+                        break;
+
+                    case 'unsubscribe':
+                        var clientConn = self._getClientConnection(clientID);
+                        for(var i=clientConn.subscriptions.length-1; i>=0; i--) {
+                            if(clientConn.subscriptions[i].subscriptionGroup === bundleItem.data.subscriptionGroup) {
+                                clientConn.subscriptions.splice(i, 1);
+                            }
+                        }
+                        result[result.length] = {msgID:bundleItem.msgID, result:'ok'};
+                        next();
+                        break;
+
+                    case 'publish':
+                        var message = {msgID:bundleItem.msgID, id:bundleItem.id, fromClientID:clientID, data:{op:'message', data:bundleItem.data.data}};
+                        self._broadcast(message, excludes);
+                        result[result.length] = {msgID:bundleItem.msgID, result:'ok'};
+                        next();
                         break;
 
                     default:
