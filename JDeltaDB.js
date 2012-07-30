@@ -14,7 +14,8 @@ var JDeltaDB = {},
     JDelta,
     _,
     fs,
-    path,
+    PATH,
+    gotServerTime = false,
     serverTimeOffset = 0,
     getServerTimeOffset = function() {
         jQuery.ajax({
@@ -24,8 +25,16 @@ var JDeltaDB = {},
                 // 'complete' is always called, whether the ajax is successful or not.
                 var serverDate = new Date(jqXHR.getResponseHeader('Date'));
                 serverTimeOffset = serverDate.getTime() - new Date().getTime();
+                gotServerTime = true;
             }
         });
+    },
+    waitForServerTime = function(callback) {
+        var doCheck = function() {
+            if(gotServerTime) return callback(serverTimeOffset);
+            else return setTimeout(doCheck, 100);
+        }
+        doCheck();
     };
 if(typeof exports !== 'undefined') {
     // We are on Node.
@@ -33,15 +42,16 @@ if(typeof exports !== 'undefined') {
     JDelta = require('./JDelta.js').JDelta;
     _ = require('underscore');
     fs = require('fs');
-    path = require('path');
+    PATH = require('path');
     // Assume that we are the time authority.
+    gotServerTime = true;
 } else if(typeof window !== 'undefined') {
     // We are in a browser.
     window.JDeltaDB = JDeltaDB;
     JDelta = window.JDelta;
     _ = window._;
     fs = null;
-    path = null;
+    PATH = null;
     jQuery = window.jQuery  ||  window.$;
     getServerTimeOffset();
 } else throw new Error('This environment is not yet supported.');
@@ -64,7 +74,7 @@ JDeltaDB.DB.prototype._load = function(onSuccess, onError) {
     var self = this;
     this._storage.listIDs(function(ids) {
         var tracker = JDeltaDB._AsyncTracker(function(out) {
-            if(onSuccess) onSuccess(self);
+            if(onSuccess) return onSuccess(self);
         });
         var id, i, ii;
         for(i=0, ii=ids.length; i<ii; i++) {
@@ -149,7 +159,7 @@ JDeltaDB.DB.prototype.render = function(id, endSeq, onSuccess, onError) {
             for(i=0, ii=deltas.length; i<ii; i++) {
                 JDelta.patch(id, o, deltas[i]);
             }
-            onSuccess(o);
+            return onSuccess(o);
         }, function(error){
             if(onError) return onError(error);
             else throw error;
@@ -205,7 +215,7 @@ JDeltaDB.DB.prototype.deleteState = function(id, onSuccess, onError) {
     this._storage.deleteState(id, function(id) {
         self._trigger('!', id, {op:'deleteState'});
         delete self._states[id];
-        if(onSuccess) onSuccess();
+        if(onSuccess) return onSuccess();
     }, onError);
 };
 JDeltaDB.DB.prototype.rollback = function(id, toSeq, onSuccess, onError) {
@@ -218,9 +228,9 @@ JDeltaDB.DB.prototype.rollback = function(id, toSeq, onSuccess, onError) {
                     function(o){
                         state.state = o;
                         self._trigger('!', id, {op:'reset'});
-                        if(onSuccess) onSuccess(id);
+                        if(onSuccess) return onSuccess(id);
                     },
-                    function(err){if(onError) onError(err);
+                    function(err){if(onError) return onError(err);
                                   else throw err;});
     };
     if(toSeq === undefined)
@@ -293,24 +303,28 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError) 
                 if(onError) return onError(err);
                 else throw err;
             }
-            if(!delta.meta.hasOwnProperty('date'))
-                delta.meta.date = new Date(new Date().getTime() + serverTimeOffset).toUTCString();
-            try {
-                JDelta.patch(id, state.state, delta, state.dispatcher);
-                if(JDelta._hash(JDelta.stringify(state.state)) !== delta.curHash) {
-                    var err = new Error('invalid curHash!');
-                    if(onError) return onError(err);
-                    else throw err;
+
+            waitForServerTime(function(serverTimeOffset) {
+                if(!delta.meta.hasOwnProperty('date'))
+                    delta.meta.date = new Date(new Date().getTime() + serverTimeOffset).toUTCString();
+                try {
+                    JDelta.patch(id, state.state, delta, state.dispatcher);
+                    if(JDelta._hash(JDelta.stringify(state.state)) !== delta.curHash) {
+                        var err = new Error('invalid curHash!');
+                        if(onError) return onError(err);
+                        else throw err;
+                    }
+                } catch(e) {
+                    self.rollback(id, parentSeq);
+                    if(onError) return onError(e);
+                    else throw e;
                 }
-            } catch(e) {
-                self.rollback(id, parentSeq);
-                throw e;
-            }
-            self._storage.addDelta(id, delta,
-                function() {
-                    self._trigger('!', id, {op:'deltaApplied', delta:delta});
-                    if(onSuccess) onSuccess();
-                }, onError);
+                self._storage.addDelta(id, delta,
+                    function() {
+                        self._trigger('!', id, {op:'deltaApplied', delta:delta});
+                        if(onSuccess) return onSuccess();
+                    }, onError);
+            });
         }, onError);
 };
 JDeltaDB.DB.prototype._addDelta = function(id, delta, onSuccess, onError) {
@@ -329,7 +343,7 @@ JDeltaDB.DB.prototype._addDelta = function(id, delta, onSuccess, onError) {
             var hashedDelta = { steps:delta.steps, meta:delta.meta || {}, parentHash:oldHash, curHash:newHash, seq:newSeq, undoSeq:-newSeq, redoSeq:null };
             self._addHashedDelta(id, hashedDelta, onSuccess, onError);
         }, function(err) {
-            if(onError) onError(err);
+            if(onError) return onError(err);
             else throw err;
         });
 };
@@ -344,7 +358,7 @@ JDeltaDB.DB.prototype.edit = function(id, operations, meta, onSuccess, onError) 
 JDeltaDB.DB.prototype.canUndo = function(id, onSuccess, onError) {
     this._storage.getLastDelta(id,
         function(id, lastDelta) {
-            onSuccess(lastDelta.undoSeq !== null);
+            return onSuccess(lastDelta.undoSeq !== null);
         }, onError);
 };
 JDeltaDB.DB.prototype.undo = function(id, onSuccess, onError) {
@@ -389,7 +403,7 @@ JDeltaDB.DB.prototype.undo = function(id, onSuccess, onError) {
 JDeltaDB.DB.prototype.canRedo = function(id, onSuccess, onError) {
     this._storage.getLastDelta(id,
         function(id, lastDelta) {
-            onSuccess(lastDelta.redoSeq !== null);
+            return onSuccess(lastDelta.redoSeq !== null);
         }, onError);
 };
 JDeltaDB.DB.prototype.redo = function(id, onSuccess, onError) {
@@ -445,55 +459,66 @@ JDeltaDB.RamStorage = function(filepath) {
     // Guard against forgetting the 'new' operator:  "var db = JDeltaDB.RamStorage();"   instead of   "var db = new JDeltaDB.RamStorage();"
     if(!(this instanceof JDeltaDB.RamStorage))
         return new JDeltaDB.RamStorage(filepath);
-    this._data = {};
-    this._filepath = filepath;
+    this.__data = {};
+    this.__filepath = null;
+    if(filepath)  this.__filepath = PATH.resolve(filepath);
+    this.__loadSync();
     this.save = _.debounce(_.bind(this._rawSave, this), 1000);
-    this._loadSync();
 };
-JDeltaDB.RamStorage.prototype._loadSync = function() {
-    if(!this._filepath) return;
-    if(path.existsSync(this._filepath))
-        this._data = JSON.parse(fs.readFileSync(this._filepath));
+JDeltaDB.RamStorage.prototype.__loadSync = function() {
+    if(!this.__filepath) return;
+    if(PATH.existsSync(this.__filepath)) {
+        this.__data = JSON.parse(fs.readFileSync(this.__filepath));
+    }
 };
 JDeltaDB.RamStorage.prototype._rawSave = function() {
-    if(!this._filepath) return;
-    var newFilepath = this._filepath + '.new';
-    fs.writeFileSync(newFilepath, JDelta.stringify(this._data, undefined, 2));
-    fs.renameSync(newFilepath, this._filepath);
+    if(!this.__filepath) return;
+    var newFilepath = this.__filepath + '.new';
+    fs.writeFileSync(newFilepath, JDelta.stringify(this.__data, undefined, 2));
+    fs.renameSync(newFilepath, this.__filepath);
 };
-JDeltaDB.RamStorage.prototype.listIDs = function(onSuccess, onError) {
-    var ids = [],
-        k;
-    for(k in this._data) if(this._data.hasOwnProperty(k)) {
-        ids[ids.length] = k;
-    }
-    ids.sort();
-    onSuccess(ids);
-};
-JDeltaDB.RamStorage.prototype.createStateSync = function(id) {
-    if(this._data.hasOwnProperty(id))
-        throw new Error('Already exists: '+id);
-    this._data[id] = [];
-    this.save();
-};
-JDeltaDB.RamStorage.prototype.deleteState = function(id, onSuccess, onError) {  // function cannot be named 'delete' because that is a reserved keyword in IE.
-    if(!this._data.hasOwnProperty(id)) {
-        var err = new Error('Does not exist: '+id);
-        if(onError) return onError(err);
-        else throw err;
-    }
-    delete this._data[id];
-    this.save();
-    onSuccess(id);
-};
+JDeltaDB.RamStorage.prototype._exists = function(id, onSuccess, onError) {
+    return onSuccess(this.__data.hasOwnProperty(id));
+}
+JDeltaDB.RamStorage.prototype._existsSync = function(id) {
+    return this.__data.hasOwnProperty(id);
+}
 JDeltaDB.RamStorage.prototype._getRawDeltas = function(id, onSuccess, onError) {
     if(!onSuccess) throw new Error('You need to provide a callback.');
-    if(!this._data.hasOwnProperty(id)) {
+    if(!this.__data.hasOwnProperty(id)) {
         var err = new Error("'id' not found: "+id);
         if(onError) return onError(err);
         else throw err;
     }
-    onSuccess(this._data[id]);
+    return onSuccess(this.__data[id]);
+};
+JDeltaDB.RamStorage.prototype.listIDs = function(onSuccess, onError) {
+    var ids = [],
+        k;
+    for(k in this.__data) if(this.__data.hasOwnProperty(k)) {
+        ids[ids.length] = k;
+    }
+    ids.sort();
+    return onSuccess(ids);
+};
+JDeltaDB.RamStorage.prototype.createStateSync = function(id) {
+    if(this._existsSync(id))
+        throw new Error('Already exists: '+id);
+    this.__data[id] = [];
+    this.save();
+};
+JDeltaDB.RamStorage.prototype.deleteState = function(id, onSuccess, onError) {  // function cannot be named 'delete' because that is a reserved keyword in IE.
+    var self = this;
+    this._exists(id, function(exists) {
+        if(!exists) {
+            var err = new Error('Does not exist: '+id);
+            if(onError) return onError(err);
+            else throw err;
+        }
+        delete self.__data[id];
+        self.save();
+        return onSuccess(id);
+    }, onError);
 };
 JDeltaDB.RamStorage.prototype.getDelta = function(id, seq, onSuccess, onError) {
     if(!onSuccess) throw new Error('You need to provide a callback.');
@@ -526,14 +551,14 @@ JDeltaDB.RamStorage.prototype.getDeltas = function(id, startSeq, endSeq, onSucce
                 if(inRange)
                     out[out.length] = deltaList[i];
             }
-            onSuccess(id, out);
+            return onSuccess(id, out);
         }, onError);
 };
 JDeltaDB.RamStorage.prototype.getLastDelta = function(id, onSuccess, onError) {
     if(!onSuccess) throw new Error('You need to provide a callback.');
     this._getRawDeltas(id,
         function(deltaList) {
-            onSuccess(id, deltaList[deltaList.length-1]);
+            return onSuccess(id, deltaList[deltaList.length-1]);
         }, onError);
 };
 JDeltaDB.RamStorage.prototype.addDelta = function(id, delta, onSuccess, onError) {
@@ -542,7 +567,7 @@ JDeltaDB.RamStorage.prototype.addDelta = function(id, delta, onSuccess, onError)
         function(deltaList) {
             deltaList[deltaList.length] = delta;
             self.save();
-            if(onSuccess) onSuccess();
+            if(onSuccess) return onSuccess();
         }, onError);
 };
 
@@ -552,15 +577,206 @@ JDeltaDB.RamStorage.prototype.addDelta = function(id, delta, onSuccess, onError)
 
 
 
-
-
-
-
-
-
-JDeltaDB.SqliteStorage = function() {
-    throw new Error('coming soon...');
+JDeltaDB.DirStorage = function(dirpath) {
+    if(!(this instanceof JDeltaDB.DirStorage)) return new JDeltaDB.DirStorage(dirpath);
+    if(!PATH.existsSync(dirpath)) throw new Error('Dir does not exist: '+dirpath);
+    this.__dirpath = PATH.resolve(dirpath);
+    this.__hashPieceLen = 4;
+    this.__statesCurrentlyInRam = {};
+    this.__statesToSave = {};
+    this.__stateAccessTimes = {};
+    this.__stateIdleTime = 60000;
+    this.save = _.debounce(_.bind(this._rawSave, this), 1000);
+    this.removeStatesInterval = setInterval(_.bind(this.__removeInactiveStatesFromRam, this), 10000);
 };
+JDeltaDB.DirStorage.prototype.__idToFilepath = function(id) {
+    if(!_.isString(id)) throw new Error('Non-string id!');
+    if(!id.length) throw new Error('Blank id!');
+    var encodedID = encodeURIComponent(id);
+    var hash = JDelta._hash(encodedID);
+    if(hash.length !== 10) throw new Error('Unexpected hash length!' + hash);
+    var hashPiece = hash.substring(10-this.__hashPieceLen,10);
+    return this.__dirpath + '/' + hashPiece + '/' + encodedID;
+};
+JDeltaDB.DirStorage.prototype.__filepathToID = function(filepath) {
+    if(filepath.lastIndexOf(this.__dirpath, 0) !== 0) throw new Error('filepath does not start with __dirpath!');
+    if(filepath.charAt(this.__dirpath.length) !== '/') throw new Error("Expected '/'.");
+    var hashPiece = filepath.substr(this.__dirpath.length+1, this.__hashPieceLen);
+    if(filepath.charAt(this.__dirpath.length+1+this.__hashPieceLen) !== '/') throw new Error("Expected '/'.");
+    var encodedID = filepath.substring(this.__dirpath.length+2+this.__hashPieceLen);
+    var hash = JDelta._hash(encodedID);
+    if(hash.substring(10-this.__hashPieceLen,10) !== hashPiece) throw new Error('hashPiece did not match!');
+    return decodeURIComponent(encodedID);
+};
+JDeltaDB.DirStorage.prototype.__rawSaveState = function(id, onSuccess, onError) {
+    if(!this.__statesCurrentlyInRam.hasOwnProperty(id)) {
+        // If the item is not in RAM, then it means we need to delete it from disk.
+        var filepath = this.__idToFilepath(id);
+        fs.unlink(filepath, function(err) {
+            if(err) return onError(err);
+            onSuccess();
+        });
+        return;
+    }
+    var data = this.__statesCurrentlyInRam[id];
+    var dataStr = JDelta.stringify(data, undefined, 2);
+    var filepath = this.__idToFilepath(id);
+    var newFilepath = filepath + '.WRITING';
+    var dirpath = PATH.dirname(filepath);
+    fs.mkdir(dirpath, parseInt('0755', 8), function(err) {  // I need to use parseInt because literal octals are forbidden in JS strict mode.
+        if(err  &&  err.code !== 'EEXIST') return onError(err);
+        fs.writeFile(newFilepath, dataStr, 'utf8', function(err) {
+            if(err) return onError(err);
+            fs.rename(newFilepath, filepath, function(err) {
+                if(err) return onError(err);
+                onSuccess();
+            });
+        });
+    });
+};
+JDeltaDB.DirStorage.prototype._rawSave = function() {
+    var self = this;
+    var saveNextState = function() {
+        var id = null;
+        // Pick the first id we can get:
+        for(id in self.__statesToSave) if(self.__statesToSave.hasOwnProperty(id)) {
+            break;
+        }
+        if(id === null) return; // No more states to save.
+        self.__rawSaveState(id, function() {
+            delete self.__statesToSave[id];
+            return saveNextState();
+        }, function(err) {
+            throw err;
+        })
+    };
+    saveNextState();
+};
+JDeltaDB.DirStorage.prototype.__removeInactiveStatesFromRam = function() {
+    var curTime = new Date().getTime(),
+        stateTime;
+    for(var id in this.__statesCurrentlyInRam) if(this.__statesCurrentlyInRam.hasOwnProperty(id)) {
+        if(this.__statesToSave.hasOwnProperty(id)) {
+            continue;  // Don't remove items that have not been saved.
+        }
+        stateTime = this.__stateAccessTimes[id] || 0;
+        if(curTime - stateTime  >  this.__stateIdleTime) {
+            delete this.__statesCurrentlyInRam[id];
+        }
+    }
+};
+JDeltaDB.DirStorage.prototype.__touch = function(id) {
+    this.__stateAccessTimes[id] = new Date().getTime();
+};
+JDeltaDB.DirStorage.prototype._exists = function(id, onSuccess, onError) {
+    this.__touch(id);
+    if(this.__statesCurrentlyInRam.hasOwnProperty(id))
+        return onSuccess(true);
+    var filepath = this.__idToFilepath(id);
+    PATH.exists(filepath, function(exists) {
+        return onSuccess(exists);
+    });
+};
+JDeltaDB.DirStorage.prototype._existsSync = function(id) {
+    this.__touch(id);
+    if(this.__statesCurrentlyInRam.hasOwnProperty(id))
+        return true;
+    var filepath = this.__idToFilepath(id);
+    return PATH.existsSync(filepath);
+};
+JDeltaDB.DirStorage.prototype._getRawDeltas = function(id, onSuccess, onError) {
+    var self = this;
+    this.__touch(id);
+    if(!this.__statesCurrentlyInRam.hasOwnProperty(id)) {
+        var filepath = this.__idToFilepath(id);
+        fs.readFile(filepath, 'utf8', function(err, data) {
+            if(err) return onError(err);
+            var state = self.__statesCurrentlyInRam[id] = JSON.parse(data);
+            return onSuccess(state);
+        });
+    } else {
+        return onSuccess(this.__statesCurrentlyInRam[id]);
+    }
+};
+JDeltaDB.DirStorage.prototype.listIDs = function(onSuccess, onError) {
+    var self = this;
+    fs.readdir(this.__dirpath, function(err, files) {
+        if(err) return onError(err);
+        var hashDirs = [],
+            i, ii;
+        for(i=0, ii=files.length; i<ii; i++) {
+            if(files[i].length === self.__hashPieceLen)
+                hashDirs[hashDirs.length] = files[i];
+        }
+        var ids = [];
+        var tracker = new JDeltaDB._AsyncTracker(function() {
+            ids.sort();
+            onSuccess(ids);
+        });
+        _.each(hashDirs, function(hashDir) {
+            tracker.numOfPendingCallbacks++;
+            fs.readdir(self.__dirpath+'/'+hashDir, function(err, files) {
+                if(tracker.thereWasAnError) return;
+                if(err) {
+                    tracker.thereWasAnError = true;
+                    return onError(err);
+                }
+                var ignoreSuffix = '.WRITING',
+                    filename, j, jj;
+                for(j=0, jj=files.length; j<jj; j++) {
+                    filename = files[j];
+                    // endswith:
+                    if(!filename.indexOf(ignoreSuffix, filename.length - ignoreSuffix.length) !== -1) {
+                        ids[ids.length] = decodeURIComponent(filename);
+                    }
+                }
+                tracker.checkForEnd();
+            });
+        });
+        tracker.checkForEnd();
+    });
+};
+JDeltaDB.DirStorage.prototype.createStateSync = function(id) {
+    this.__touch(id);
+    if(this._existsSync(id))
+        throw new Error('Already exists: '+id);
+    this.__statesCurrentlyInRam[id] = [];
+    this.__statesToSave[id] = true;
+    this.save();
+};
+JDeltaDB.DirStorage.prototype.deleteState = function(id, onSuccess, onError) {
+    var self = this;
+    this.__touch(id);
+    this._exists(id, function(exists) {
+        if(!exists) {
+            var err = new Error('Does no exist: '+id);
+            if(onError) return onError(err);
+            else throw err;
+        }
+        delete self.__statesCurrentlyInRam[id];
+        self.__rawSaveState(id, onSuccess, onError);
+    }, onError);
+};
+JDeltaDB.DirStorage.prototype.getDelta = JDeltaDB.RamStorage.prototype.getDelta;
+JDeltaDB.DirStorage.prototype.getDeltas = JDeltaDB.RamStorage.prototype.getDeltas;
+JDeltaDB.DirStorage.prototype.getLastDelta = JDeltaDB.RamStorage.prototype.getLastDelta;
+JDeltaDB.DirStorage.prototype.addDelta = function(id, delta, onSuccess, onError) {
+    var self = this;
+    return JDeltaDB.RamStorage.prototype.addDelta.call(this, id, delta, function() {
+        self.__statesToSave[id] = true;
+        return onSuccess();
+    }, onError);
+};
+
+
+
+
+
+
+
+
+
+
 
 
 
@@ -603,8 +819,7 @@ JDeltaDB._runAsyncChain = function(chain, onSuccess, onError) {
         i += 1;
         if(i>chain.length) throw new Error('i>chain.length!'); // Should never happen.
         if(i==chain.length) {
-            onSuccess();
-            return;
+            return onSuccess();
         }
         chain[i](next, onError);
     };

@@ -16,6 +16,7 @@
   <script type="text/javascript" src="js/JDeltaSync.js"></script>
   <script type="text/javascript">
     $(function() {
+        setTimeout(function() {  // Wait for 'getServerTimeOffset' to run first, otherwise some of our tests run asynchronously, which makes it difficult to catch expected exceptions.  You don't need to do this in real apps.  We just have delicate tests that need everything to be straight.
         $('p#jdelta_1').text('Running tests.  See console output for any errors...');
 
 
@@ -390,7 +391,7 @@ console.log('All Tests Passed.  :)');
 
 
         $('p#jdelta_1').text('All Tests Passed.');
-    });
+    }, 3000);});
 
 var db = JDeltaDB.DB();
 var syncClient = JDeltaSync.Client(db, '/rt_test');

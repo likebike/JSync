@@ -7,7 +7,8 @@ var http = require('http'),
     BIND_PORT = process.argv[2]  ||  8080,
     BIND_IP = process.argv[3]  ||  '127.0.0.1';
 
-var db = JDeltaDB.DB(JDeltaDB.RamStorage(__dirname+'/db.json'));
+//var db = JDeltaDB.DB(JDeltaDB.RamStorage(__dirname+'/db.json'));
+var db = JDeltaDB.DB(JDeltaDB.DirStorage(__dirname+'/db'));
 //db.createState('a');
 //db.edit('a', [{op:'create', key:'x', value:1}]);
 //db.edit('a', [{op:'update', key:'x', value:{r:'1'}}]);
