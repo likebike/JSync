@@ -366,6 +366,18 @@ JDelta.create = function(state, operations) {
                 steps[steps.length] = {path:path, key:key, before:JDelta._deepCopy(target[key]), after:JDelta._deepCopy(value)};
                 target[key] = value;
                 break;
+            case 'update!':
+                if(value === undefined)
+                    throw new Error('undefined value!');
+                if(key in target) {
+                    // Update.
+                    steps[steps.length] = {path:path, key:key, before:JDelta._deepCopy(target[key]), after:JDelta._deepCopy(value)};
+                } else {
+                    // Create.
+                    steps[steps.length] = {path:path, key:key, after:JDelta._deepCopy(value)};
+                }
+                target[key] = value;
+                break;
             case 'delete':
                 if(!(key in target))
                     throw new Error('Not in target: '+key);

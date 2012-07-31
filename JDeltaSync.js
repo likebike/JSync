@@ -231,6 +231,10 @@ JDeltaSync.Client.prototype._rawDoReset = function() {
             });
             var i, ii;
             for(i=0, ii=data.length; i<ii; i++) {
+                if(data[i].delta.seq === 0) {
+                    // Skip the pseudo-delta:
+                    continue;
+                }
                 tracker2.numOfPendingCallbacks++;
                 self._db._storage.addDelta(data[i].id, data[i].delta, function() {
                     tracker2.checkForEnd();
@@ -296,15 +300,13 @@ JDeltaSync.Client.prototype._rawDoReceive = function() {
                                 try {
                                     self._receivedFromServer[self._receivedFromServer.length] = {id:item.id, dataStr:JDelta.stringify({op:'deltaApplied', delta:item.data.delta})};
                                     self._db._addHashedDelta(item.id, item.data.delta, function() {
-                                        console.log('SUCCESS:', item.msgID);
                                         next();
                                     }, function(err) {
-                                        console.log('Error Applying Delta.  Resetting: ', item.id, err);
+                                        if(typeof console !== 'undefined') console.log('Error Applying Delta.  Resetting: ', item.id, err);
                                         self.reset(item.id);
                                         next();
                                     });
                                 } catch(e) {
-                                    console.log('IN CATCH '+e);
                                     self.reset(item.id);
                                     next();
                                 }
@@ -324,7 +326,7 @@ JDeltaSync.Client.prototype._rawDoReceive = function() {
                                 break;
 
                             default:
-                                console.log('Unknown clientReceive op:',item.data.op);
+                                if(typeof console !== 'undefined') console.log('Unknown clientReceive op:',item.data.op);
                                 next();
                         }
                     };
@@ -601,7 +603,13 @@ JDeltaSync.sebwebHandler_query = function(syncServer) {
                 break;
 
             case 'listStatesRegex':
-                var idRegex = JDeltaSync._parseRegexString(url.query.idRegex, true);
+                var idRegex
+                try {
+                    idRegex = JDeltaSync._parseRegexString(url.query.idRegex, true);
+                } catch(e) {
+                    console.log('Error parsing idRegex:',e);
+                    return onError();
+                }
                 syncServer.listStatesRegex(idRegex, standardOnSuccess, onError);
                 break;
 
@@ -649,7 +657,7 @@ JDeltaSync.Server.prototype._removeStaleConnections = function() {
         connTime = conn.lastActivityTime  || 0;
         if(curTime - connTime  >  this.clientConnectionIdleTime) {
             console.log('Removing Stale Client Connection:',clientID);
-            conn.sendToLongPoll();  // Allow the connection to clean up.
+            if(conn.sendToLongPoll) conn.sendToLongPoll();  // Allow the connection to clean up.
             //if(conn.req  &&  !conn.req.socket.destroyed)
             //    conn.req.destroy();
             delete this._clientConnections[clientID];
@@ -706,7 +714,7 @@ JDeltaSync.Server.prototype.clientReceive = function(clientID, req, onSuccess, o
     if(clientConn.sendToLongPoll) {
         // The connection should be dead:
         if(!clientConn.req.socket.destroyed) {
-            console.log('DESTROYING OLD REQEST.');  // This does not usually occur.  The only normal way I have found this to occur is in Chrome.  For some reason, Chrome does not seem to close its sockets after a timeout.  Instead, it collects a bunch of zombie sockets and the closes them all at once... Still trying to find a solution to that...
+            console.log('DESTROYING OLD REQEST.  (Should not typically occur.)');  // This does not usually occur.  The only normal way I have found this to occur is in Chrome.  For some reason, Chrome does not seem to close its sockets after a timeout.  Instead, it collects a bunch of zombie sockets and the closes them all at once... Still trying to find a solution to that...
             clientConn.req.destroy();
         }
         clientConn.sendToLongPoll();  // Allow the preview handler to clean up the old stuff.
@@ -894,6 +902,7 @@ JDeltaSync.Server.prototype.fetchDeltas = function(items, onSuccess, onError) {
         if(onError) return onError(err);
         else throw err;
     }
+    var self = this;
     var tracker = JDeltaDB._AsyncTracker(onSuccess);
     var i, ii, item, id, seq;
     for(i=0, ii=items.length; i<ii; i++) {
@@ -919,17 +928,23 @@ JDeltaSync.Server.prototype.fetchDeltas = function(items, onSuccess, onError) {
                 tracker.checkForEnd();
             });
         } else {
-            this._db._storage.getDeltas(id, items[i].startSeq, items[i].endSeq, function(id, deltas) {
-                var j, jj;
-                for(j=0, jj=deltas.length; j<jj; j++)
-                    tracker.out[tracker.out.length] = {id:id, delta:deltas[j]};
-                tracker.checkForEnd();
-            }, function(err) {
-                tracker.thereWasAnError = true;
-                if(onError) return onError(err);
-                else throw err;
-                tracker.checkForEnd();
-            });
+            (function(i) {  // Save 'i' in a closure so we can know which item we were talking about in callbacks.
+                self._db._storage.getDeltas(id, items[i].startSeq, items[i].endSeq, function(id, deltas) {
+                    if(!items[i].startSeq) {
+                        // The startSeq is undefined or 0.  Include the pseudo-delta.  Allows the requestor to know about empty states:
+                        tracker.out[tracker.out.length] = {id:id, delta:JDeltaDB._PSEUDO_DELTA_0};
+                    }
+                    var j, jj;
+                    for(j=0, jj=deltas.length; j<jj; j++)
+                        tracker.out[tracker.out.length] = {id:id, delta:deltas[j]};
+                    tracker.checkForEnd();
+                }, function(err) {
+                    tracker.thereWasAnError = true;
+                    if(onError) return onError(err);
+                    else throw err;
+                    tracker.checkForEnd();
+                });
+            })(i);
         }
     }
     tracker.checkForEnd();

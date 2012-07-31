@@ -191,6 +191,9 @@ JDeltaDB.DB.prototype._getRawState = function(id) {
         throw new Error('No such state: '+id);
     return this._states[id];
 };
+JDeltaDB.DB.prototype.getState = function(id) {
+    return this._getRawState(id).state;
+};
 JDeltaDB.DB.prototype.createState = function(id, doNotCreateInStorage) {
     if(this._states.hasOwnProperty(id))
         throw new Error('State already exists: '+id);
@@ -236,10 +239,7 @@ JDeltaDB.DB.prototype.rollback = function(id, toSeq, onSuccess, onError) {
     if(toSeq === undefined)
         this._storage.getLastDelta(id,
             function(id, lastDelta) {
-                toSeq = 0;  // Some number in case there are no deltas.
-                if(lastDelta) 
-                    toSeq = lastDelta.seq;
-                doRender(toSeq);
+                doRender(lastDelta.seq);
             }, onError);
     else
         doRender(toSeq);
@@ -280,6 +280,7 @@ JDeltaDB.DB.prototype.rollback = function(id, toSeq, onSuccess, onError) {
  *
  ******************************************************************************/
 JDeltaDB._EMPTY_OBJ_HASH = JDelta._hash('{}');
+JDeltaDB._PSEUDO_DELTA_0 = { steps:[], meta:{pseudoDelta:true}, parentHash:null, curHash:JDeltaDB._EMPTY_OBJ_HASH, seq:0, undoSeq:null, redoSeq:null };
 JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError) {
     // Called by the JDeltaDB API (not the end user) with a delta object like this:
     //     { steps:[...], meta:{...}, parentHash:str, curHash:str, seq:int, undoSeq:int, redoSeq:int }
@@ -287,12 +288,8 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError) 
     this._storage.getLastDelta(id,
         function(id, lastDelta) {
             var state = self._getRawState(id),
-                parentSeq = 0,
-                parentHash = JDeltaDB._EMPTY_OBJ_HASH;
-            if(lastDelta) {
-                parentSeq = lastDelta.seq;
+                parentSeq = lastDelta.seq,
                 parentHash = lastDelta.curHash;
-            }
             if(delta.seq !== parentSeq + 1) {
                 var err = new Error('invalid sequence! '+delta.seq+' != '+(parentSeq+1));
                 if(onError) return onError(err);
@@ -335,11 +332,9 @@ JDeltaDB.DB.prototype._addDelta = function(id, delta, onSuccess, onError) {
     var newHash = JDelta._hash(JDelta.stringify(newStateCopy));
     if(newHash === oldHash)
         return;     // No change.  Let's just pretend this never happend...
-    var parentSeq = null;
     this._storage.getLastDelta(id,
         function(id, lastDelta) {
-            if(lastDelta) parentSeq = lastDelta.seq;
-            var newSeq = parentSeq + 1;
+            var newSeq = lastDelta.seq + 1;
             var hashedDelta = { steps:delta.steps, meta:delta.meta || {}, parentHash:oldHash, curHash:newHash, seq:newSeq, undoSeq:-newSeq, redoSeq:null };
             self._addHashedDelta(id, hashedDelta, onSuccess, onError);
         }, function(err) {
@@ -381,21 +376,19 @@ JDeltaDB.DB.prototype.undo = function(id, onSuccess, onError) {
                 function(id, preUndoDelta) {
                     var undoSteps = JDelta.reverse(preUndoDelta);
                     var postUndoSeq = (-lastDelta.undoSeq) - 1;
-                    if(postUndoSeq > 0) {
-                        self._storage.getDelta(id, postUndoSeq,
-                            function(id, postUndoDelta) {
-                                var postUndoUndoSeq = postUndoDelta.undoSeq;
-                                var postUndoHash = postUndoDelta.curHash;
-                                var newMeta = _.extend(JDelta._deepCopy(postUndoDelta.meta), {operation:'undo'});
-                                var hashedDelta = { steps:undoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postUndoHash, seq:newSeq, undoSeq:postUndoUndoSeq, redoSeq:newRedoSeq };
-                                self._addHashedDelta(id, hashedDelta, onSuccess, onError);
-                            }, onError);
-                    } else {
-                        var postUndoUndoSeq = null;
-                        var postUndoHash = JDeltaDB._EMPTY_OBJ_HASH;
-                        var newMeta = {operation:'undo'};
+
+                    var finishProcessWithPostUndoDelta = function(id, postUndoDelta) {
+                        var postUndoUndoSeq = postUndoDelta.undoSeq;
+                        var postUndoHash = postUndoDelta.curHash;
+                        var newMeta = _.extend(JDelta._deepCopy(postUndoDelta.meta), {operation:'undo'});
                         var hashedDelta = { steps:undoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postUndoHash, seq:newSeq, undoSeq:postUndoUndoSeq, redoSeq:newRedoSeq };
                         self._addHashedDelta(id, hashedDelta, onSuccess, onError);
+                    };
+
+                    if(postUndoSeq > 0) {
+                        return self._storage.getDelta(id, postUndoSeq, finishProcessWithPostUndoDelta, onError);
+                    } else {
+                        return finishProcessWithPostUndoDelta(id, JDeltaDB._PSEUDO_DELTA_0);
                     }
                 }, onError);
         }, onError);
@@ -558,7 +551,12 @@ JDeltaDB.RamStorage.prototype.getLastDelta = function(id, onSuccess, onError) {
     if(!onSuccess) throw new Error('You need to provide a callback.');
     this._getRawDeltas(id,
         function(deltaList) {
-            return onSuccess(id, deltaList[deltaList.length-1]);
+            var lastDelta = deltaList[deltaList.length-1];
+            if(!lastDelta) {
+                // There are no deltas.  Fake one:
+                lastDelta = JDeltaDB._PSEUDO_DELTA_0;
+            }
+            return onSuccess(id, lastDelta);
         }, onError);
 };
 JDeltaDB.RamStorage.prototype.addDelta = function(id, delta, onSuccess, onError) {
