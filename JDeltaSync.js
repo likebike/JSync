@@ -454,6 +454,7 @@ JDeltaSync.Client.prototype.unsubscribe = function(subscriptionGroup) {
     this._addToSendQueue(null, {op:'unsubscribe', subscriptionGroup:subscriptionGroup});
 };
 JDeltaSync.Client.prototype.publish = function(id, data) {
+    this._triggerMessage(id, data, this._clientID); // Send it back to us to match the behavior of JDeltaDB events.
     this._addToSendQueue(id, {op:'publish', data:data});
 };
 JDeltaSync.Client.prototype.onMessage = function(id, callback) {
@@ -656,6 +657,8 @@ JDeltaSync.Server = function(db) {
     this.clientReceiveThrottleMS = 100;
     this.longPollTimeoutMS = 100000;
     this.clientConnectionIdleTime = 1000*60*10;
+    this.disposableQueueSizeLimit = 200;
+    this.disposableQueueCleanSize = 20;
     this.removeStaleConnectionsInterval = setInterval(_.bind(this._removeStaleConnections, this), 10000);
 };
 JDeltaSync.Server.prototype._removeStaleConnections = function() {
@@ -702,6 +705,21 @@ JDeltaSync.Server.prototype._broadcast = function(item, excludes) {
         }
         if(matchesSubscription) {
             var q = clientConn.queue;
+            if(item.disposable  &&  q.length > this.disposableQueueSizeLimit) {
+                var disposables = [],
+                    i, ii;
+                for(i=0, ii=q.length; i<ii; i++) {
+                    if(q[i].disposable) {
+                        disposables[disposables.length] = i;
+                        if(disposables.length >= this.disposableQueueCleanSize)
+                            break;
+                    }
+                }
+                for(i=disposables.length; i>=0; i--) {
+                    q.splice(disposables[i], 1);
+                }
+                if(q.length > this.disposableQueuSizeLimit) return;
+            }
             q[q.length] = item;
             if(clientConn.sendToLongPoll) clientConn.sendToLongPoll();
         }
@@ -837,7 +855,7 @@ JDeltaSync.Server.prototype.clientSend = function(clientID, bundle, onSuccess, o
                         break;
 
                     case 'publish':
-                        var message = {msgID:bundleItem.msgID, id:bundleItem.id, fromClientID:clientID, data:{op:'message', data:bundleItem.data.data}};
+                        var message = {msgID:bundleItem.msgID, id:bundleItem.id, disposable:true, fromClientID:clientID, data:{op:'message', data:bundleItem.data.data}};
                         self._broadcast(message, excludes);
                         result[result.length] = {msgID:bundleItem.msgID, result:'ok'};
                         next();
