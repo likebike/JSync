@@ -12,7 +12,8 @@
 // First, install ourselves and import our dependencies:
 var JDelta = {},
     _,
-    Backbone;
+    Backbone,
+    undefined;   //  So undefined really will be undefined.
 if(typeof exports !== 'undefined') {
     // We are on Node.
     exports.JDelta = JDelta;

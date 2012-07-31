@@ -12,7 +12,8 @@ var JDeltaSync = {},
     JDelta,
     jQuery,  // Browser only.
     URL,     // Server only.
-    _;
+    _,
+    undefined;   // So undefined really will be undefined.
 if(typeof exports !== 'undefined') {
     // We are on Node.
     exports.JDeltaSync = JDeltaSync;

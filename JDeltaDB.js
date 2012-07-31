@@ -15,6 +15,7 @@ var JDeltaDB = {},
     _,
     fs,
     PATH,
+    undefined,   //  So undefined really will be undefined.
     gotServerTime = false,
     serverTimeOffset = 0,
     getServerTimeOffset = function() {

@@ -8,6 +8,9 @@
 
 
 (function() {
+
+var undefined;  // So undefined really will be undefined.
+
 // Only install ourselves if there is no assert already:
 if(typeof assert === 'undefined') {
     var assert = function(b) { if(!b) throw new Error(b); },
