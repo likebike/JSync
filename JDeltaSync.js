@@ -60,6 +60,7 @@ JDeltaSync.Client = function(db, url) {
     this._doReset = _.debounce(_.bind(JDeltaSync.Client.prototype._rawDoReset, this), 10);
     this.successLongPollReconnectMS = 10;
     this.errorResetReconnectMS = 5000;
+    this.errorSendReconnectMS = 5000;
     var self = this;
     setTimeout(function() { self._rawDoReceive(); }, 1000);
 };
@@ -149,6 +150,10 @@ JDeltaSync.Client.prototype._rawDoSend = function() {
         },
         error:function(jqXHR, retCodeStr, exceptionObj) {
             // Receiving exceptionObj = 'Service Unavailable'.
+            self._sending = false;
+            if(self._sendQueue.length) {
+                setTimeout(_.bind(JDeltaSync.Client.prototype._rawDoSend, self), self.errorSendReconnectMS);
+            }
             throw exceptionObj;
         },
         complete:function(jqXHR, retCodeStr) {
@@ -499,6 +504,7 @@ JDeltaSync.sebwebHandler_clientReceive = function(syncServer) {
         syncServer.clientReceive(clientID, req, function(result) {
             res.setHeader('Content-Type', 'application/json');
             res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+            res.setHeader('Access-Control-Allow-Origin', '*');  // Allow cross-domain requests.
             res.end(JSON.stringify(result));
             onSuccess();
         }, onError);
@@ -560,6 +566,7 @@ JDeltaSync.sebwebHandler_clientSend = function(syncServer) {
         var result = syncServer.clientSend(clientID, bundle, function(result) {
             res.setHeader('Content-Type', 'application/json');
             res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+            res.setHeader('Access-Control-Allow-Origin', '*');  // Allow cross-domain requests.
             res.end(JSON.stringify(result));
             onSuccess();
         }, onError);
@@ -584,6 +591,7 @@ JDeltaSync.sebwebHandler_query = function(syncServer) {
         var standardOnSuccess = function(result) {
             res.setHeader('Content-Type', 'application/json');
             res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+            res.setHeader('Access-Control-Allow-Origin', '*');  // Allow cross-domain requests.
             res.end(JSON.stringify(result));
             onSuccess();
         };
