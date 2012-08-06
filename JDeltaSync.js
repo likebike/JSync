@@ -192,7 +192,7 @@ JDeltaSync.Client.prototype.logout = function(callback) {
 };
 
 
-JDeltaSync.Client.prototype._stateDbEventCallback = function(id, data, arg3, arg4) {
+JDeltaSync.Client.prototype._stateDbEventCallback = function(id, data) {
     data['id'] = id;
     data['type'] = 'state';
     this._addToSendQueue(data);
@@ -231,15 +231,15 @@ JDeltaSync.SingleJoin_RecursiveState = 'sJ+rS';        //
 JDeltaSync.RecursiveJoin_SingleState = 'rJ+sS';     // <<
 JDeltaSync.RecursiveJoin_RecursiveState = 'rJ+rS';  // <<
 JDeltaSync.Client.prototype.join = function(stateID, subscribeMode) {
+    var self = this;
     // If you want to receive notification when the full reset is done, you can register a listener to the 'reset' event on the stateID in the joinDB.
     if(!subscribeMode) subscribeMode = JDeltaSync.SingleJoin_RecursiveState;
-    return this._addToSendQueue({op:'join', id:stateID, subscribeMode:subscribeMode}, function(result) {
-        if(result === 'ok') {
-            this.reset('join', stateID);  // Does not auto-pull recursive join states.  You can do that manually with listStates() and reset().
-        } else {
-            if(typeof console !== 'undefined') console.log('Unexpected result while trying to join:', result);
-        }
-    });
+    
+    // In order to avoid an Delta Application Error from being displayed to the console, we need to reset the Join state before we join!
+    if(!this.joinDB.contains(stateID)) {
+        this.reset('join', stateID);  // For now, we just assume that the reset will go thru first since we call it first.  If this proves inadequate, we will need to add a callback to the reset() function somehow.
+    }
+    return this._addToSendQueue({op:'join', id:stateID, subscribeMode:subscribeMode});
 };
 JDeltaSync.Client.prototype.leave = function(stateID) {
     // If you want to receive notification when the full leave is done, you can register a listener to the '!'/'deleteState' event on the stateID in the joinDB.
@@ -255,15 +255,15 @@ JDeltaSync.Client.prototype.leave = function(stateID) {
 };
 JDeltaSync.Client.prototype._callSendQueueCallback = function(msgID, callback, result) {
     if(!callback) {
-        if(!self._sendQueueCallbacks.hasOwnProperty(msgID)) return;
-        callback = self._sendQueueCallbacks[msgID];
+        if(!this._sendQueueCallbacks.hasOwnProperty(msgID)) return;
+        callback = this._sendQueueCallbacks[msgID];
     }
     try {
         callback(result);
     } catch(e) {
-        if(typeof console !== 'undefined') console.log('sendQueueCallback error:', e);
+        if(typeof console !== 'undefined') console.log('sendQueueCallback error:', e, e.stack);
     }
-    if(msgID) delete self._sendQueueCallbacks[msgID];
+    if(msgID) delete this._sendQueueCallbacks[msgID];
 };
 JDeltaSync.Client.prototype._addToSendQueue = function(data, callback) {
     if(data.type === 'state') {  // Right now, I only expect this section to apply to State operations.  Not Joins or Messages.  This 'if' is here as an optimization, not really a rule.
@@ -332,7 +332,7 @@ JDeltaSync.Client.prototype._rawDoSend = function() {
                 if(self._sendQueue.length  &&  self._sendQueue[0].msgID === bundle[0].msgID)
                     self._sendQueue.splice(0, 1);
                 
-                this._callSendQueueCallback(data[0].msgID, null, data[0].result);
+                self._callSendQueueCallback(data[0].msgID, null, data[0].result);
                 
                 switch(data[0].result) {
 
@@ -355,7 +355,7 @@ JDeltaSync.Client.prototype._rawDoSend = function() {
             var itemStr, item;
             for(itemStr in needToReset) if(needToReset.hasOwnProperty(itemStr)) {
                 item = needToReset[itemStr];
-                self.reset(item.data.type, item.data.id);
+                self.reset(item.type, item.id);
             }
         },
         error:function(jqXHR, retCodeStr, exceptionObj) {
@@ -402,7 +402,7 @@ JDeltaSync.Client.prototype._rawDoReset = function() {
     var itemsToReset = [],
         itemStr;
     for(itemStr in this._resetQueue) if(this._resetQueue.hasOwnProperty(itemStr)) {
-        itemsToReset[idsToReset.length] = this._resetQueue[itemStr];
+        itemsToReset[itemsToReset.length] = this._resetQueue[itemStr];
     }
     if(!itemsToReset.length) return; // Nothing to reset.
     if(this._resetting) return;    // Already resetting.
@@ -422,16 +422,16 @@ JDeltaSync.Client.prototype._rawDoReset = function() {
         // Delete items that went away:
         var db;
         for(itemStr in itemsIRequested) if(itemsIRequested.hasOwnProperty(itemStr)) {
-            if(!idsIReceived.hasOwnProperty(itemStr)) {
+            if(!itemsIReceived.hasOwnProperty(itemStr)) {
                 item = itemsIRequested[itemStr];
-                db = this._getDB(item.type);
+                db = self._getDB(item.type);
                 if(db.contains(item.id)) db.deleteState(item.id);
             }
         }
         // Create new items:
         for(itemStr in itemsIReceived) if(itemsIReceived.hasOwnProperty(itemStr)) {
             item = itemsIReceived[itemStr];
-            db = this._getDB(item.type);
+            db = self._getDB(item.type);
             if(!db.contains(item.id)) db.createState(item.id);
         }
         // Reset items I got data for:
@@ -447,16 +447,16 @@ JDeltaSync.Client.prototype._rawDoReset = function() {
             var tracker2 = JDeltaDB._AsyncTracker(function(out2) {
                 // At this point, we have added all the deltas to the Storage.  Now trigger rollbacks:
                 var itemStr3, item3, db3;
-                for(itemStr3 in idsIReceived) if(idsIReceived.hasOwnProperty(itemStr3)) {
-                    item3 = idsIReceived[itemStr3];
+                for(itemStr3 in itemsIReceived) if(itemsIReceived.hasOwnProperty(itemStr3)) {
+                    item3 = itemsIReceived[itemStr3];
                     db3 = self._getDB(item3.type);
                     db3.rollback(item3.id);
                     delete self._resetQueue[item3.type+'::'+item3.id];
                 }
                 // Finally, remove the item from the resetQueue:
                 var i, ii;
-                for(i=0, ii=idsToReset.length; i<ii; i++) {
-                    item3 = idsToReset[i];
+                for(i=0, ii=itemsToReset.length; i<ii; i++) {
+                    item3 = itemsToReset[i];
                     delete self._resetQueue[item3.type+'::'+item3.id];
                 }
                 self._resetting = false;
@@ -471,7 +471,7 @@ JDeltaSync.Client.prototype._rawDoReset = function() {
                 }
                 tracker2.numOfPendingCallbacks++;
                 item2 = data[i];
-                db2 = this._getDB(item2.type);
+                db2 = self._getDB(item2.type);
                 db2._storage.addDelta(item2.id, item2.delta, function() {  // We make the assumption that Storage operations will be executed in the order they are submitted.
                     tracker2.checkForEnd();
                 },
@@ -486,7 +486,7 @@ JDeltaSync.Client.prototype._rawDoReset = function() {
         for(itemStr in itemsIReceived) if(itemsIReceived.hasOwnProperty(itemStr)) {
             tracker.numOfPendingCallbacks++;
             item = itemsIReceived[itemStr];
-            db = this._getDB(item.type);
+            db = self._getDB(item.type);
             db._storage.deleteState(item.id, function(id) {
                 return tracker.checkForEnd();
             },
@@ -527,11 +527,11 @@ JDeltaSync.Client.prototype._rawDoReceive = function() {
 
                             case 'createState':
                                 db = self._getDB(item.data.type);
-                                if(db.contians(item.data.id)) {
+                                if(db.contains(item.data.id)) {
                                     self.reset(item.data.type, item.data.id);
                                 } else {
                                     if(item.data.type === 'state')  // Join state deltas do not get pushed to the server, so no need to track them in the receivedFromServer list.
-                                        self._receivedFromServer[self._receivedFromServer.length] = {type:item.data.type, id:item.data.id, dataStr:JDelta.stringify({op:'createState'})};
+                                        self._receivedFromServer[self._receivedFromServer.length] = {type:item.data.type, id:item.data.id, dataStr:JDelta.stringify({op:'createState', type:'state', id:item.data.id})};
                                     db.createState(item.data.id);
                                 }
                                 return next();
@@ -540,8 +540,9 @@ JDeltaSync.Client.prototype._rawDoReceive = function() {
                             case 'deltaApplied':
                                 try {
                                     db = self._getDB(item.data.type);
-                                    if(item.data.type === 'state')
-                                        self._receivedFromServer[self._receivedFromServer.length] = {type:item.data.type, id:item.data.id, dataStr:JDelta.stringify({op:'deltaApplied', delta:item.data.delta})};
+                                    if(item.data.type === 'state') {
+                                        self._receivedFromServer[self._receivedFromServer.length] = {type:item.data.type, id:item.data.id, dataStr:JDelta.stringify({op:'deltaApplied', delta:item.data.delta, type:'state', id:item.data.id})};
+                                    }
                                     db._addHashedDelta(item.data.id, item.data.delta, next, function(err) {
                                         if(typeof console !== 'undefined') console.log('Error Applying Delta.  Resetting: ', item.data.type, item.data.id, err);
                                         self.reset(item.data.type, item.data.id);
@@ -556,7 +557,7 @@ JDeltaSync.Client.prototype._rawDoReceive = function() {
                             case 'deleteState':
                                 db = self._getDB(item.data.type);
                                 if(item.data.type === 'state')
-                                    self._receivedFromServer[self._receivedFromServer.length] = {type:item.data.type, id:item.data.id, dataStr:JDelta.stringify({op:'deleteState'})};
+                                    self._receivedFromServer[self._receivedFromServer.length] = {type:item.data.type, id:item.data.id, dataStr:JDelta.stringify({op:'deleteState', type:'state', id:item.data.id})};
                                 db.deleteState(item.data.id, next, function(err) {
                                     self.reset(item.data.type, item.data.id);
                                     return next();
@@ -564,9 +565,9 @@ JDeltaSync.Client.prototype._rawDoReceive = function() {
                                 break;
 
                             case 'message':
-                                self._triggerMessage(item.data.id, item.data.data, item.fromInfo);
+                                self._triggerMessage(item.data.id, item.data.data, item.data.from);
                                 if(item.importance === 'needConfirmation')
-                                    self.sendMessage(item.data.id, {confirm:item.msgID}, {to:item.fromInfo.connectionID});
+                                    self.sendMessage(item.data.id, {confirm:item.msgID}, {to:{connectionIDs:[item.data.from.connectionID]}});
                                 return next();
                                 break;
 
@@ -703,7 +704,10 @@ JDeltaSync.Client.prototype.sendMessage = function(id, data, options) {
             throw new Error('Invalid options.importance: '+options.importance);
         importance = options.importance;
     }
-    this._triggerMessage(id, data, {connectionID:this._connectionID, browserID:this._browserID, userID:this._userID}); // Send it back to us to match the behavior of JDeltaDB events.
+    var shouldSendBackToUs = true;
+    if(options.to) shouldSendBackToUs = false;  // Simple logic for now.  Not quite correct, but maybe good enough???  (if options.to IS to us, then we should get it, but why would that ever happen?)
+    if(shouldSendBackToUs)
+        this._triggerMessage(id, data, {connectionID:this._connectionID, browserID:this._browserID, userID:this._userID}); // Send it back to us to match the behavior of JDeltaDB events.
     return this._addToSendQueue({op:'sendMessage', id:id, data:data, importance:importance, to:options.to || null}, options.callback);  // If 'to' is specified, delivery will ignore whether the targets are subscribed (delivery will be forced).  If 'to' is NOT specified, then this message will be sent to everyone who is 'joined' to a compatible id path.
 };
 JDeltaSync.Client.prototype.onMessage = function(id, callback) {
@@ -1002,7 +1006,7 @@ JDeltaSync.Server.prototype._removeStaleConnections = function() {
         conn = this._activeConnections[connectionID];
         connTime = conn.lastActivityTime  || 0;
         if(curTime - connTime  >  this.clientConnectionIdleTime) {
-            console.log('Removing Stale Client Connection:',connectionID);
+            if(typeof console !== 'undefined') console.log('Removing Stale Client Connection:',connectionID);
 
             // Remove the connection from the JoinDB:
             var connectionInfo = JDeltaSync.connectionInfo(this.joinDB.getState('/'), connectionID);
@@ -1032,8 +1036,14 @@ JDeltaSync.Server.prototype._listApplicableJoinStates = function(id) {
         total = '/',
         i, ii;
     var idPieces = id.split('/');
-    if(!idPieces.length) throw new Error('No idPieces!');
-    if(idPieces[0] !== '') throw new Error('id did not have a leading slash.');
+    if(!idPieces.length) {
+        console.log(new Error('No idPieces!'));
+        return [];
+    }
+    if(idPieces[0] !== '') {
+        console.log(new Error('id did not have a leading slash.'));
+        return [];
+    }
     idPieces.shift();
     
     // The initial '/' path is a bit of a special case... it doesn't fit into the following loop very well.  So handle it here.
@@ -1042,7 +1052,7 @@ JDeltaSync.Server.prototype._listApplicableJoinStates = function(id) {
     for(i=0, ii=idPieces.length; i<ii; i++) {
         if(i !== 0) total += '/';
         total += idPieces[i];
-        if(this.joinDB.getState(total)) joinNames[joinNames.length] = total;
+        if(this.joinDB.contains(total)) joinNames[joinNames.length] = total;
     }
     return joinNames;
 };
@@ -1076,13 +1086,14 @@ JDeltaSync.Server.prototype._broadcast = function(item, to, excludes) {
         }
     } else {
         var type = item.data.type || 'state';  // Right now, the only type of item that will be broadcast and does not have a type are Messages.  Send them to state subscribers.
+        var typeCode = {state:'S', join:'J'}[type];
         var joinNames = this._listApplicableJoinStates(item.data.id),
-            requiredDepth, joinState, connectionIDs, j, jj;
+            minDepth, joinState, connectionIDs, j, jj;
         for(i=0, ii=joinNames.length; i<ii; i++) {
-            if(joinNames[i] === item.data.id) requiredDepth = 'single';
-            else requiredDepth = 'recursive';
+            if(joinNames[i] === item.data.id) minDepth = 's';
+            else minDepth = 'r';
             joinState = this.joinDB.getState(joinNames[i]);
-            connectionIDs = JDeltaSync.allConnections(joinState);
+            connectionIDs = JDeltaSync.allConnections(joinState, typeCode, minDepth);
             for(j=0, jj=connectionIDs.length; j<jj; j++) {
                 targetConnections[connectionIDs[j]] = true;
             }
@@ -1091,8 +1102,8 @@ JDeltaSync.Server.prototype._broadcast = function(item, to, excludes) {
 
     // Excludes take precedence:
     if(excludes) {
-        for(i=0, ii=exclues.length; i<ii; i++) {
-            delete targetConnections[excludes[i]];
+        for(var x in excludes) if(excludes.hasOwnProperty(x)) {
+            delete targetConnections[x];
         }
     }
 
@@ -1283,7 +1294,7 @@ JDeltaSync.Server.prototype.clientSend = function(connectionID, bundle, onSucces
                     case 'createState':
                         if(bundledItem.data.type !== 'state') return FAIL(); // Client modification of Join states not allowed.
                         db = self._getDB(bundleItem.data.type);
-                        if(db.contians(bundleItem.data.id)) {
+                        if(db.contains(bundleItem.data.id)) {
                             console.log('State already exists: '+bundleItem.data.id);
                             return FAIL();
                         } else {
@@ -1294,7 +1305,7 @@ JDeltaSync.Server.prototype.clientSend = function(connectionID, bundle, onSucces
                         break;
 
                     case 'deltaApplied':
-                        if(bundledItem.data.type !== 'state') return FAIL(); // Client modification of Join states not allowed.
+                        if(bundleItem.data.type !== 'state') return FAIL(); // Client modification of Join states not allowed.
                         db = self._getDB(bundleItem.data.type);
                         try {
                             db._addHashedDelta(bundleItem.data.id, bundleItem.data.delta, function() {
@@ -1328,8 +1339,8 @@ JDeltaSync.Server.prototype.clientSend = function(connectionID, bundle, onSucces
                         break;
 
                     case 'sendMessage':
-                        var message = {msgID:bundleItem.msgID, importance:bundleItem.importance, data:{op:'message', id:bundlItem.data.id, data:bundleItem.data, from:self._connectionInfo(self.joinDB._getDB('/'), connectionID)}};
-                        self._broadcast(message, bundleItems.to, excludes);
+                        var message = {msgID:bundleItem.msgID, importance:bundleItem.data.importance, data:{op:'message', id:bundleItem.data.id, data:bundleItem.data.data, from:JDeltaSync.connectionInfo(self.joinDB.getState('/'), connectionID)}};
+                        self._broadcast(message, bundleItem.data.to, excludes);
                         return OK();
                         break;
 
@@ -1345,10 +1356,14 @@ JDeltaSync.Server.prototype.clientSend = function(connectionID, bundle, onSucces
     }, onError);
 };
 JDeltaSync.Server.prototype.clientJoin = function(connectionID, stateID, subscribeMode, onSuccess, onError) {
-    if(!this.joinDB.contains(stateID)) this.joinDB.create(stateID);
+    if(!this.joinDB.contains(stateID)) this.joinDB.createState(stateID);
     var state = this.joinDB.getState(stateID);
     var connectionInfo = JDeltaSync.connectionInfo(this.joinDB.getState('/'), connectionID);
-    if(!connectionInfo) throw new Error('connectionID not found!');
+    if(!connectionInfo) {
+        var err = new Error('connectionID not found!');
+        if(onError) return onError(err);
+        else throw err;
+    }
     var ops = [];
     if(!state.hasOwnProperty(connectionInfo.userID)) {
         var entry = {};
@@ -1362,15 +1377,19 @@ JDeltaSync.Server.prototype.clientJoin = function(connectionID, stateID, subscri
     } else {
         ops[ops.length] = {op:'update!', path:'$.'+connectionInfo.userID+'.'+connectionInfo.browserID, key:connectionID, value:subscribeMode};
     }
-    this.joinDB.edit(stateID, ops);
+    return this.joinDB.edit(stateID, ops, null, onSuccess, onError);
 };
 JDeltaSync.Server.prototype.clientLeave = function(connectionID, stateID, onSuccess, onError) {
     // Never leave the global state.  Just switch the subscription mode to silent:
     if(stateID === '/') return this.clientJoin(connectionID, stateID, JDeltaSync.Silent, onSuccess, onError);
     var state = this.joinDB.getState(stateID);
     var connectionInfo = JDeltaSync.connectionInfo(state, connectionID);
-    if(!connectionInfo) throw new Error('not joined!');
-    this.joinDB.edit(stateID, [{op:'delete', path:'$.'+connectionInfo.userID+'.'+connectionInfo.browserID, key:connectionID}]);
+    if(!connectionInfo) {
+        var err = new Error('not joined!');
+        if(onError) return onError(err);
+        else throw err;
+    }
+    this.joinDB.edit(stateID, [{op:'delete', path:'$.'+connectionInfo.userID+'.'+connectionInfo.browserID, key:connectionID}], null, onSuccess, onError);
 };
 JDeltaSync.Server.prototype.listStates = function(type, ids, onSuccess, onError) {
     if(!_.isArray(ids)) {
@@ -1383,7 +1402,7 @@ JDeltaSync.Server.prototype.listStates = function(type, ids, onSuccess, onError)
     var i, ii;
     for(i=0, ii=ids.length; i<ii; i++) {
         if(tracker.thereWasAnError) break;
-        if(!db.contians(ids[i])) continue;
+        if(!db.contains(ids[i])) continue;
         tracker.numOfPendingCallbacks++;
         db._storage.getLastDelta(ids[i], function(id, delta) {
             tracker.out[tracker.out.length] = {type:type, id:id, lastDeltaSeq:delta.seq, lastDeltaHash:delta.curHash};
@@ -1435,15 +1454,15 @@ JDeltaSync.Server.prototype.fetchDeltas = function(items, onSuccess, onError) {
         results = [],
         i, ii;
     for(i=0, ii=items.length; i<ii; i++) {
-        chain[chain.lenth] = (function(i) {
+        chain[chain.length] = (function(i) {
             return function(next, onError) {
                 var type, db, id, seq;
                 type = items[i].type;
                 if(!_.isString(type)) return onError(new Error('non-string type'));
-                db = this._getDB(type);
+                db = self._getDB(type);
                 id = items[i].id;
                 if(!_.isString(id)) return onError(new Error('non-string id'));
-                if(!db.contians(id)) return;
+                if(!db.contains(id)) return;
                 seq = items[i].seq;
                 if(seq) {
                     db._storage.getDelta(id, seq, function(id, delta) {
