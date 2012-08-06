@@ -68,15 +68,28 @@ JDeltaDB.DB = function(storage, onSuccess, onError) {
         return new JDeltaDB.DB(storage, onSuccess, onError);
     this._states = {}; // State Structure: { state:json, dispatcher:obj }
     this._regexListeners = [];
+    this._loadListeners = [];
     this._storage = storage || new JDeltaDB.RamStorage();
-    this._load(onSuccess, onError);
+    this._load();
+    this.waitForLoad(onSuccess);
 };
-JDeltaDB.DB.prototype._load = function(onSuccess, onError) {
+JDeltaDB.DB.prototype.waitForLoad = function(callback) {
+    if(!callback) return;
+    if(!this._loading) return callback(this);
+    this._loadListeners[this._loadListeners.length] = callback;
+};
+JDeltaDB.DB.prototype._load = function() {
     var self = this;
+    this._loading = true;
+    var notifyLoadListeners = function() {
+        self._loading = false;
+        for(var i=self._loadListeners.length-1; i>=0; i--) {
+            self._loadListeners[i](self);
+            delete self._loadListeners[i];
+        }
+    };
     this._storage.listIDs(function(ids) {
-        var tracker = JDeltaDB._AsyncTracker(function(out) {
-            if(onSuccess) return onSuccess(self);
-        });
+        var tracker = JDeltaDB._AsyncTracker(notifyLoadListeners);
         var id, i, ii;
         for(i=0, ii=ids.length; i<ii; i++) {
             tracker.numOfPendingCallbacks++;
@@ -87,13 +100,14 @@ JDeltaDB.DB.prototype._load = function(onSuccess, onError) {
                 tracker.checkForEnd();
             }, function(err) {
                 tracker.thereWasAnError = true;
-                if(onError) return onError(err);
-                else throw err;
+                setTimeout(notifyLoadListeners, 1);  // Keep going, even though we are going to throw an exception.
+                throw err;
                 tracker.checkForEnd();
             });
         }
         tracker.checkForEnd();
     }, function(err) {
+        setTimeout(notifyLoadListeners, 1);
         throw err;
     });
 };
@@ -166,7 +180,7 @@ JDeltaDB.DB.prototype.render = function(id, endSeq, onSuccess, onError) {
             else throw error;
         });
 };
-JDeltaDB.DB.prototype._listStates = function() {
+JDeltaDB.DB.prototype.listStates = function() {
     var states = [],
         id;
     for(id in this._states) if(this._states.hasOwnProperty(id)) {
@@ -176,7 +190,7 @@ JDeltaDB.DB.prototype._listStates = function() {
     return states;
 };
 JDeltaDB.DB.prototype.iterStates = function(idRegex, func) {
-    var ids = this._listStates(),
+    var ids = this.listStates(),
         i, ii, id;
     for(i=0, ii=ids.length; i<ii; i++) {
         id = ids[i];
@@ -822,7 +836,7 @@ JDeltaDB._runAsyncChain = function(chain, onSuccess, onError) {
         }
         chain[i](next, onError);
     };
-    next();
+    return next();
 };
 
 
