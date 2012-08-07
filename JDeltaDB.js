@@ -100,14 +100,14 @@ JDeltaDB.DB.prototype._load = function() {
                 tracker.checkForEnd();
             }, function(err) {
                 tracker.thereWasAnError = true;
-                setTimeout(notifyLoadListeners, 1);  // Keep going, even though we are going to throw an exception.
+                setTimeout(notifyLoadListeners, 0);  // Keep going, even though we are going to throw an exception.
                 throw err;
                 tracker.checkForEnd();
             });
         }
         tracker.checkForEnd();
     }, function(err) {
-        setTimeout(notifyLoadListeners, 1);
+        setTimeout(notifyLoadListeners, 0);
         throw err;
     });
 };
@@ -236,28 +236,34 @@ JDeltaDB.DB.prototype.deleteState = function(id, onSuccess, onError) {
         if(onSuccess) return onSuccess();
     }, onError);
 };
-JDeltaDB.DB.prototype.rollback = function(id, toSeq, onSuccess, onError) {
+JDeltaDB.DB.prototype.rollback = function(id, toSeq, onSuccess, onError, _alreadyLocked) {
     // This function is useful when a state has become corrupted (maybe by external tampering,
     // or by a partial delta application), and you want to revert to the previous good state.
     var self = this;
-    var doRender = function(toSeq) {
-        var state = self._getRawState(id);
-        self.render(id, toSeq,
-                    function(o){
-                        state.state = o;
-                        self._trigger('!', id, {op:'reset'});
-                        if(onSuccess) return onSuccess(id);
-                    },
-                    function(err){if(onError) return onError(err);
-                                  else throw err;});
-    };
-    if(toSeq === undefined)
-        this._storage.getLastDelta(id,
-            function(id, lastDelta) {
-                doRender(lastDelta.seq);
-            }, onError);
-    else
-        doRender(toSeq);
+    this._storage.acquireLock(_alreadyLocked, function(unlock) {
+        var doRender = function(toSeq) {
+            var state = self._getRawState(id);
+            self.render(id, toSeq,
+                        function(o){
+                            state.state = o;
+                            unlock();
+                            self._trigger('!', id, {op:'reset'});
+                            if(onSuccess) return onSuccess(id);
+                        },
+                        function(err){
+                            setTimeout(unlock, 0);
+                            if(onError) return onError(err);
+                            else throw err;
+                        });
+        };
+        if(toSeq === undefined)
+            self._storage.getLastDelta(id,
+                function(id, lastDelta) {
+                    doRender(lastDelta.seq);
+                }, onError);
+        else
+            doRender(toSeq);
+    });
 };
 
 /*******************************************************************************
@@ -296,50 +302,46 @@ JDeltaDB.DB.prototype.rollback = function(id, toSeq, onSuccess, onError) {
  ******************************************************************************/
 JDeltaDB._EMPTY_OBJ_HASH = JDelta._hash('{}');
 JDeltaDB._PSEUDO_DELTA_0 = { steps:[], meta:{pseudoDelta:true}, parentHash:null, curHash:JDeltaDB._EMPTY_OBJ_HASH, seq:0, undoSeq:null, redoSeq:null };
-JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError) {
+JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, _alreadyLocked) {
     // Called by the JDeltaDB API (not the end user) with a delta object like this:
     //     { steps:[...], meta:{...}, parentHash:str, curHash:str, seq:int, undoSeq:int, redoSeq:int }
     var self = this;
-    this._storage.getLastDelta(id,
-        function(id, lastDelta) {
+    this._storage.acquireLock(_alreadyLocked, function(unlock) {
+        var stdOnErr = function(err) {
+            setTimeout(unlock, 0);
+            if(onError) return onError(err);
+            else throw err;
+        };
+        self._storage.getLastDelta(id, function(id, lastDelta) {
             var state = self._getRawState(id),
                 parentSeq = lastDelta.seq,
                 parentHash = lastDelta.curHash;
-            if(delta.seq !== parentSeq + 1) {
-                var err = new Error('invalid sequence! '+delta.seq+' != '+(parentSeq+1));
-                if(onError) return onError(err);
-                else throw err;
-            }
-            if(delta.parentHash !== parentHash) {
-                var err =  new Error('invalid parentHash: '+delta.parentHash+' != '+parentHash);
-                if(onError) return onError(err);
-                else throw err;
-            }
+            if(delta.seq !== parentSeq + 1) return stdOnErr(new Error('invalid sequence! '+delta.seq+' != '+(parentSeq+1)));
+            if(delta.parentHash !== parentHash) return stdOnErr(new Error('invalid parentHash: '+delta.parentHash+' != '+parentHash));
 
             waitForServerTime(function(serverTimeOffset) {
                 if(!delta.meta.hasOwnProperty('date'))
                     delta.meta.date = new Date(new Date().getTime() + serverTimeOffset).toUTCString();
                 try {
                     JDelta.patch(id, state.state, delta, state.dispatcher);
-                    if(JDelta._hash(JDelta.stringify(state.state)) !== delta.curHash) {
-                        var err = new Error('invalid curHash!');
-                        if(onError) return onError(err);
-                        else throw err;
-                    }
+                    if(JDelta._hash(JDelta.stringify(state.state)) !== delta.curHash)
+                        throw new Error('invalid curHash!');  // Rollback in the catch.
                 } catch(e) {
-                    self.rollback(id, parentSeq);
+                    var delayedUnlock = function() { setTimeout(unlock, 0); };
+                    self.rollback(id, parentSeq, delayedUnlock, delayedUnlock, true);  // true = alreadyLocked.
                     if(onError) return onError(e);
                     else throw e;
                 }
-                self._storage.addDelta(id, delta,
-                    function() {
-                        self._trigger('!', id, {op:'deltaApplied', delta:delta});
-                        if(onSuccess) return onSuccess();
-                    }, onError);
+                self._storage.addDelta(id, delta, function() {
+                    self._trigger('!', id, {op:'deltaApplied', delta:delta});
+                    unlock();  // unlock will never throw an exception.
+                    if(onSuccess) return onSuccess();
+                }, stdOnErr);
             });
-        }, onError);
+        }, stdOnErr);
+    });
 };
-JDeltaDB.DB.prototype._addDelta = function(id, delta, onSuccess, onError) {
+JDeltaDB.DB.prototype._addDelta = function(id, delta, onSuccess, onError, _alreadyLocked) {
     var self = this;
     var state = this._getRawState(id);
     var oldHash = JDelta._hash(JDelta.stringify(state.state));
@@ -347,103 +349,116 @@ JDeltaDB.DB.prototype._addDelta = function(id, delta, onSuccess, onError) {
     var newHash = JDelta._hash(JDelta.stringify(newStateCopy));
     if(newHash === oldHash)
         return;     // No change.  Let's just pretend this never happend...
-    this._storage.getLastDelta(id,
-        function(id, lastDelta) {
-            var newSeq = lastDelta.seq + 1;
-            var hashedDelta = { steps:delta.steps, meta:delta.meta || {}, parentHash:oldHash, curHash:newHash, seq:newSeq, undoSeq:-newSeq, redoSeq:null };
-            self._addHashedDelta(id, hashedDelta, onSuccess, onError);
-        }, function(err) {
+    this._storage.acquireLock(_alreadyLocked, function(unlock) {
+        var stdOnErr = function(err) {
+            setTimeout(unlock, 0);
             if(onError) return onError(err);
             else throw err;
-        });
+        };
+        self._storage.getLastDelta(id, function(id, lastDelta) {
+            var newSeq = lastDelta.seq + 1;
+            var hashedDelta = { steps:delta.steps, meta:delta.meta || {}, parentHash:oldHash, curHash:newHash, seq:newSeq, undoSeq:-newSeq, redoSeq:null };
+            self._addHashedDelta(id, hashedDelta, function() {
+                unlock();
+                if(onSuccess) return onSuccess();
+            }, stdOnErr, true);  // true = alreadyLocked.
+        }, stdOnErr);
+    });
 };
 JDeltaDB.DB.prototype.edit = function(id, operations, meta, onSuccess, onError) {
     // Called by the end user with an 'operations' arg like JDelta.create.
     // Can also include an optional 'meta' object to include info about the change, such as date, user, etc.
-    var state = this._getRawState(id);
-    var delta = JDelta.create(state.state, operations);
-    delta.meta = meta;
-    this._addDelta(id, delta, onSuccess, onError);
+    var self = this;
+    this._storage.acquireLock(false, function(unlock) {
+        var state = self._getRawState(id);
+        var delta = JDelta.create(state.state, operations);
+        delta.meta = meta;
+        self._addDelta(id, delta, function() {
+            unlock();
+            if(onSuccess) return onSuccess();
+        }, function(err) {
+            setTimeout(unlock, 0);
+            if(onError) return onError(err);
+            else throw err;
+        }, true);  // true = alreadyLocked.
+    });
 };
 JDeltaDB.DB.prototype.canUndo = function(id, onSuccess, onError) {
-    this._storage.getLastDelta(id,
-        function(id, lastDelta) {
-            return onSuccess(lastDelta.undoSeq !== null);
-        }, onError);
+    this._storage.getLastDelta(id, function(id, lastDelta) {
+        return onSuccess(lastDelta.undoSeq !== null);
+    }, onError);
 };
 JDeltaDB.DB.prototype.undo = function(id, onSuccess, onError) {
     var self = this;
-    this._storage.getLastDelta(id,
-        function(id, lastDelta) {
-            if(!lastDelta) {
-                var err = new Error('unable to undo (no deltas)!');
-                if(onError) return onError(err);
-                else throw err;
-            }
-            if(lastDelta.undoSeq === null) {
-                var err = new Error('unable to undo (already at beginning)!');
-                if(onError) return onError(err);
-                else throw err;
-            }
+    this._storage.acquireLock(false, function(unlock) {
+        var stdOnErr = function(err) {
+            setTimeout(unlock, 0);
+            if(onError) return onError(err);
+            else throw err;
+        };
+        self._storage.getLastDelta(id, function(id, lastDelta) {
+            if(!lastDelta) return stdOnErr(new Error('unable to undo (no deltas)!'));
+            if(lastDelta.undoSeq === null) return stdOnErr(new Error('unable to undo (already at beginning)!'));
             var newSeq = lastDelta.seq + 1;
             var newRedoSeq = -newSeq;
-            self._storage.getDelta(id, -lastDelta.undoSeq,
-                function(id, preUndoDelta) {
-                    var undoSteps = JDelta.reverse(preUndoDelta);
-                    var postUndoSeq = (-lastDelta.undoSeq) - 1;
+            self._storage.getDelta(id, -lastDelta.undoSeq, function(id, preUndoDelta) {
+                var undoSteps = JDelta.reverse(preUndoDelta);
+                var postUndoSeq = (-lastDelta.undoSeq) - 1;
 
-                    var finishProcessWithPostUndoDelta = function(id, postUndoDelta) {
-                        var postUndoUndoSeq = postUndoDelta.undoSeq;
-                        var postUndoHash = postUndoDelta.curHash;
-                        var newMeta = _.extend(JDelta._deepCopy(postUndoDelta.meta), {operation:'undo'});
-                        var hashedDelta = { steps:undoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postUndoHash, seq:newSeq, undoSeq:postUndoUndoSeq, redoSeq:newRedoSeq };
-                        self._addHashedDelta(id, hashedDelta, onSuccess, onError);
-                    };
+                var finishProcessWithPostUndoDelta = function(id, postUndoDelta) {
+                    var postUndoUndoSeq = postUndoDelta.undoSeq;
+                    var postUndoHash = postUndoDelta.curHash;
+                    var newMeta = _.extend(JDelta._deepCopy(postUndoDelta.meta), {operation:'undo'});
+                    var hashedDelta = { steps:undoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postUndoHash, seq:newSeq, undoSeq:postUndoUndoSeq, redoSeq:newRedoSeq };
+                    self._addHashedDelta(id, hashedDelta, function() {
+                        unlock();
+                        if(onSuccess) return onSuccess();
+                    }, stdOnErr, true);  // true = alreadyLocked.
+                };
 
-                    if(postUndoSeq > 0) {
-                        return self._storage.getDelta(id, postUndoSeq, finishProcessWithPostUndoDelta, onError);
-                    } else {
-                        return finishProcessWithPostUndoDelta(id, JDeltaDB._PSEUDO_DELTA_0);
-                    }
-                }, onError);
-        }, onError);
+                if(postUndoSeq > 0) {
+                    return self._storage.getDelta(id, postUndoSeq, finishProcessWithPostUndoDelta, stdOnErr);
+                } else {
+                    return finishProcessWithPostUndoDelta(id, JDeltaDB._PSEUDO_DELTA_0);
+                }
+            }, stdOnErr);
+        }, stdOnErr);
+    });
 };
 JDeltaDB.DB.prototype.canRedo = function(id, onSuccess, onError) {
-    this._storage.getLastDelta(id,
-        function(id, lastDelta) {
-            return onSuccess(lastDelta.redoSeq !== null);
-        }, onError);
+    this._storage.getLastDelta(id, function(id, lastDelta) {
+        return onSuccess(lastDelta.redoSeq !== null);
+    }, onError);
 };
 JDeltaDB.DB.prototype.redo = function(id, onSuccess, onError) {
     var self = this;
-    this._storage.getLastDelta(id,
-        function(id, lastDelta) {
-            if(!lastDelta) {
-                var err = new Error('unable to redo (no deltas)!');
-                if(onError) return onError(err);
-                else throw err;
-            }
-            if(lastDelta.redoSeq === null) {
-                var err = new Error('unable to redo (already at end)!');
-                if(onError) return onError(err);
-                else throw err;
-            }
+    this._storage.acquireLock(false, function(unlock) {
+        var stdOnErr = function(err) {
+            setTimeout(unlock, 0);
+            if(onError) return onError(err);
+            else throw err;
+        };
+        self._storage.getLastDelta(id, function(id, lastDelta) {
+            if(!lastDelta) return stdOnErr(new Error('unable to redo (no deltas)!'));
+            if(lastDelta.redoSeq === null) return stdOnErr(new Error('unable to redo (already at end)!'));
             var newSeq = lastDelta.seq + 1;
             var newUndoSeq = -newSeq;
-            self._storage.getDelta(id, -lastDelta.redoSeq,
-                function(id, preRedoDelta) {
-                    var redoSteps = JDelta.reverse(preRedoDelta);
-                    var postRedoSeq = (-lastDelta.redoSeq) - 1;
-                    self._storage.getDelta(id, postRedoSeq,
-                        function(id, postRedoDelta) {
-                            var postRedoRedoSeq = postRedoDelta.redoSeq;
-                            var postRedoHash = postRedoDelta.curHash;
-                            var newMeta = _.extend(JDelta._deepCopy(postRedoDelta.meta), {operation:'redo'});
-                            var hashedDelta = { steps:redoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postRedoHash, seq:newSeq, undoSeq:newUndoSeq, redoSeq:postRedoRedoSeq };
-                            self._addHashedDelta(id, hashedDelta, onSuccess, onError);
-                        }, onError);
-                }, onError);
-        }, onError);
+            self._storage.getDelta(id, -lastDelta.redoSeq, function(id, preRedoDelta) {
+                var redoSteps = JDelta.reverse(preRedoDelta);
+                var postRedoSeq = (-lastDelta.redoSeq) - 1;
+                self._storage.getDelta(id, postRedoSeq, function(id, postRedoDelta) {
+                    var postRedoRedoSeq = postRedoDelta.redoSeq;
+                    var postRedoHash = postRedoDelta.curHash;
+                    var newMeta = _.extend(JDelta._deepCopy(postRedoDelta.meta), {operation:'redo'});
+                    var hashedDelta = { steps:redoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postRedoHash, seq:newSeq, undoSeq:newUndoSeq, redoSeq:postRedoRedoSeq };
+                    self._addHashedDelta(id, hashedDelta, function() {
+                        unlock();
+                        if(onSuccess) return onSuccess();
+                    }, stdOnErr, true); // true = alreadyLocked
+                }, stdOnErr);
+            }, stdOnErr);
+        }, stdOnErr);
+    });
 };
 
 /////////// If you need multi-state edits, YOU'RE DOING IT WRONG!!!  Multi-state edit is riddled with complexity and cornercase issues.  It is a bad way to do things.
@@ -472,6 +487,53 @@ JDeltaDB.RamStorage = function(filepath) {
     if(filepath)  this.__filepath = PATH.resolve(filepath);
     this.__loadSync();
     this.save = _.debounce(_.bind(this._rawSave, this), 1000);
+};
+JDeltaDB.RamStorage.prototype.acquireLock = function(alreadyLocked, callback) {
+    console.log('acquireLock...');
+    if(alreadyLocked) {
+        console.log('Already locked.  Calling...');
+        return callback(function() {});
+    }
+    if(!this._lockQueue) this._lockQueue = []; /// I initialize this way so I can just inherit these two functions in subclasses and get this functionality, without requiring any setup in the constructor.
+
+    this._lockQueue[this._lockQueue.length] = callback;
+
+    if(!this.lockKey) {
+        console.log('No lock.  Running immediately.');
+        return this._nextLockCB();
+    }
+    console.log('Adding to lock queue.');
+};
+JDeltaDB.RamStorage.prototype._nextLockCB = function() {
+    console.log('nextLockCB...');
+    var self = this;
+    if(this.lockKey) throw new Error('NextLockCB called while previous lock exists!');
+    if(!this._lockQueue.length) {
+        console.log('Empty lockQueue.');
+        return; // Nothing left to do.
+    }
+    var lockKey = this.lockKey = {};  // Create a unique object.
+    var unlock = function() {
+        console.log('Unlock Called.');
+        return self._releaseLock(lockKey);
+    };
+    try {
+        var callback = this._lockQueue.splice(0,1)[0];
+        return callback(unlock);
+    } catch(e) {
+        console.log('Exception during Storage Lock callback:',e);
+        if(e.stack) console.log(e.stack);
+        if(this.lockKey === lockKey) {
+            console.log('Auto un-locking...');
+            unlock();
+        }
+    }
+};
+JDeltaDB.RamStorage.prototype._releaseLock = function(key) {
+    console.log('relaseLock...');
+    if(key !== this.lockKey) throw new Error('Incorrect LockKey!');
+    this.lockKey = null;
+    return this._nextLockCB(); // I was thinking of using setTimeout or postMessage to delay this (and allow the caller stack to run as expected), but it creates some corner cases (like double-calls of nextLockCB) and performance issues on IE6 (because setTimeout is always a minimum of 10ms ??? need to verify).  So i'll just chain the calls for now and change it if it's a problem.
 };
 JDeltaDB.RamStorage.prototype.__loadSync = function() {
     if(!this.__filepath) return;
@@ -602,6 +664,9 @@ JDeltaDB.DirStorage = function(dirpath) {
     this.save = _.debounce(_.bind(this._rawSave, this), 1000);
     this.removeStatesInterval = setInterval(_.bind(this.__removeInactiveStatesFromRam, this), 10000);
 };
+JDeltaDB.DirStorage.prototype.acquireLock = JDeltaDB.RamStorage.prototype.acquireLock;
+JDeltaDB.DirStorage.prototype._nextLockCB = JDeltaDB.RamStorage.prototype._nextLockCB;
+JDeltaDB.DirStorage.prototype._releaseLock = JDeltaDB.RamStorage.prototype._releaseLock;
 JDeltaDB.DirStorage.prototype.__idToFilepath = function(id) {
     if(!_.isString(id)) throw new Error('Non-string id!');
     if(!id.length) throw new Error('Blank id!');
