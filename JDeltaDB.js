@@ -674,6 +674,7 @@ JDeltaDB.DirStorage.prototype.__removeInactiveStatesFromRam = function() {
         }
         stateTime = this.__stateAccessTimes[id] || 0;
         if(curTime - stateTime  >  this.__stateIdleTime) {
+            console.log('Removing Inactive State from Ram:',id);
             delete this.__statesCurrentlyInRam[id];
         }
     }
@@ -703,6 +704,7 @@ JDeltaDB.DirStorage.prototype._getRawDeltas = function(id, onSuccess, onError) {
     if(!this.__statesCurrentlyInRam.hasOwnProperty(id)) {
         var filepath = this.__idToFilepath(id);
         fs.readFile(filepath, 'utf8', function(err, data) {
+            console.log('getRawDeltas: read done:',filepath);
             if(err) return onError(err);
             var state = self.__statesCurrentlyInRam[id] = JSON.parse(data);
             return onSuccess(state);
