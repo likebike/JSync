@@ -523,14 +523,16 @@ JDeltaDB.RamStorage.prototype._nextLockCB = function() {
     } catch(e) {
         console.log('Exception during Storage Lock callback:',e);
         if(e.stack) console.log(e.stack);
-        if(this.lockKey === lockKey) {
-            console.log('Auto un-locking...');
-            unlock();
-        }
+        setTimeout(function() {
+            if(self.lockKey === lockKey) {
+                console.log('Auto un-locking...');
+                unlock();
+            }
+        }, 0);
     }
 };
 JDeltaDB.RamStorage.prototype._releaseLock = function(key) {
-    console.log('relaseLock...');
+    console.log('releaseLock...');
     if(key !== this.lockKey) throw new Error('Incorrect LockKey!');
     this.lockKey = null;
     return this._nextLockCB(); // I was thinking of using setTimeout or postMessage to delay this (and allow the caller stack to run as expected), but it creates some corner cases (like double-calls of nextLockCB) and performance issues on IE6 (because setTimeout is always a minimum of 10ms ??? need to verify).  So i'll just chain the calls for now and change it if it's a problem.
@@ -671,6 +673,7 @@ JDeltaDB.DirStorage.prototype.__idToFilepath = function(id) {
     if(!_.isString(id)) throw new Error('Non-string id!');
     if(!id.length) throw new Error('Blank id!');
     var encodedID = encodeURIComponent(id);
+    encodedID = encodedID.replace(/\./g, '%2E');  // Also encode '.' to avoid the '.' and '..' filenames.
     var hash = JDelta._hash(encodedID);
     if(hash.length !== 10) throw new Error('Unexpected hash length!' + hash);
     var hashPiece = hash.substring(10-this.__hashPieceLen,10);
