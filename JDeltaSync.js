@@ -1344,6 +1344,7 @@ JDeltaSync.Server.prototype.clientSend = function(req, connectionID, bundle, onS
 
                     case 'deleteState':
                         if(bundleItem.data.type !== 'state') return FAIL('type!=state'); // Client modification of Join states not allowed.
+                        if(!self._accessPolicy.canDelete(self, req, connectionID, bundleItem.data.id)) return FAIL('Access Denied');
                         db = self._getDB(bundleItem.data.type);
                         db.deleteState(bundleItem.data.id, function() {
                             self._broadcast(bundleItem, null, excludes);

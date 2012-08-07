@@ -704,6 +704,7 @@ JDeltaDB.DirStorage.prototype._getRawDeltas = function(id, onSuccess, onError) {
     if(!this.__statesCurrentlyInRam.hasOwnProperty(id)) {
         var filepath = this.__idToFilepath(id);
         fs.readFile(filepath, 'utf8', function(err, data) {
+            if(self.__statesCurrentlyInRam.hasOwnProperty(id)) return onSuccess(self.__statesCurrentlyInRam[id]);  // It got added by someone else while we were reading the file.
             console.log('getRawDeltas: read done:',filepath);
             if(err) return onError(err);
             var state = self.__statesCurrentlyInRam[id] = JSON.parse(data);
