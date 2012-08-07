@@ -57,7 +57,7 @@ if(typeof exports !== 'undefined') {
     getServerTimeOffset();
 } else throw new Error('This environment is not yet supported.');
 
-JDeltaDB.VERSION = '0.1.0a';
+JDeltaDB.VERSION = '0.2.0';
 
 
 
