@@ -591,6 +591,12 @@ JDeltaSync.Client.prototype._rawDoReceive = function() {
         },
         error:function(jqXHR, retCodeStr, exceptionObj) {
             self._receiving = false;
+            if(jqXHR.status === 401) {
+                // Our connectionID has been deleted because it was idle.
+                // We need to login again.
+                if(typeof console !== 'undefined') console.log('Reconnecting...');
+                self.login();
+            }
             var reconnectMS = self.shortErrorLongPollReconnectMS;
             var timeSinceStart = new Date().getTime() - requestStartTime;
             if(timeSinceStart < 5000) reconnectMS = self.longErrorLongPollReconnectMS;
@@ -747,7 +753,7 @@ JDeltaSync.sebwebHandler_clientLogin = function(syncServer) {
             syncServer.clientLogin(browserID, req, function(result) {
                 res.setHeader('Content-Type', 'application/json');
                 res.setHeader('Cache-Control', 'no-cache, must-revalidate');
-                res.setHeader('Access-Control-Allow-Origin', syncServer.options.accessControlAllowOrigin || '*');  // Allow cross-domain requests.
+                res.setHeader('Access-Control-Allow-Origin', syncServer.options.accessControlAllowOrigin || req.headers.origin);  // Allow cross-domain requests.
                 res.setHeader('Access-Control-Allow-Credentials', 'true');  // Allow cross-domain cookies.
                 res.end(JSON.stringify(result));
                 onSuccess();
@@ -780,13 +786,18 @@ JDeltaSync.sebwebHandler_clientReceive = function(syncServer) {
         if(!browserID) return onError(new Error('No browserID: '+browserID));
         var alluserState = syncServer.joinDB.getState('/');
         var connectionInfo = JDeltaSync.connectionInfo(alluserState, connectionID);
-        if(!connectionInfo) return onError(new Error('connectionID not found!'));
+        if(!connectionInfo) {
+            res.statusCode = 401;  // Unauthorized.
+            res.setHeader('Access-Control-Allow-Origin', syncServer.options.accessControlAllowOrigin || req.headers.origin);  // Allow cross-domain requests.  ...otherwise javascript can't see the status code (it sees 0 instead because it is not allows to see any data that is not granted access via CORS).
+            res.setHeader('Access-Control-Allow-Credentials', 'true');  // Allow cross-domain cookies.
+            return onError(new Error('connectionID not found!'));
+        }
         if(browserID !== connectionInfo.browserID) return onError(new Error('browserID does not match!'));
         
         syncServer.clientReceive(connectionID, req, function(result) {
             res.setHeader('Content-Type', 'application/json');
             res.setHeader('Cache-Control', 'no-cache, must-revalidate');
-            res.setHeader('Access-Control-Allow-Origin', syncServer.options.accessControlAllowOrigin || '*');  // Allow cross-domain requests.
+            res.setHeader('Access-Control-Allow-Origin', syncServer.options.accessControlAllowOrigin || req.headers.origin);  // Allow cross-domain requests.
             res.setHeader('Access-Control-Allow-Credentials', 'true');  // Allow cross-domain cookies.
             res.end(JSON.stringify(result));
             onSuccess();
@@ -847,7 +858,7 @@ JDeltaSync.sebwebHandler_clientSend = function(syncServer) {
         var result = syncServer.clientSend(req, connectionID, bundle, function(result) {
             res.setHeader('Content-Type', 'application/json');
             res.setHeader('Cache-Control', 'no-cache, must-revalidate');
-            res.setHeader('Access-Control-Allow-Origin', syncServer.options.accessControlAllowOrigin || '*');  // Allow cross-domain requests.
+            res.setHeader('Access-Control-Allow-Origin', syncServer.options.accessControlAllowOrigin || req.headers.origin);  // Allow cross-domain requests.
             res.setHeader('Access-Control-Allow-Credentials', 'true');  // Allow cross-domain cookies.
             res.end(JSON.stringify(result));
             onSuccess();
@@ -873,7 +884,7 @@ JDeltaSync.sebwebHandler_query = function(syncServer) {
         var standardOnSuccess = function(result) {
             res.setHeader('Content-Type', 'application/json');
             res.setHeader('Cache-Control', 'no-cache, must-revalidate');
-            res.setHeader('Access-Control-Allow-Origin', syncServer.options.accessControlAllowOrigin || '*');  // Allow cross-domain requests.
+            res.setHeader('Access-Control-Allow-Origin', syncServer.options.accessControlAllowOrigin || req.headers.origin);  // Allow cross-domain requests.
             res.setHeader('Access-Control-Allow-Credentials', 'true');  // Allow cross-domain cookies.
             res.end(JSON.stringify(result));
             onSuccess();
