@@ -17,6 +17,8 @@ mkdir "$WORKDIR"
 
 cp -L $1 "$WORKDIR/file.js"
 jscoverage --no-highlight "$WORKDIR" "$COVDIR"
+echo 'var _$jscoverage;'   # So _$jscoverage does not leak into the global namespace.
+echo
 cat "$COVDIR/file.js"
 echo
 echo '; module.exports._$jscoverage = _$jscoverage; module.exports._module = module;'
