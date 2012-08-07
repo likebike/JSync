@@ -30,7 +30,7 @@ if(typeof exports !== 'undefined') {
     jQuery = window.jQuery  ||  window.$;
 } else throw new Error('This environment is not yet supported.');
 
-JDeltaSync.VERSION = '0.2.0a';
+JDeltaSync.VERSION = '0.2.0';
 
 
 var ID_CHARS = '0123456789abcdefghijkmnopqrstuvwxyzABCDEFGHIJKLMNPQRSTUVWXYZ';  // Removed l and O because they are easily confused with 1 and 0.
