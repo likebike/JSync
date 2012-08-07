@@ -507,9 +507,9 @@ JDeltaSync.Client.prototype._rawDoReceive = function() {
     this._receiving = true;
     var requestStartTime = new Date().getTime();  // I do things this way because the ajax 'timeout' option does not work in Chrome.
     jQuery.ajax({
-        url:this._url+'/clientReceive?connectionID='+this.connectionID,
+        url:this._url+'/clientReceive?connectionID='+this.connectionID+'&ignore='+JDeltaSync._generateID(),
         xhrFields: { withCredentials: true },  // Enable CORS cookies.
-        type:'GET',
+        type:'GET', // Firefox v14 is CACHING GET responses, even though I have the "Cache-Control: no-cache, must-revalidate" header set.  That's why i'm sending an 'ignore' param.
         //timeout:this.longPollTimeoutMS,  // Timeout does NOT WORK in Chrome (v20)!
         dataType:'json',
         success:function(data, retCodeStr, jqXHR) {
@@ -610,7 +610,7 @@ JDeltaSync.Client.prototype.listStates = function(type, ids, onSuccess, onError)
     }
     if(!ids.length) return onSuccess([]);
     jQuery.ajax({
-        url:this._url+'/query?cmd=listStates&type='+type+'&ids='+encodeURIComponent(JSON.stringify(ids)),
+        url:this._url+'/query?cmd=listStates&type='+type+'&ids='+encodeURIComponent(JSON.stringify(ids))+'&ignore='+JDeltaSync._generateID(),
         xhrFields: { withCredentials: true },  // Enable CORS cookies.
         type:'GET',
         dataType:'json',
@@ -642,7 +642,7 @@ JDeltaSync.Client.prototype.listStates = function(type, ids, onSuccess, onError)
 JDeltaSync.Client.prototype._listStatesRegex = function(type, idRegex, onSuccess, onError) {
     var regexStr = idRegex.toString();
     jQuery.ajax({
-        url:this._url+'/query?cmd=listStatesRegex&type='+type+'&idRegex='+encodeURIComponent(regexStr),
+        url:this._url+'/query?cmd=listStatesRegex&type='+type+'&idRegex='+encodeURIComponent(regexStr)+'&ignore='+JDeltaSync._generateID(),
         xhrFields: { withCredentials: true },  // Enable CORS cookies.
         type:'GET',
         dataType:'json',
@@ -671,7 +671,7 @@ JDeltaSync.Client.prototype.fetchDeltas = function(items, onSuccess, onError) {
     }
     if(!items.length) return onSucceess([]);
     jQuery.ajax({
-        url:this._url+'/query?cmd=fetchDeltas&items='+encodeURIComponent(JSON.stringify(items)),
+        url:this._url+'/query?cmd=fetchDeltas&items='+encodeURIComponent(JSON.stringify(items))+'&ignore='+JDeltaSync._generateID(),
         xhrFields: { withCredentials: true },  // Enable CORS cookies.
         type:'GET',
         dataType:'json',
