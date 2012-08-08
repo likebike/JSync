@@ -489,9 +489,9 @@ JDeltaDB.RamStorage = function(filepath) {
     this.save = _.debounce(_.bind(this._rawSave, this), 1000);
 };
 JDeltaDB.RamStorage.prototype.acquireLock = function(alreadyLocked, callback) {
-    console.log('acquireLock...');
+    //console.log('acquireLock...');
     if(alreadyLocked) {
-        console.log('Already locked.  Calling...');
+        //console.log('Already locked.  Calling...');
         return callback(function() {});
     }
     if(!this._lockQueue) this._lockQueue = []; /// I initialize this way so I can just inherit these two functions in subclasses and get this functionality, without requiring any setup in the constructor.
@@ -499,40 +499,42 @@ JDeltaDB.RamStorage.prototype.acquireLock = function(alreadyLocked, callback) {
     this._lockQueue[this._lockQueue.length] = callback;
 
     if(!this.lockKey) {
-        console.log('No lock.  Running immediately.');
+        //console.log('No lock.  Running immediately.');
         return this._nextLockCB();
     }
-    console.log('Adding to lock queue.');
+    //console.log('Adding to lock queue.');
 };
 JDeltaDB.RamStorage.prototype._nextLockCB = function() {
-    console.log('nextLockCB...');
+    //console.log('nextLockCB...');
     var self = this;
     if(this.lockKey) throw new Error('NextLockCB called while previous lock exists!');
     if(!this._lockQueue.length) {
-        console.log('Empty lockQueue.');
+        //console.log('Empty lockQueue.');
         return; // Nothing left to do.
     }
     var lockKey = this.lockKey = {};  // Create a unique object.
     var unlock = function() {
-        console.log('Unlock Called.');
+        //console.log('Unlock Called.');
         return self._releaseLock(lockKey);
     };
     try {
         var callback = this._lockQueue.splice(0,1)[0];
         return callback(unlock);
     } catch(e) {
-        console.log('Exception during Storage Lock callback:',e);
-        if(e.stack) console.log(e.stack);
+        if(typeof console !== 'undefined') {
+            console.log('Exception during Storage Lock callback:',e);
+            if(e.stack) console.log(e.stack);
+        }
         setTimeout(function() {
             if(self.lockKey === lockKey) {
-                console.log('Auto un-locking...');
+                //console.log('Auto un-locking...');
                 unlock();
             }
         }, 0);
     }
 };
 JDeltaDB.RamStorage.prototype._releaseLock = function(key) {
-    console.log('releaseLock...');
+    //console.log('releaseLock...');
     if(key !== this.lockKey) throw new Error('Incorrect LockKey!');
     this.lockKey = null;
     return this._nextLockCB(); // I was thinking of using setTimeout or postMessage to delay this (and allow the caller stack to run as expected), but it creates some corner cases (like double-calls of nextLockCB) and performance issues on IE6 (because setTimeout is always a minimum of 10ms ??? need to verify).  So i'll just chain the calls for now and change it if it's a problem.
@@ -594,58 +596,54 @@ JDeltaDB.RamStorage.prototype.deleteState = function(id, onSuccess, onError) {  
 };
 JDeltaDB.RamStorage.prototype.getDelta = function(id, seq, onSuccess, onError) {
     if(!onSuccess) throw new Error('You need to provide a callback.');
-    this._getRawDeltas(id,
-        function(deltaList) {
-            // There are much faster ways to search for the right delta... maybe a binary search, or maybe even some heuristics based on the sequence number and the array index.
-            var i, ii, d;
-            for(i=0, ii=deltaList.length; i<ii; i++) {
-                d = deltaList[i];
-                if(d.seq === seq) return onSuccess(id, d);
-            }
-            var err = new Error('Not Found: '+id+', '+seq);
-            if(onError) return onError(err);
-            else throw err;
-        }, onError);
+    this._getRawDeltas(id, function(deltaList) {
+        // There are much faster ways to search for the right delta... maybe a binary search, or maybe even some heuristics based on the sequence number and the array index.
+        var i, ii, d;
+        for(i=0, ii=deltaList.length; i<ii; i++) {
+            d = deltaList[i];
+            if(d.seq === seq) return onSuccess(id, d);
+        }
+        var err = new Error('Not Found: '+id+', '+seq);
+        if(onError) return onError(err);
+        else throw err;
+    }, onError);
 };
 JDeltaDB.RamStorage.prototype.getDeltas = function(id, startSeq, endSeq, onSuccess, onError) {
     if(!onSuccess) throw new Error('You need to provide a callback.');
-    this._getRawDeltas(id,
-        function(deltaList) {
-            var out = [],
-                i, ii, s, inRange;
-            for(i=0, ii=deltaList.length; i<ii; i++) {
-                inRange = true;
-                s = deltaList[i]['seq'];
-                if(startSeq!==undefined  &&  s<startSeq)
-                    inRange = false;
-                if(endSeq!==undefined  &&  s>endSeq)
-                    inRange = false;  // Might be able to optimize by breaking out of loop at this point.
-                if(inRange)
-                    out[out.length] = deltaList[i];
-            }
-            return onSuccess(id, out);
-        }, onError);
+    this._getRawDeltas(id, function(deltaList) {
+        var out = [],
+            i, ii, s, inRange;
+        for(i=0, ii=deltaList.length; i<ii; i++) {
+            inRange = true;
+            s = deltaList[i]['seq'];
+            if(startSeq!==undefined  &&  s<startSeq)
+                inRange = false;
+            if(endSeq!==undefined  &&  s>endSeq)
+                inRange = false;  // Might be able to optimize by breaking out of loop at this point.
+            if(inRange)
+                out[out.length] = deltaList[i];
+        }
+        return onSuccess(id, out);
+    }, onError);
 };
 JDeltaDB.RamStorage.prototype.getLastDelta = function(id, onSuccess, onError) {
     if(!onSuccess) throw new Error('You need to provide a callback.');
-    this._getRawDeltas(id,
-        function(deltaList) {
-            var lastDelta = deltaList[deltaList.length-1];
-            if(!lastDelta) {
-                // There are no deltas.  Fake one:
-                lastDelta = JDeltaDB._PSEUDO_DELTA_0;
-            }
-            return onSuccess(id, lastDelta);
-        }, onError);
+    this._getRawDeltas(id, function(deltaList) {
+        var lastDelta = deltaList[deltaList.length-1];
+        if(!lastDelta) {
+            // There are no deltas.  Fake one:
+            lastDelta = JDeltaDB._PSEUDO_DELTA_0;
+        }
+        return onSuccess(id, lastDelta);
+    }, onError);
 };
 JDeltaDB.RamStorage.prototype.addDelta = function(id, delta, onSuccess, onError) {
     var self = this;
-    this._getRawDeltas(id,
-        function(deltaList) {
-            deltaList[deltaList.length] = delta;
-            self.save();
-            if(onSuccess) return onSuccess();
-        }, onError);
+    this._getRawDeltas(id, function(deltaList) {
+        deltaList[deltaList.length] = delta;
+        self.save();
+        if(onSuccess) return onSuccess();
+    }, onError);
 };
 
 

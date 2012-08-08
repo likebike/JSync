@@ -33,6 +33,10 @@ if(typeof exports !== 'undefined') {
 JDeltaSync.VERSION = '0.2.0';
 
 
+JDeltaSync.extraAjaxOptions = { xhrFields: {withCredentials:true} };    // Enable CORS cookies.
+if(jQuery  &&  !jQuery.support.cors) JDeltaSync.extraAjaxOptions = {};  // If you try to use the 'withCredentials' field on IE6, you get an exception.
+
+
 var ID_CHARS = '0123456789abcdefghijkmnopqrstuvwxyzABCDEFGHIJKLMNPQRSTUVWXYZ';  // Removed l and O because they are easily confused with 1 and 0.
 JDeltaSync._generateID = function(len) {
     if(len === undefined) len = 8;
@@ -47,7 +51,7 @@ JDeltaSync._generateID = function(len) {
 };
 
 
-JDeltaSync.allConnections = function(joinState, stateType, minDepth) {
+JDeltaSync.allConnectionInfos = function(joinState, stateType, minDepth) {
     // Join State Structure:
     //    v---------------------------- userIDs
     //    v      v--------------------- browserIDs
@@ -73,11 +77,20 @@ JDeltaSync.allConnections = function(joinState, stateType, minDepth) {
                 cSub = cIDs[cID];
                 if(cSub.indexOf(stateType) === -1) continue;
                 if(minDepth === 'r'  &&  cSub.indexOf('r'+stateType) === -1) continue;
-                connectionIDs[connectionIDs.length] = cID;
+                connectionIDs[connectionIDs.length] = {userID:userID, browserID:browserID, connectionID:cID};
             }
         }
     }
     return connectionIDs;
+};
+JDeltaSync.allConnections = function(joinState, stateType, minDepth) {
+    var cInfos = JDeltaSync.allConnectionInfos(joinState, stateType, minDepth);
+    var connections = [],
+        i, ii;
+    for(i=0, ii=cInfos.length; i<ii; i++) {
+        connections[connections.length] = cInfos[i].connectionID;
+    }
+    return connections;
 };
 JDeltaSync.connectionInfo = function(joinState, connectionID) {
     var userID, user, browserIDs, browserID, browser;
@@ -151,6 +164,8 @@ JDeltaSync.Client = function(url, stateDB, joinDB) {
     this._sending = false;
     this._resetting = false;
     this._receiving = false;
+    this._joins = {};
+    this._activeAJAX = [];
 
     this._boundStateDbEventCallback = _.bind(this._stateDbEventCallback, this);
 
@@ -162,29 +177,67 @@ JDeltaSync.Client = function(url, stateDB, joinDB) {
     setTimeout(function() { self._rawDoReceive(); }, 1000);
     this.login();
 };
-JDeltaSync.Client.prototype.login = function() {
+JDeltaSync.Client.prototype.login = function(callback) {
     var self = this;
     var doLogin = function() {
-        jQuery.ajax({
+        jQuery.ajax(_.extend({
             url:self._url+'/clientLogin',
-            xhrFields: { withCredentials: true },  // Enable CORS cookies.
             type:'POST',
-            data:{_ignore:1},  // There must be data, otherwise jQuery does not set a content type, and formidable can't handle it.
+            data:{op:'login'},
             dataType:'json',
             success:function(data, retCodeStr, jqXHR) {
                 if(!_.isObject(data)) throw new Error('Expected object from server!');
                 self.connectionID = data.connectionID;
+                if(callback) return callback(self);
             },
             error:function(jqXHR, retCodeStr, exceptionObj) {
                 setTimeout(doLogin, self.errorLoginReconnectMS);
                 throw exceptionObj;
             }
-        });
+        }, JDeltaSync.extraAjaxOptions));
     };
     doLogin();
 };
 JDeltaSync.Client.prototype.logout = function(callback) {
-    return this._addToSendQueue({op:'logout'}, callback);
+    if(!this.connectionID) {
+        if(callback) return callback(this);     // Already logged out.
+        else return;
+    }
+    var self = this;
+    var doLogout = function() {
+        jQuery.ajax(_.extend({
+            url:self._url+'/clientLogin',
+            type:'POST',
+            data:{op:'logout',
+                  connectionID:self.connectionID},
+            dataType:'json',
+            success:function(data, retCodeStr, jqXHR) {
+                if(!_.isObject(data)) throw new Error('Expected object from server!');
+                self.connectionID = null;
+                for(var i=self._activeAJAX.length-1; i>=0; i--) {
+                    try { self._activeAJAX[i].abort();  // This actually *runs* the error handlers and thrown exceptions will pop thru our stack if we don't try...catch this.
+                    } catch(e) {}
+                    self._activeAJAX.splice(i, 1);
+                }
+                if(callback) return callback(self);
+            },
+            error:function(jqXHR, retCodeStr, exceptionObj) {
+                console.log('Error logging out:', exceptionObj);
+                if(callback) return callback(self);
+            }
+        }, JDeltaSync.extraAjaxOptions));
+    };
+    doLogout();
+};
+JDeltaSync.Client.prototype.relogin = function() {
+    var self = this;
+    this.logout(function() {
+        self.login(function() {
+            for(var stateID in self._joins) if(self._joins.hasOwnProperty(stateID)) {
+                self.join(stateID, self._joins[stateID]);
+            }
+        });
+    });
 };
 
 
@@ -230,6 +283,9 @@ JDeltaSync.Client.prototype.join = function(stateID, subscribeMode) {
     var self = this;
     // If you want to receive notification when the full reset is done, you can register a listener to the 'reset' event on the stateID in the joinDB.
     if(!subscribeMode) subscribeMode = JDeltaSync.SingleJoin_RecursiveState;
+
+    // We keep track of our joins so that we can easily re-create them if we relogin:
+    this._joins[stateID] = subscribeMode;
     
     // In order to avoid an Delta Application Error from being displayed to the console, we need to reset the Join state before we join!
     if(!this.joinDB.contains(stateID)) {
@@ -240,6 +296,9 @@ JDeltaSync.Client.prototype.join = function(stateID, subscribeMode) {
 JDeltaSync.Client.prototype.leave = function(stateID) {
     // If you want to receive notification when the full leave is done, you can register a listener to the '!'/'deleteState' event on the stateID in the joinDB.
     var self = this;
+
+    delete this._joins[stateID];
+
     return this._addToSendQueue({op:'leave', id:stateID}, function(result) {
         if(result === 'ok') {
             // It is OK to use the joinDB.deleteState because we don't track the '!' event, and therefore we never try to sync local modifications to the server.
@@ -295,6 +354,23 @@ JDeltaSync.Client.prototype._triggerSend = function() {
     if(!this._sending)
         this._doSend();
 };
+JDeltaSync.Client.prototype._handleAjaxErrorCodes = function(jqXHR) {
+    // If jqXHR.status is 0, it means there is a problem with cross-domain communication, and Javascript has been dis-allowed access to the XHR object.
+    if(jqXHR.status === 401) {
+        // Our connectionID has been deleted because it was idle.
+        // We need to login again.
+        if(typeof console !== 'undefined') console.log('connectionID Lost.  Reconnecting...');
+        this.login();
+        return true;
+    } else if(jqXHR.status === 403) {
+        // Our IP has changed, and our cookie has been changed.
+        // We need to login and re-join again.
+        if(typeof console !== 'undefined') console.log('browserID Lost.  Reconnecting...');
+        this.relogin();
+        return true;
+    }
+    return false;
+};
 JDeltaSync.Client.prototype._rawDoSend = function() {
     var self = this;
     if(!this.connectionID) return setTimeout(_.bind(this._rawDoSend, this), 1000);  /// Not logged in!
@@ -309,14 +385,16 @@ JDeltaSync.Client.prototype._rawDoSend = function() {
         bundleBytes += JSON.stringify(this._sendQueue[i]).length;  // Not really bytes (unicode)... but, whatever.
         if(bundleBytes > this.maxSendBundleBytes) break;
     }
-    jQuery.ajax({
+    var myRequest = self._activeAJAX[self._activeAJAX.length] = jQuery.ajax(_.extend({
         url:this._url+'/clientSend',
-        xhrFields: { withCredentials: true },  // Enable CORS cookies.
         type:'POST',
         data:{connectionID:this.connectionID,
               bundle:JSON.stringify(bundle)},
         dataType:'json',
         success:function(data, retCodeStr, jqXHR) {
+            for(var i=self._activeAJAX.length-1; i>=0; i--) {
+                if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
+            }
             if(!_.isArray(data))
                 throw new Error('Expected array from server!');
             var needToReset = {},
@@ -355,20 +433,26 @@ JDeltaSync.Client.prototype._rawDoSend = function() {
             }
         },
         error:function(jqXHR, retCodeStr, exceptionObj) {
-            // Receiving exceptionObj = 'Service Unavailable'.
+            for(var i=self._activeAJAX.length-1; i>=0; i--) {
+                if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
+            }
             self._sending = false;
+            self._handleAjaxErrorCodes(jqXHR);
             if(self._sendQueue.length) {
                 setTimeout(_.bind(JDeltaSync.Client.prototype._rawDoSend, self), self.errorSendReconnectMS);
             }
             throw exceptionObj;
         },
         complete:function(jqXHR, retCodeStr) {
+            for(var i=self._activeAJAX.length-1; i>=0; i--) {
+                if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
+            }
             self._sending = false;
             if(self._sendQueue.length) {
                 setTimeout(_.bind(JDeltaSync.Client.prototype._rawDoSend, self), 1);
             }
         }
-    });
+    }, JDeltaSync.extraAjaxOptions));
 };
 JDeltaSync.Client.prototype.reset = function(type, id) {
     this._resetQueue[type+'::'+id] = {type:type, id:id};
@@ -506,13 +590,15 @@ JDeltaSync.Client.prototype._rawDoReceive = function() {
     if(this._receiving) return;
     this._receiving = true;
     var requestStartTime = new Date().getTime();  // I do things this way because the ajax 'timeout' option does not work in Chrome.
-    jQuery.ajax({
+    var myRequest = self._activeAJAX[self._activeAJAX.length] = jQuery.ajax(_.extend({
         url:this._url+'/clientReceive?connectionID='+this.connectionID+'&ignore='+JDeltaSync._generateID(),
-        xhrFields: { withCredentials: true },  // Enable CORS cookies.
         type:'GET', // Firefox v14 is CACHING GET responses, even though I have the "Cache-Control: no-cache, must-revalidate" header set.  That's why i'm sending an 'ignore' param.
         //timeout:this.longPollTimeoutMS,  // Timeout does NOT WORK in Chrome (v20)!
         dataType:'json',
         success:function(data, retCodeStr, jqXHR) {
+            for(var i=self._activeAJAX.length-1; i>=0; i--) {
+                if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
+            }
             if(!_.isArray(data)) throw new Error('Expected array from server!');
             var chain = [],
                 i, ii, db;
@@ -567,7 +653,7 @@ JDeltaSync.Client.prototype._rawDoReceive = function() {
                                 return next();
                                 break;
 
-                            case 'logout':
+                            case 'logout':   // The server has forced us to log out.
                                 self.connectionID = null;
                                 return next();
                                 break;
@@ -590,20 +676,18 @@ JDeltaSync.Client.prototype._rawDoReceive = function() {
             });
         },
         error:function(jqXHR, retCodeStr, exceptionObj) {
-            self._receiving = false;
-            if(jqXHR.status === 401) {
-                // Our connectionID has been deleted because it was idle.
-                // We need to login again.
-                if(typeof console !== 'undefined') console.log('Reconnecting...');
-                self.login();
+            for(var i=self._activeAJAX.length-1; i>=0; i--) {
+                if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
             }
+            self._receiving = false;
             var reconnectMS = self.shortErrorLongPollReconnectMS;
             var timeSinceStart = new Date().getTime() - requestStartTime;
             if(timeSinceStart < 5000) reconnectMS = self.longErrorLongPollReconnectMS;
+            if(self._handleAjaxErrorCodes(jqXHR)) reconnectMS = self.longErrorLongPollReconnectMS;
             setTimeout(_.bind(JDeltaSync.Client.prototype._rawDoReceive, self), reconnectMS);
             throw exceptionObj;  // Occurs when there is a problem connecting to the server.
         }
-    });
+    }, JDeltaSync.extraAjaxOptions));
 };
 JDeltaSync.Client.prototype.listStates = function(type, ids, onSuccess, onError) {
     // Fetches state infos from server.  Does *not* use/affect the queue.
@@ -615,9 +699,8 @@ JDeltaSync.Client.prototype.listStates = function(type, ids, onSuccess, onError)
         else throw err;
     }
     if(!ids.length) return onSuccess([]);
-    jQuery.ajax({
+    jQuery.ajax(_.extend({
         url:this._url+'/query?cmd=listStates&type='+type+'&ids='+encodeURIComponent(JSON.stringify(ids))+'&ignore='+JDeltaSync._generateID(),
-        xhrFields: { withCredentials: true },  // Enable CORS cookies.
         type:'GET',
         dataType:'json',
         success:function(data, retCodeStr, jqXHR) {
@@ -643,13 +726,12 @@ JDeltaSync.Client.prototype.listStates = function(type, ids, onSuccess, onError)
         //complete:function(jqXHR, retCodeStr) {
         //    console.log('COMPLETE:', jqXHR, retCodeStr);
         //}
-    });
+    }, JDeltaSync.extraAjaxOptions));
 };
 JDeltaSync.Client.prototype._listStatesRegex = function(type, idRegex, onSuccess, onError) {
     var regexStr = idRegex.toString();
-    jQuery.ajax({
+    jQuery.ajax(_.extend({
         url:this._url+'/query?cmd=listStatesRegex&type='+type+'&idRegex='+encodeURIComponent(regexStr)+'&ignore='+JDeltaSync._generateID(),
-        xhrFields: { withCredentials: true },  // Enable CORS cookies.
         type:'GET',
         dataType:'json',
         success:function(data, retCodeStr, jqXHR) {
@@ -664,7 +746,7 @@ JDeltaSync.Client.prototype._listStatesRegex = function(type, idRegex, onSuccess
             if(onError) return onError(exceptionObj);
             else throw exceptionObj;
         }
-    });
+    }, JDeltaSync.extraAjaxOptions));
 };
 JDeltaSync.Client.prototype.fetchDeltas = function(items, onSuccess, onError) {
     // Fetches state deltas from server.  Does *not* use/affect the queue.
@@ -676,9 +758,8 @@ JDeltaSync.Client.prototype.fetchDeltas = function(items, onSuccess, onError) {
         else throw err;
     }
     if(!items.length) return onSucceess([]);
-    jQuery.ajax({
+    jQuery.ajax(_.extend({
         url:this._url+'/query?cmd=fetchDeltas&items='+encodeURIComponent(JSON.stringify(items))+'&ignore='+JDeltaSync._generateID(),
-        xhrFields: { withCredentials: true },  // Enable CORS cookies.
         type:'GET',
         dataType:'json',
         success:function(data, retCodeStr, jqXHR) {
@@ -693,7 +774,7 @@ JDeltaSync.Client.prototype.fetchDeltas = function(items, onSuccess, onError) {
             if(onError) return onError(exceptionObj);
             else throw exceptionObj;
         }
-    });
+    }, JDeltaSync.extraAjaxOptions));
 };
 JDeltaSync.Client.prototype.sendMessage = function(id, data, options) {
     var importance = 'normal';
@@ -750,14 +831,48 @@ JDeltaSync.sebwebHandler_clientLogin = function(syncServer) {
     if(!syncServer.options.sebweb_cookie_secret) throw new Error('You must define syncServer.options.sebweb_cookie_secret!');
     return sebweb.BodyParser(sebweb.CookieStore(syncServer.options.sebweb_cookie_secret, function(req, res, onSuccess, onError) {
         var afterWeHaveABrowserID = function(browserID) {
-            syncServer.clientLogin(browserID, req, function(result) {
-                res.setHeader('Content-Type', 'application/json');
-                res.setHeader('Cache-Control', 'no-cache, must-revalidate');
-                res.setHeader('Access-Control-Allow-Origin', syncServer.options.accessControlAllowOrigin || req.headers.origin);  // Allow cross-domain requests.
-                res.setHeader('Access-Control-Allow-Credentials', 'true');  // Allow cross-domain cookies.
-                res.end(JSON.stringify(result));
-                onSuccess();
-            }, onError);
+            
+            var opArray = req.formidable_form.fields.op;
+            if(!_.isArray(opArray)) return onError(new Error('no op!'));
+            if(opArray.length !== 1) return onError(new Error('Wrong number of ops!'));
+            var op = opArray[0];
+            if(!_.isString(op)) return onError(new Error('non-string op!'));
+            switch(op) {
+                case 'login':
+                    syncServer.clientLogin(browserID, req, function(result) {
+                        res.setHeader('Content-Type', 'application/json');
+                        res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+                        res.setHeader('Access-Control-Allow-Origin', syncServer.options.accessControlAllowOrigin || req.headers.origin);  // Allow cross-domain requests.
+                        res.setHeader('Access-Control-Allow-Credentials', 'true');  // Allow cross-domain cookies.
+                        res.end(JSON.stringify(result));
+                        onSuccess();
+                    }, onError);
+                    break;
+
+                case 'logout':
+                    var connectionIdArray = req.formidable_form.fields.connectionID;
+                    if(!_.isArray(connectionIdArray)) return onError(new Error('no connectionID!'));
+                    if(connectionIdArray.length !== 1) return onError(new Error('Wrong number of connectionIDs!'));
+                    var connectionID = connectionIdArray[0];
+                    if(!_.isString(connectionID)) return onError(new Error('non-string connectionID!'));
+                    var connectionInfo = JDeltaSync.connectionInfo(syncServer.joinDB.getState('/'), connectionID);
+                    if(!connectionInfo) return onError(new Error('connectionID not found: '+connectionID));
+                    if(browserID !== connectionInfo.browserID) return onError(new Error('Wrong browserID!'));
+                    syncServer.clientLogout(connectionID, req, function() {
+                        res.setHeader('Content-Type', 'application/json');
+                        res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+                        res.setHeader('Access-Control-Allow-Origin', syncServer.options.accessControlAllowOrigin || req.headers.origin);  // Allow cross-domain requests.
+                        res.setHeader('Access-Control-Allow-Credentials', 'true');  // Allow cross-domain cookies.
+                        res.end('{}');
+                        onSuccess();
+                    }, onError);
+                    break;
+
+                default: return onError(new Error('Invalid op!'));
+            }
+
+
+
         };
         var browserID = res.SWCS_get('JDelta_BrowserID');
         if(browserID) {
@@ -765,7 +880,7 @@ JDeltaSync.sebwebHandler_clientLogin = function(syncServer) {
         } else {
             while(true) {
                 browserID = JDeltaSync._generateID();
-                if(!JDeltaSync.browserInfo(syncServer._getDB('join').getState('/'), browserID)) break; // check for collision
+                if(!JDeltaSync.browserInfo(syncServer.joinDB.getState('/'), browserID)) break; // check for collision
             }
             return syncServer._join_addBrowser(browserID, function() {
                 res.SWCS_set('JDelta_BrowserID', browserID);
@@ -783,14 +898,21 @@ JDeltaSync.sebwebHandler_clientReceive = function(syncServer) {
             return onError(new Error('connectionID is not a string'));
 
         var browserID = res.SWCS_get('JDelta_BrowserID');
-        if(!browserID) return onError(new Error('No browserID: '+browserID));
+        if(!browserID) {
+            // This occurs when a client IP address changes.  OR if a cookie gets hijacked.  The user should log back in and re-authenticate.
+            res.statusCode = 403;  // Forbidden.
+            res.setHeader('Access-Control-Allow-Origin', syncServer.options.accessControlAllowOrigin || req.headers.origin);  // Allow cross-domain requests.  ...otherwise javascript can't see the status code (it sees 0 instead because it is not allows to see any data that is not granted access via CORS).
+            res.setHeader('Access-Control-Allow-Credentials', 'true');  // Allow cross-domain cookies.
+            return onError(new Error('No browserID: '+browserID));
+        }
         var alluserState = syncServer.joinDB.getState('/');
         var connectionInfo = JDeltaSync.connectionInfo(alluserState, connectionID);
         if(!connectionInfo) {
+            // This occurs when a client goes to sleep for a long time and then wakes up again (after their stale connection has already been cleared).  It is safe to allow the user to login() again and resume where they left off.
             res.statusCode = 401;  // Unauthorized.
             res.setHeader('Access-Control-Allow-Origin', syncServer.options.accessControlAllowOrigin || req.headers.origin);  // Allow cross-domain requests.  ...otherwise javascript can't see the status code (it sees 0 instead because it is not allows to see any data that is not granted access via CORS).
             res.setHeader('Access-Control-Allow-Credentials', 'true');  // Allow cross-domain cookies.
-            return onError(new Error('connectionID not found!'));
+            return onError(new Error('connectionID not found: '+connectionID));
         }
         if(browserID !== connectionInfo.browserID) return onError(new Error('browserID does not match!'));
         
@@ -826,10 +948,23 @@ JDeltaSync.sebwebHandler_clientSend = function(syncServer) {
         }
 
         var browserID = res.SWCS_get('JDelta_BrowserID');
-        if(!browserID) return onError(new Error('No browserID!'));
+        if(!browserID) {
+            // This occurs when a client IP address changes.  OR if a cookie gets hijacked.  The user should log back in and re-authenticate.
+            res.statusCode = 403;  // Forbidden.
+            res.setHeader('Access-Control-Allow-Origin', syncServer.options.accessControlAllowOrigin || req.headers.origin);  // Allow cross-domain requests.  ...otherwise javascript can't see the status code (it sees 0 instead because it is not allows to see any data that is not granted access via CORS).
+            res.setHeader('Access-Control-Allow-Credentials', 'true');  // Allow cross-domain cookies.
+            return onError(new Error('No browserID: '+browserID));
+        }
+
         var alluserState = syncServer.joinDB.getState('/');
         var connectionInfo = JDeltaSync.connectionInfo(alluserState, connectionID);
-        if(!connectionInfo) return onError(new Error('connectionID not found!'));
+        if(!connectionInfo) {
+            // This occurs when a client goes to sleep for a long time and then wakes up again (after their stale connection has already been cleared).  It is safe to allow the user to login() again and resume where they left off.
+            res.statusCode = 401;  // Unauthorized.
+            res.setHeader('Access-Control-Allow-Origin', syncServer.options.accessControlAllowOrigin || req.headers.origin);  // Allow cross-domain requests.  ...otherwise javascript can't see the status code (it sees 0 instead because it is not allows to see any data that is not granted access via CORS).
+            res.setHeader('Access-Control-Allow-Credentials', 'true');  // Allow cross-domain cookies.
+            return onError(new Error('connectionID not found!'));
+        }
         if(browserID !== connectionInfo.browserID) return onError(new Error('browserID does not match!'));
 
         var bundleArray = req.formidable_form.fields.bundle;
@@ -1030,7 +1165,8 @@ JDeltaSync.Server.prototype._removeStaleConnections = function() {
 
             // Remove the connection from the JoinDB:
             var connectionInfo = JDeltaSync.connectionInfo(this.joinDB.getState('/'), connectionID);
-            this._join_removeConnection(connectionInfo.userID, connectionInfo.browserID, connectionID);
+            if(connectionInfo)  // It's null when things get out of sync.
+                this._join_removeConnection(connectionInfo.userID, connectionInfo.browserID, connectionID);
 
             // Also remove from the activeConnections:
             if(conn.req  &&  !conn.req.socket.destroyed) conn.req.destroy();
@@ -1259,7 +1395,6 @@ JDeltaSync.Server.prototype.clientLogout = function(connectionID, req, onSuccess
     var connectionInfo = JDeltaSync.connectionInfo(alluserState, connectionID);
     if(!connectionInfo) return onError(new Error('connectionID not found!'));
     this._join_removeConnection(connectionInfo.userID, connectionInfo.browserID, connectionID);
-    this._broadcast({data:{op:'logout'}}, {connectionIDs:[connectionID]});
     return onSuccess();
 };
 JDeltaSync.Server.prototype.clientReceive = function(connectionID, req, onSuccess, onError) {
@@ -1299,8 +1434,10 @@ JDeltaSync.Server.prototype.clientReceive = function(connectionID, req, onSucces
         };
         var sendToLongPoll = clientConn.sendToLongPoll;
         setTimeout(function() {  // Force the long-poll to execute before the server or filewalls close our connection.  The reason we need to do this from the server is becasue Chrome does not support the ajax 'timeout' option.
-            if(clientConn.sendToLongPoll === sendToLongPoll)
+            if(clientConn.sendToLongPoll === sendToLongPoll) {
+                console.log('Force-timeout connection:',connectionID);
                 sendToLongPoll();
+            }
         }, self.longPollTimeoutMS);
     }
 };
@@ -1369,10 +1506,6 @@ JDeltaSync.Server.prototype.clientSend = function(req, connectionID, bundle, onS
 
                     case 'leave':
                         self.clientLeave(connectionID, bundleItem.data.id, OK, FAIL);
-                        break;
-
-                    case 'logout':
-                        self.clientLogout(connectionID, req, OK, FAIL);
                         break;
 
                     case 'sendMessage':
