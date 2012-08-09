@@ -146,12 +146,12 @@ JDeltaSync.Client = function(url, stateDB, joinDB) {
     var self = this;
 
     this.maxSendBundleBytes = 100*1024;
-    this.successLongPollReconnectMS = 10;
-    this.shortErrorLongPollReconnectMS = 10;
-    this.longErrorLongPollReconnectMS = 10000;
-    this.errorLoginReconnectMS = 5000;
-    this.errorSendReconnectMS = 5000;
-    this.errorResetReconnectMS = 5000;
+    this.successReceiveReconnectMS = 10;
+    this.errorReceiveReconnectShortMS = 10;
+    this.errorReceiveReconnectLongMS = 10000;
+    this.errorLoginReconnectMS = 10000;
+    this.errorSendReconnectMS = 10000;
+    this.errorResetReconnectMS = 10000;
 
     if(!_.isString(url)) throw new Error('You must provide a base url.');
     this._url = url;
@@ -593,7 +593,7 @@ JDeltaSync.Client.prototype._rawDoReceive = function() {
     var myRequest = self._activeAJAX[self._activeAJAX.length] = jQuery.ajax(_.extend({
         url:this._url+'/clientReceive?connectionID='+this.connectionID+'&ignore='+JDeltaSync._generateID(),
         type:'GET', // Firefox v14 is CACHING GET responses, even though I have the "Cache-Control: no-cache, must-revalidate" header set.  That's why i'm sending an 'ignore' param.
-        //timeout:this.longPollTimeoutMS,  // Timeout does NOT WORK in Chrome (v20)!
+        //timeout:this.ReceiveTimeoutMS,  // Timeout does NOT WORK in Chrome (v20)!
         dataType:'json',
         success:function(data, retCodeStr, jqXHR) {
             for(var i=self._activeAJAX.length-1; i>=0; i--) {
@@ -667,11 +667,11 @@ JDeltaSync.Client.prototype._rawDoReceive = function() {
             }
             JDeltaDB._runAsyncChain(chain, function() {
                 self._receiving = false;
-                setTimeout(_.bind(JDeltaSync.Client.prototype._rawDoReceive, self), self.successLongPollReconnectMS);
+                setTimeout(_.bind(JDeltaSync.Client.prototype._rawDoReceive, self), self.successReceiveReconnectMS);
             }, function(err) {
                 throw new Error('I have never seen this.');
                 self._receiving = false;
-                setTimeout(_.bind(JDeltaSync.Client.prototype._rawDoReceive, self), self.successLongPollReconnectMS);
+                setTimeout(_.bind(JDeltaSync.Client.prototype._rawDoReceive, self), self.successReceiveReconnectMS);
                 throw err;
             });
         },
@@ -680,10 +680,10 @@ JDeltaSync.Client.prototype._rawDoReceive = function() {
                 if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
             }
             self._receiving = false;
-            var reconnectMS = self.shortErrorLongPollReconnectMS;
+            var reconnectMS = self.errorReceiveReconnectShortMS;
             var timeSinceStart = new Date().getTime() - requestStartTime;
-            if(timeSinceStart < 5000) reconnectMS = self.longErrorLongPollReconnectMS;
-            if(self._handleAjaxErrorCodes(jqXHR)) reconnectMS = self.longErrorLongPollReconnectMS;
+            if(timeSinceStart < 5000) reconnectMS = self.errorReceiveReconnectLongMS;
+            if(self._handleAjaxErrorCodes(jqXHR)) reconnectMS = self.errorReceiveReconnectLongMS;
             setTimeout(_.bind(JDeltaSync.Client.prototype._rawDoReceive, self), reconnectMS);
             throw exceptionObj;  // Occurs when there is a problem connecting to the server.
         }
@@ -1112,7 +1112,6 @@ JDeltaSync.Server = function(stateDB, joinDB, accessPolicy, options) {
     if(!stateDB) throw new Error("Expected a 'stateDB' arg.");
     if(!joinDB) throw new Error("Expected a 'joinDB' arg.");
 
-    this.clientReceiveThrottleMS = 100;
     this.longPollTimeoutMS = 100000;
     this.clientConnectionIdleTime = 1000*60*5;
     this.disposableQueueSizeLimit = 200;
