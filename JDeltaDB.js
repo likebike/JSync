@@ -347,8 +347,11 @@ JDeltaDB.DB.prototype._addDelta = function(id, delta, onSuccess, onError, _alrea
     var oldHash = JDelta._hash(JDelta.stringify(state.state));
     var newStateCopy = JDelta.patch(id, JDelta._deepCopy(state.state), delta);
     var newHash = JDelta._hash(JDelta.stringify(newStateCopy));
-    if(newHash === oldHash)
-        return;     // No change.  Let's just pretend this never happend...
+    if(newHash === oldHash) {
+        // No change.  Let's just pretend this never happend...
+        if(onSuccess) return onSuccess();
+        return;
+    }
     this._storage.acquireLock(_alreadyLocked, function(unlock) {
         var stdOnErr = function(err) {
             setTimeout(unlock, 0);
@@ -491,7 +494,7 @@ JDeltaDB.RamStorage = function(filepath) {
 JDeltaDB.RamStorage.prototype.acquireLock = function(alreadyLocked, callback) {
     //console.log('acquireLock...');
     if(alreadyLocked) {
-        //console.log('Already locked.  Calling...');
+        //console.log('Already own lock.  Calling...');
         return callback(function() {});
     }
     if(!this._lockQueue) this._lockQueue = []; /// I initialize this way so I can just inherit these two functions in subclasses and get this functionality, without requiring any setup in the constructor.
@@ -503,6 +506,7 @@ JDeltaDB.RamStorage.prototype.acquireLock = function(alreadyLocked, callback) {
         return this._nextLockCB();
     }
     //console.log('Adding to lock queue.');
+    //console.trace();
 };
 JDeltaDB.RamStorage.prototype._nextLockCB = function() {
     //console.log('nextLockCB...');
@@ -513,6 +517,8 @@ JDeltaDB.RamStorage.prototype._nextLockCB = function() {
         return; // Nothing left to do.
     }
     var lockKey = this.lockKey = {};  // Create a unique object.
+    //console.log('Lock Acquired.');
+    //console.trace();
     var unlock = function() {
         //console.log('Unlock Called.');
         return self._releaseLock(lockKey);
