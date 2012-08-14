@@ -147,10 +147,6 @@ JDeltaSync.Client = function(url, stateDB, joinDB) {
 
     this.maxSendBundleBytes = 100*1024;
     this.successReceiveReconnectMS = 10;
-    this.errorReceiveReconnectShortMS = 10;
-    this.errorReceiveReconnectLongMS = 10000;
-    this.errorLoginReconnectMS = 10000;
-    this.errorSendReconnectMS = 10000;
     this.errorResetReconnectMS = 10000;
 
     if(!_.isString(url)) throw new Error('You must provide a base url.');
@@ -172,14 +168,15 @@ JDeltaSync.Client = function(url, stateDB, joinDB) {
     this._setStateDB(stateDB);
     this._setJoinDB(joinDB);
 
-    this._doSend = _.debounce(_.bind(JDeltaSync.Client.prototype._rawDoSend, this), 10);
-    this._doReset = _.debounce(_.bind(JDeltaSync.Client.prototype._rawDoReset, this), 10);
+    this._doSend = _.debounce(_.bind(this._rawDoSend, this), 10);
+    this._doReset = _.debounce(_.bind(this._rawDoReset, this), 10);
     setTimeout(function() { self._rawDoReceive(); }, 1000);
     this.login();
 };
 JDeltaSync.Client.prototype.login = function(callback) {
     var self = this;
-    var doLogin = function() {
+    var errRetryMS = 1000;
+    var DOIT = function() {
         jQuery.ajax(_.extend({
             url:self._url+'/clientLogin',
             type:'POST',
@@ -191,12 +188,13 @@ JDeltaSync.Client.prototype.login = function(callback) {
                 if(callback) return callback(self);
             },
             error:function(jqXHR, retCodeStr, exceptionObj) {
-                setTimeout(doLogin, self.errorLoginReconnectMS);
+                setTimeout(DOIT, errRetryMS);
+                errRetryMS *= 1.62; if(errRetryMS > 30000) errRetryMS = 30000;
                 throw exceptionObj;
             }
         }, JDeltaSync.extraAjaxOptions));
     };
-    doLogin();
+    DOIT();
 };
 JDeltaSync.Client.prototype.logout = function(callback) {
     if(!this.connectionID) {
@@ -374,85 +372,89 @@ JDeltaSync.Client.prototype._handleAjaxErrorCodes = function(jqXHR) {
 JDeltaSync.Client.prototype._rawDoSend = function() {
     var self = this;
     if(!this.connectionID) return setTimeout(_.bind(this._rawDoSend, this), 1000);  /// Not logged in!
-    if(!this._sendQueue.length) return;  // Nothing to send.
-    if(this._sending) return;            // Already sending.
-    this._sending = true;
-    var bundle = [],
-        bundleBytes = 0,
-        i, ii;
-    for(i=0, ii=this._sendQueue.length; i<ii; i++) {
-        bundle[bundle.length] = this._sendQueue[i];
-        bundleBytes += JSON.stringify(this._sendQueue[i]).length;  // Not really bytes (unicode)... but, whatever.
-        if(bundleBytes > this.maxSendBundleBytes) break;
-    }
-    var myRequest = self._activeAJAX[self._activeAJAX.length] = jQuery.ajax(_.extend({
-        url:this._url+'/clientSend',
-        type:'POST',
-        data:{connectionID:this.connectionID,
-              bundle:JSON.stringify(bundle)},
-        dataType:'json',
-        success:function(data, retCodeStr, jqXHR) {
-            for(var i=self._activeAJAX.length-1; i>=0; i--) {
-                if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
-            }
-            if(!_.isArray(data))
-                throw new Error('Expected array from server!');
-            var needToReset = {},
-                item;
-            while(data.length) {
-                if(data[0].msgID !== bundle[0].msgID) throw new Error('I have never seen this.');
+    var errRetryMS = 1000;
+    var DOIT = function() {
+        if(!self._sendQueue.length) return;  // Nothing to send.
+        if(self._sending) return;            // Already sending.
+        self._sending = true;
+        var bundle = [],
+            bundleBytes = 0,
+            i, ii;
+        for(i=0, ii=self._sendQueue.length; i<ii; i++) {
+            bundle[bundle.length] = self._sendQueue[i];
+            bundleBytes += JSON.stringify(self._sendQueue[i]).length;  // Not really bytes (unicode)... but, whatever.
+            if(bundleBytes > self.maxSendBundleBytes) break;
+        }
+        var myRequest = self._activeAJAX[self._activeAJAX.length] = jQuery.ajax(_.extend({
+            url:self._url+'/clientSend',
+            type:'POST',
+            data:{connectionID:self.connectionID,
+                  bundle:JSON.stringify(bundle)},
+            dataType:'json',
+            success:function(data, retCodeStr, jqXHR) {
+                for(var i=self._activeAJAX.length-1; i>=0; i--) {
+                    if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
+                }
+                if(!_.isArray(data))
+                    throw new Error('Expected array from server!');
+                var needToReset = {},
+                    item;
+                while(data.length) {
+                    if(data[0].msgID !== bundle[0].msgID) throw new Error('I have never seen this.');
 
-                // It is possible for items to get removed from the send queue by resets, so be careful when removing the current data item:
-                if(self._sendQueue.length  &&  self._sendQueue[0].msgID === bundle[0].msgID)
-                    self._sendQueue.splice(0, 1);
-                
-                self._callSendQueueCallback(data[0].msgID, null, data[0].result, data[0].details);
-                
-                switch(data[0].result) {
+                    // It is possible for items to get removed from the send queue by resets, so be careful when removing the current data item:
+                    if(self._sendQueue.length  &&  self._sendQueue[0].msgID === bundle[0].msgID)
+                        self._sendQueue.splice(0, 1);
+                    
+                    self._callSendQueueCallback(data[0].msgID, null, data[0].result, data[0].details);
+                    
+                    switch(data[0].result) {
 
-                    case 'ok':
-                        bundle.splice(0, 1);
-                        data.splice(0, 1);
-                        break;
+                        case 'ok':
+                            bundle.splice(0, 1);
+                            data.splice(0, 1);
+                            break;
 
-                    case 'fail':
-                        item = bundle[0];
-                        if(item.data.type)
-                            needToReset[item.data.type+'::'+item.data.id] = {type:item.data.type, id:item.data.id};
-                        bundle.splice(0, 1);
-                        data.splice(0, 1);
-                        break;
+                        case 'fail':
+                            item = bundle[0];
+                            if(item.data.type)
+                                needToReset[item.data.type+'::'+item.data.id] = {type:item.data.type, id:item.data.id};
+                            bundle.splice(0, 1);
+                            data.splice(0, 1);
+                            break;
 
-                    default: throw new Error('Unknown result: '+result);
+                        default: throw new Error('Unknown result: '+result);
+                    }
+                }
+                var itemStr, item;
+                for(itemStr in needToReset) if(needToReset.hasOwnProperty(itemStr)) {
+                    item = needToReset[itemStr];
+                    self.reset(item.type, item.id);
+                }
+            },
+            error:function(jqXHR, retCodeStr, exceptionObj) {
+                for(var i=self._activeAJAX.length-1; i>=0; i--) {
+                    if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
+                }
+                self._sending = false;
+                self._handleAjaxErrorCodes(jqXHR);
+
+                setTimeout(DOIT, errRetryMS);
+                errRetryMS *= 1.62; if(errRetryMS > 120000) errRetryMS = 120000;
+                throw exceptionObj;
+            },
+            complete:function(jqXHR, retCodeStr) {
+                for(var i=self._activeAJAX.length-1; i>=0; i--) {
+                    if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
+                }
+                self._sending = false;
+                if(self._sendQueue.length) {
+                    setTimeout(_.bind(self._rawDoSend, self), 1);
                 }
             }
-            var itemStr, item;
-            for(itemStr in needToReset) if(needToReset.hasOwnProperty(itemStr)) {
-                item = needToReset[itemStr];
-                self.reset(item.type, item.id);
-            }
-        },
-        error:function(jqXHR, retCodeStr, exceptionObj) {
-            for(var i=self._activeAJAX.length-1; i>=0; i--) {
-                if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
-            }
-            self._sending = false;
-            self._handleAjaxErrorCodes(jqXHR);
-            if(self._sendQueue.length) {
-                setTimeout(_.bind(JDeltaSync.Client.prototype._rawDoSend, self), self.errorSendReconnectMS);
-            }
-            throw exceptionObj;
-        },
-        complete:function(jqXHR, retCodeStr) {
-            for(var i=self._activeAJAX.length-1; i>=0; i--) {
-                if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
-            }
-            self._sending = false;
-            if(self._sendQueue.length) {
-                setTimeout(_.bind(JDeltaSync.Client.prototype._rawDoSend, self), 1);
-            }
-        }
-    }, JDeltaSync.extraAjaxOptions));
+        }, JDeltaSync.extraAjaxOptions));
+    };
+    DOIT();
 };
 JDeltaSync.Client.prototype.reset = function(type, id) {
     this._resetQueue[type+'::'+id] = {type:type, id:id};
@@ -479,215 +481,224 @@ JDeltaSync.Client.prototype._triggerReset = function() {
 };
 JDeltaSync.Client.prototype._rawDoReset = function() {
     var self = this;
-    var itemsToReset = [],
-        itemStr;
-    for(itemStr in this._resetQueue) if(this._resetQueue.hasOwnProperty(itemStr)) {
-        itemsToReset[itemsToReset.length] = this._resetQueue[itemStr];
-    }
-    if(!itemsToReset.length) return; // Nothing to reset.
-    if(this._resetting) return;    // Already resetting.
-    this._resetting = true;
-    this.fetchDeltas(itemsToReset, function(data) {
-        var itemsIRequested = {},
-            itemsIReceived = {},
-            i, ii, item, itemStr;
-        for(i=0, ii=itemsToReset.length; i<ii; i++) {
-            item = itemsToReset[i];
-            itemsIRequested[item.type+'::'+item.id] = item;
+    var errRetryMS = 1000;
+    var DOIT = function() {
+        var itemsToReset = [],
+            itemStr;
+        for(itemStr in self._resetQueue) if(self._resetQueue.hasOwnProperty(itemStr)) {
+            itemsToReset[itemsToReset.length] = self._resetQueue[itemStr];
         }
-        for(i=0, ii=data.length; i<ii; i++) {
-            item = data[i];
-            itemsIReceived[item.type+'::'+item.id] = item;
-        }
-        // Delete items that went away:
-        var db;
-        for(itemStr in itemsIRequested) if(itemsIRequested.hasOwnProperty(itemStr)) {
-            if(!itemsIReceived.hasOwnProperty(itemStr)) {
-                item = itemsIRequested[itemStr];
-                db = self._getDB(item.type);
-                if(db.contains(item.id)) db.deleteState(item.id);
+        if(!itemsToReset.length) return; // Nothing to reset.
+        if(self._resetting) return;    // Already resetting.
+        self._resetting = true;
+        self.fetchDeltas(itemsToReset, function(data) {
+            var itemsIRequested = {},
+                itemsIReceived = {},
+                i, ii, item, itemStr;
+            for(i=0, ii=itemsToReset.length; i<ii; i++) {
+                item = itemsToReset[i];
+                itemsIRequested[item.type+'::'+item.id] = item;
             }
-        }
-        // Create new items:
-        for(itemStr in itemsIReceived) if(itemsIReceived.hasOwnProperty(itemStr)) {
-            item = itemsIReceived[itemStr];
-            db = self._getDB(item.type);
-            if(!db.contains(item.id)) db.createState(item.id);
-        }
-        // Reset items I got data for:
-        var tracker = JDeltaDB._AsyncTracker(function(out) {
-            // At this point, we have deleted all the Storage states that we are going to reset.
-            // First, re-create the storage states:
-            var itemStr2, item2, db2;
-            for(itemStr2 in itemsIReceived) if(itemsIReceived.hasOwnProperty(itemStr2)) {
-                item2 = itemsIReceived[itemStr2];
-                db2 = self._getDB(item2.type);
-                db2._storage.createStateSync(item2.id);
-            }
-            var tracker2 = JDeltaDB._AsyncTracker(function(out2) {
-                // At this point, we have added all the deltas to the Storage.  Now trigger rollbacks:
-                var itemStr3, item3, db3;
-                for(itemStr3 in itemsIReceived) if(itemsIReceived.hasOwnProperty(itemStr3)) {
-                    item3 = itemsIReceived[itemStr3];
-                    db3 = self._getDB(item3.type);
-                    db3.rollback(item3.id);
-                    delete self._resetQueue[item3.type+'::'+item3.id];
-                }
-                // Finally, remove the item from the resetQueue:
-                var i, ii;
-                for(i=0, ii=itemsToReset.length; i<ii; i++) {
-                    item3 = itemsToReset[i];
-                    delete self._resetQueue[item3.type+'::'+item3.id];
-                }
-                self._resetting = false;
-                setTimeout(_.bind(JDeltaSync.Client.prototype._rawDoReset, self), 1);
-            });
-            // Add the deltas we received to the Storage:
-            var i, ii;
             for(i=0, ii=data.length; i<ii; i++) {
-                if(data[i].delta.seq === 0) {
-                    // Skip the pseudo-delta:
-                    continue;
-                }
-                tracker2.numOfPendingCallbacks++;
-                item2 = data[i];
-                db2 = self._getDB(item2.type);
-                db2._storage.addDelta(item2.id, item2.delta, function() {  // We make the assumption that Storage operations will be executed in the order they are submitted.
-                    tracker2.checkForEnd();
-                },
-                function(err) {
-                    if(typeof console !== 'undefined') console.log('RESET-ERROR2:', err);
-                    tracker2.checkForEnd();
-                });
+                item = data[i];
+                itemsIReceived[item.type+'::'+item.id] = item;
             }
-            tracker2.checkForEnd();
-        });
-        // Delete Storage states so I can re-create them from scratch:
-        for(itemStr in itemsIReceived) if(itemsIReceived.hasOwnProperty(itemStr)) {
-            tracker.numOfPendingCallbacks++;
-            item = itemsIReceived[itemStr];
-            db = self._getDB(item.type);
-            db._storage.deleteState(item.id, function(id) {
-                return tracker.checkForEnd();
-            },
-            (function(type, id) {
-                return function(err) {
-                    if(typeof console !== 'undefined') console.log('RESET-ERROR:', type, id, err);
+            // Delete items that went away:
+            var db;
+            for(itemStr in itemsIRequested) if(itemsIRequested.hasOwnProperty(itemStr)) {
+                if(!itemsIReceived.hasOwnProperty(itemStr)) {
+                    item = itemsIRequested[itemStr];
+                    db = self._getDB(item.type);
+                    if(db.contains(item.id)) db.deleteState(item.id);
+                }
+            }
+            // Create new items:
+            for(itemStr in itemsIReceived) if(itemsIReceived.hasOwnProperty(itemStr)) {
+                item = itemsIReceived[itemStr];
+                db = self._getDB(item.type);
+                if(!db.contains(item.id)) db.createState(item.id);
+            }
+            // Reset items I got data for:
+            var tracker = JDeltaDB._AsyncTracker(function(out) {
+                // At this point, we have deleted all the Storage states that we are going to reset.
+                // First, re-create the storage states:
+                var itemStr2, item2, db2;
+                for(itemStr2 in itemsIReceived) if(itemsIReceived.hasOwnProperty(itemStr2)) {
+                    item2 = itemsIReceived[itemStr2];
+                    db2 = self._getDB(item2.type);
+                    db2._storage.createStateSync(item2.id);
+                }
+                var tracker2 = JDeltaDB._AsyncTracker(function(out2) {
+                    // At this point, we have added all the deltas to the Storage.  Now trigger rollbacks:
+                    var itemStr3, item3, db3;
+                    for(itemStr3 in itemsIReceived) if(itemsIReceived.hasOwnProperty(itemStr3)) {
+                        item3 = itemsIReceived[itemStr3];
+                        db3 = self._getDB(item3.type);
+                        db3.rollback(item3.id);
+                        delete self._resetQueue[item3.type+'::'+item3.id];
+                    }
+                    // Finally, remove the item from the resetQueue:
+                    var i, ii;
+                    for(i=0, ii=itemsToReset.length; i<ii; i++) {
+                        item3 = itemsToReset[i];
+                        delete self._resetQueue[item3.type+'::'+item3.id];
+                    }
+                    self._resetting = false;
+                    setTimeout(_.bind(self._rawDoReset, self), 1);
+                });
+                // Add the deltas we received to the Storage:
+                var i, ii;
+                for(i=0, ii=data.length; i<ii; i++) {
+                    if(data[i].delta.seq === 0) {
+                        // Skip the pseudo-delta:
+                        continue;
+                    }
+                    tracker2.numOfPendingCallbacks++;
+                    item2 = data[i];
+                    db2 = self._getDB(item2.type);
+                    db2._storage.addDelta(item2.id, item2.delta, function() {  // We make the assumption that Storage operations will be executed in the order they are submitted.
+                        tracker2.checkForEnd();
+                    },
+                    function(err) {
+                        if(typeof console !== 'undefined') console.log('RESET-ERROR2:', err);
+                        tracker2.checkForEnd();
+                    });
+                }
+                tracker2.checkForEnd();
+            });
+            // Delete Storage states so I can re-create them from scratch:
+            for(itemStr in itemsIReceived) if(itemsIReceived.hasOwnProperty(itemStr)) {
+                tracker.numOfPendingCallbacks++;
+                item = itemsIReceived[itemStr];
+                db = self._getDB(item.type);
+                db._storage.deleteState(item.id, function(id) {
                     return tracker.checkForEnd();
-                };
-             })(item.type, item.id));
-        }
-        tracker.checkForEnd();
-    }, function(err) {
-        // For example, this occurs when we try to reset something, but the server is down.
-        self._resetting = false;
-        setTimeout(_.bind(self._triggerReset, self), self.errorResetReconnectMS);
-    });
+                },
+                (function(type, id) {
+                    return function(err) {
+                        if(typeof console !== 'undefined') console.log('RESET-ERROR:', type, id, err);
+                        return tracker.checkForEnd();
+                    };
+                 })(item.type, item.id));
+            }
+            tracker.checkForEnd();
+        }, function(err) {
+            // For example, this occurs when we try to reset something, but the server is down.
+            self._resetting = false;
+
+            setTimeout(DOIT, errRetryMS);
+            errRetryMS *= 1.62; if(errRetryMS > 120000) errRetryMS = 120000;
+            throw err;
+        });
+    };
+    DOIT();
 };
 JDeltaSync.Client.prototype._rawDoReceive = function() {
     var self = this;
     if(!this.connectionID) return setTimeout(_.bind(this._rawDoReceive, this), 1000);  /// Not logged in!
-    if(this._receiving) return;
-    this._receiving = true;
-    var requestStartTime = new Date().getTime();  // I do things this way because the ajax 'timeout' option does not work in Chrome.
-    var myRequest = self._activeAJAX[self._activeAJAX.length] = jQuery.ajax(_.extend({
-        url:this._url+'/clientReceive?connectionID='+this.connectionID+'&ignore='+JDeltaSync._generateID(),
-        type:'GET', // Firefox v14 is CACHING GET responses, even though I have the "Cache-Control: no-cache, must-revalidate" header set.  That's why i'm sending an 'ignore' param.
-        //timeout:this.ReceiveTimeoutMS,  // Timeout does NOT WORK in Chrome (v20)!
-        dataType:'json',
-        success:function(data, retCodeStr, jqXHR) {
-            for(var i=self._activeAJAX.length-1; i>=0; i--) {
-                if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
-            }
-            if(!_.isArray(data)) throw new Error('Expected array from server!');
-            var chain = [],
-                i, ii, db;
-            for(i=0, ii=data.length; i<ii; i++) {
-                chain[chain.length] = (function(item) {
-                    return function(next, onError) {
-                        switch(item.data.op) {
+    var errRetryMS = 1000;
+    var DOIT = function() {
+        if(self._receiving) return;
+        self._receiving = true;
+        var myRequest = self._activeAJAX[self._activeAJAX.length] = jQuery.ajax(_.extend({
+            url:self._url+'/clientReceive?connectionID='+self.connectionID+'&ignore='+JDeltaSync._generateID(),
+            type:'GET', // Firefox v14 is CACHING GET responses, even though I have the "Cache-Control: no-cache, must-revalidate" header set.  That's why i'm sending an 'ignore' param.
+            //timeout:self.ReceiveTimeoutMS,  // Timeout does NOT WORK in Chrome (v20)!
+            dataType:'json',
+            success:function(data, retCodeStr, jqXHR) {
+                for(var i=self._activeAJAX.length-1; i>=0; i--) {
+                    if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
+                }
+                if(!_.isArray(data)) throw new Error('Expected array from server!');
+                var chain = [],
+                    i, ii, db;
+                for(i=0, ii=data.length; i<ii; i++) {
+                    chain[chain.length] = (function(item) {
+                        return function(next, onError) {
+                            switch(item.data.op) {
 
-                            case 'createState':
-                                db = self._getDB(item.data.type);
-                                if(db.contains(item.data.id)) {
-                                    self.reset(item.data.type, item.data.id);
-                                } else {
-                                    if(item.data.type === 'state')  // Join state deltas do not get pushed to the server, so no need to track them in the receivedFromServer list.
-                                        self._receivedFromServer[self._receivedFromServer.length] = {type:item.data.type, id:item.data.id, dataStr:JDelta.stringify({op:'createState', type:'state', id:item.data.id})};
-                                    db.createState(item.data.id);
-                                }
-                                return next();
-                                break;
-
-                            case 'deltaApplied':
-                                try {
+                                case 'createState':
                                     db = self._getDB(item.data.type);
-                                    if(item.data.type === 'state') {
-                                        self._receivedFromServer[self._receivedFromServer.length] = {type:item.data.type, id:item.data.id, dataStr:JDelta.stringify({op:'deltaApplied', delta:item.data.delta, type:'state', id:item.data.id})};
+                                    if(db.contains(item.data.id)) {
+                                        self.reset(item.data.type, item.data.id);
+                                    } else {
+                                        if(item.data.type === 'state')  // Join state deltas do not get pushed to the server, so no need to track them in the receivedFromServer list.
+                                            self._receivedFromServer[self._receivedFromServer.length] = {type:item.data.type, id:item.data.id, dataStr:JDelta.stringify({op:'createState', type:'state', id:item.data.id})};
+                                        db.createState(item.data.id);
                                     }
-                                    db._addHashedDelta(item.data.id, item.data.delta, next, function(err) {
-                                        if(typeof console !== 'undefined') console.log('Error Applying Delta.  Resetting: ', item.data.type, item.data.id, err);
+                                    return next();
+                                    break;
+
+                                case 'deltaApplied':
+                                    try {
+                                        db = self._getDB(item.data.type);
+                                        if(item.data.type === 'state') {
+                                            self._receivedFromServer[self._receivedFromServer.length] = {type:item.data.type, id:item.data.id, dataStr:JDelta.stringify({op:'deltaApplied', delta:item.data.delta, type:'state', id:item.data.id})};
+                                        }
+                                        db._addHashedDelta(item.data.id, item.data.delta, next, function(err) {
+                                            if(typeof console !== 'undefined') console.log('Error Applying Delta.  Resetting: ', item.data.type, item.data.id, err);
+                                            self.reset(item.data.type, item.data.id);
+                                            return next();
+                                        });
+                                    } catch(e) {
+                                        self.reset(item.data.type, item.data.id);
+                                        return next();
+                                    }
+                                    break;
+                                    
+                                case 'deleteState':
+                                    db = self._getDB(item.data.type);
+                                    if(item.data.type === 'state')
+                                        self._receivedFromServer[self._receivedFromServer.length] = {type:item.data.type, id:item.data.id, dataStr:JDelta.stringify({op:'deleteState', type:'state', id:item.data.id})};
+                                    db.deleteState(item.data.id, next, function(err) {
                                         self.reset(item.data.type, item.data.id);
                                         return next();
                                     });
-                                } catch(e) {
-                                    self.reset(item.data.type, item.data.id);
+                                    break;
+
+                                case 'message':
+                                    self._triggerMessage(item.data.id, item.data.data, item.data.from);
+                                    if(item.importance === 'needConfirmation')
+                                        self.sendMessage(item.data.id, {confirm:item.msgID}, {to:{connectionIDs:[item.data.from.connectionID]}});
                                     return next();
-                                }
-                                break;
-                                
-                            case 'deleteState':
-                                db = self._getDB(item.data.type);
-                                if(item.data.type === 'state')
-                                    self._receivedFromServer[self._receivedFromServer.length] = {type:item.data.type, id:item.data.id, dataStr:JDelta.stringify({op:'deleteState', type:'state', id:item.data.id})};
-                                db.deleteState(item.data.id, next, function(err) {
-                                    self.reset(item.data.type, item.data.id);
+                                    break;
+
+                                case 'logout':   // The server has forced us to log out.
+                                    self.connectionID = null;
                                     return next();
-                                });
-                                break;
+                                    break;
 
-                            case 'message':
-                                self._triggerMessage(item.data.id, item.data.data, item.data.from);
-                                if(item.importance === 'needConfirmation')
-                                    self.sendMessage(item.data.id, {confirm:item.msgID}, {to:{connectionIDs:[item.data.from.connectionID]}});
-                                return next();
-                                break;
-
-                            case 'logout':   // The server has forced us to log out.
-                                self.connectionID = null;
-                                return next();
-                                break;
-
-                            default:
-                                if(typeof console !== 'undefined') console.log('Unknown clientReceive op:',item.data.op);
-                                return next();
-                        }
-                    };
-                })(data[i]);
-            }
-            JDeltaDB._runAsyncChain(chain, function() {
+                                default:
+                                    if(typeof console !== 'undefined') console.log('Unknown clientReceive op:',item.data.op);
+                                    return next();
+                            }
+                        };
+                    })(data[i]);
+                }
+                JDeltaDB._runAsyncChain(chain, function() {
+                    self._receiving = false;
+                    setTimeout(_.bind(self._rawDoReceive, self), self.successReceiveReconnectMS);
+                }, function(err) {
+                    throw new Error('I have never seen this.');
+                    self._receiving = false;
+                    setTimeout(_.bind(self._rawDoReceive, self), self.successReceiveReconnectMS);
+                    throw err;
+                });
+            },
+            error:function(jqXHR, retCodeStr, exceptionObj) {
+                for(var i=self._activeAJAX.length-1; i>=0; i--) {
+                    if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
+                }
                 self._receiving = false;
-                setTimeout(_.bind(JDeltaSync.Client.prototype._rawDoReceive, self), self.successReceiveReconnectMS);
-            }, function(err) {
-                throw new Error('I have never seen this.');
-                self._receiving = false;
-                setTimeout(_.bind(JDeltaSync.Client.prototype._rawDoReceive, self), self.successReceiveReconnectMS);
-                throw err;
-            });
-        },
-        error:function(jqXHR, retCodeStr, exceptionObj) {
-            for(var i=self._activeAJAX.length-1; i>=0; i--) {
-                if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
+                self._handleAjaxErrorCodes(jqXHR);
+
+                setTimeout(DOIT, errRetryMS);
+                errRetryMS *= 1.62; if(errRetryMS > 120000) errRetryMS = 120000;
+                throw exceptionObj;  // Occurs when there is a problem connecting to the server.
             }
-            self._receiving = false;
-            var reconnectMS = self.errorReceiveReconnectShortMS;
-            var timeSinceStart = new Date().getTime() - requestStartTime;
-            if(timeSinceStart < 5000) reconnectMS = self.errorReceiveReconnectLongMS;
-            if(self._handleAjaxErrorCodes(jqXHR)) reconnectMS = self.errorReceiveReconnectLongMS;
-            setTimeout(_.bind(JDeltaSync.Client.prototype._rawDoReceive, self), reconnectMS);
-            throw exceptionObj;  // Occurs when there is a problem connecting to the server.
-        }
-    }, JDeltaSync.extraAjaxOptions));
+        }, JDeltaSync.extraAjaxOptions));
+    };
+    DOIT();
 };
 JDeltaSync.Client.prototype.listStates = function(type, ids, onSuccess, onError) {
     // Fetches state infos from server.  Does *not* use/affect the queue.
@@ -831,7 +842,6 @@ JDeltaSync.sebwebHandler_clientLogin = function(syncServer) {
     if(!syncServer.options.sebweb_cookie_secret) throw new Error('You must define syncServer.options.sebweb_cookie_secret!');
     return sebweb.BodyParser(sebweb.CookieStore(syncServer.options.sebweb_cookie_secret, function(req, res, onSuccess, onError) {
         var afterWeHaveABrowserID = function(browserID) {
-            
             var opArray = req.formidable_form.fields.op;
             if(!_.isArray(opArray)) return onError(new Error('no op!'));
             if(opArray.length !== 1) return onError(new Error('Wrong number of ops!'));
@@ -839,6 +849,7 @@ JDeltaSync.sebwebHandler_clientLogin = function(syncServer) {
             if(!_.isString(op)) return onError(new Error('non-string op!'));
             switch(op) {
                 case 'login':
+                    console.log('Logging IN: ',browserID);
                     syncServer.clientLogin(browserID, req, function(result) {
                         res.setHeader('Content-Type', 'application/json');
                         res.setHeader('Cache-Control', 'no-cache, must-revalidate');
@@ -850,14 +861,15 @@ JDeltaSync.sebwebHandler_clientLogin = function(syncServer) {
                     break;
 
                 case 'logout':
+                    console.log('Logging OUT: ',browserID);
                     var connectionIdArray = req.formidable_form.fields.connectionID;
                     if(!_.isArray(connectionIdArray)) return onError(new Error('no connectionID!'));
                     if(connectionIdArray.length !== 1) return onError(new Error('Wrong number of connectionIDs!'));
                     var connectionID = connectionIdArray[0];
                     if(!_.isString(connectionID)) return onError(new Error('non-string connectionID!'));
                     var connectionInfo = JDeltaSync.connectionInfo(syncServer.joinDB.getState('/'), connectionID);
-                    if(!connectionInfo) return onError(new Error('connectionID not found: '+connectionID));
-                    if(browserID !== connectionInfo.browserID) return onError(new Error('Wrong browserID!'));
+                    if(!connectionInfo) return onError(new Error('Logout: connectionID not found: '+connectionID));
+                    if(browserID !== connectionInfo.browserID) return onError(new Error('Logout: Wrong browserID!'));
                     syncServer.clientLogout(connectionID, req, function() {
                         res.setHeader('Content-Type', 'application/json');
                         res.setHeader('Cache-Control', 'no-cache, must-revalidate');
@@ -875,6 +887,7 @@ JDeltaSync.sebwebHandler_clientLogin = function(syncServer) {
 
         };
         var browserID = res.SWCS_get('JDelta_BrowserID');
+
         if(browserID) {
             return afterWeHaveABrowserID(browserID);
         } else {
@@ -897,14 +910,6 @@ JDeltaSync.sebwebHandler_clientReceive = function(syncServer) {
         if(!_.isString(connectionID))
             return onError(new Error('connectionID is not a string'));
 
-        var browserID = res.SWCS_get('JDelta_BrowserID');
-        if(!browserID) {
-            // This occurs when a client IP address changes.  OR if a cookie gets hijacked.  The user should log back in and re-authenticate.
-            res.statusCode = 403;  // Forbidden.
-            res.setHeader('Access-Control-Allow-Origin', syncServer.options.accessControlAllowOrigin || req.headers.origin);  // Allow cross-domain requests.  ...otherwise javascript can't see the status code (it sees 0 instead because it is not allows to see any data that is not granted access via CORS).
-            res.setHeader('Access-Control-Allow-Credentials', 'true');  // Allow cross-domain cookies.
-            return onError(new Error('No browserID: '+browserID));
-        }
         var alluserState = syncServer.joinDB.getState('/');
         var connectionInfo = JDeltaSync.connectionInfo(alluserState, connectionID);
         if(!connectionInfo) {
@@ -914,7 +919,15 @@ JDeltaSync.sebwebHandler_clientReceive = function(syncServer) {
             res.setHeader('Access-Control-Allow-Credentials', 'true');  // Allow cross-domain cookies.
             return onError(new Error('connectionID not found: '+connectionID));
         }
-        if(browserID !== connectionInfo.browserID) return onError(new Error('browserID does not match!'));
+        var browserID = res.SWCS_get('JDelta_BrowserID');
+        if(!browserID  ||  browserID!==connectionInfo.browserID) {
+            // This occurs when a client IP address changes.  OR if a cookie gets hijacked.  The user should log back in and re-authenticate.
+            res.statusCode = 403;  // Forbidden.
+            res.setHeader('Access-Control-Allow-Origin', syncServer.options.accessControlAllowOrigin || req.headers.origin);  // Allow cross-domain requests.  ...otherwise javascript can't see the status code (it sees 0 instead because it is not allows to see any data that is not granted access via CORS).
+            res.setHeader('Access-Control-Allow-Credentials', 'true');  // Allow cross-domain cookies.
+            if(!browserID) return onError(new Error('No browserID: '+browserID));
+            return onError(new Error('browserID did not match! '+browserID+' != '+connectionInfo.browserID));
+        }
         
         syncServer.clientReceive(connectionID, req, function(result) {
             res.setHeader('Content-Type', 'application/json');
@@ -947,15 +960,6 @@ JDeltaSync.sebwebHandler_clientSend = function(syncServer) {
             else throw err;
         }
 
-        var browserID = res.SWCS_get('JDelta_BrowserID');
-        if(!browserID) {
-            // This occurs when a client IP address changes.  OR if a cookie gets hijacked.  The user should log back in and re-authenticate.
-            res.statusCode = 403;  // Forbidden.
-            res.setHeader('Access-Control-Allow-Origin', syncServer.options.accessControlAllowOrigin || req.headers.origin);  // Allow cross-domain requests.  ...otherwise javascript can't see the status code (it sees 0 instead because it is not allows to see any data that is not granted access via CORS).
-            res.setHeader('Access-Control-Allow-Credentials', 'true');  // Allow cross-domain cookies.
-            return onError(new Error('No browserID: '+browserID));
-        }
-
         var alluserState = syncServer.joinDB.getState('/');
         var connectionInfo = JDeltaSync.connectionInfo(alluserState, connectionID);
         if(!connectionInfo) {
@@ -963,9 +967,17 @@ JDeltaSync.sebwebHandler_clientSend = function(syncServer) {
             res.statusCode = 401;  // Unauthorized.
             res.setHeader('Access-Control-Allow-Origin', syncServer.options.accessControlAllowOrigin || req.headers.origin);  // Allow cross-domain requests.  ...otherwise javascript can't see the status code (it sees 0 instead because it is not allows to see any data that is not granted access via CORS).
             res.setHeader('Access-Control-Allow-Credentials', 'true');  // Allow cross-domain cookies.
-            return onError(new Error('connectionID not found!'));
+            return onError(new Error('connectionID not found! '+connectionID));
         }
-        if(browserID !== connectionInfo.browserID) return onError(new Error('browserID does not match!'));
+        var browserID = res.SWCS_get('JDelta_BrowserID');
+        if(!browserID  ||  browserID!==connectionInfo.browserID) {
+            // This occurs when a client IP address changes.  OR if a cookie gets hijacked.  The user should log back in and re-authenticate.
+            res.statusCode = 403;  // Forbidden.
+            res.setHeader('Access-Control-Allow-Origin', syncServer.options.accessControlAllowOrigin || req.headers.origin);  // Allow cross-domain requests.  ...otherwise javascript can't see the status code (it sees 0 instead because it is not allows to see any data that is not granted access via CORS).
+            res.setHeader('Access-Control-Allow-Credentials', 'true');  // Allow cross-domain cookies.
+            if(!browserID) return onError(new Error('No browserID: '+browserID));
+            return onError(new Error('browserID did not match: '+browserID+' != '+connectionInfo.browserID));
+        }
 
         var bundleArray = req.formidable_form.fields.bundle;
         if(!_.isArray(bundleArray)) {
@@ -1385,6 +1397,7 @@ JDeltaSync.Server.prototype.clientLogin = function(browserID, req, onSuccess, on
         connectionID = JDeltaSync._generateID();
         if(!JDeltaSync.connectionInfo(alluserState, connectionID)) break;
     }
+    console.log('New Connection:', browserID, connectionID);
     var browserInfo = JDeltaSync.browserInfo(alluserState, browserID);
     this._join_addConnection(browserInfo.userID, browserID, connectionID);
     return onSuccess({connectionID:connectionID});
@@ -1435,6 +1448,9 @@ JDeltaSync.Server.prototype.clientReceive = function(connectionID, req, onSucces
         setTimeout(function() {  // Force the long-poll to execute before the server or filewalls close our connection.  The reason we need to do this from the server is becasue Chrome does not support the ajax 'timeout' option.
             if(clientConn.sendToLongPoll === sendToLongPoll) {
                 console.log('Force-timeout connection:',connectionID);
+                if(clientConn.queue.length) {
+                    console.log('The queue was non-empty!  This should not happen.');
+                }
                 sendToLongPoll();
             }
         }, self.longPollTimeoutMS);
