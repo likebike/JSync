@@ -27,7 +27,7 @@ if(typeof exports !== 'undefined') {
 } else throw new Error('This environment is not yet supported.');
     
 
-JDelta.VERSION = '0.2.2';
+JDelta.VERSION = '0.20120814';
 
 
 
