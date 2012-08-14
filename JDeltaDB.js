@@ -317,7 +317,14 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, 
                 parentSeq = lastDelta.seq,
                 parentHash = lastDelta.curHash;
             if(delta.seq !== parentSeq + 1) return stdOnErr(new Error('invalid sequence! '+delta.seq+' != '+(parentSeq+1)));
-            if(delta.parentHash !== parentHash) return stdOnErr(new Error('invalid parentHash: '+delta.parentHash+' != '+parentHash));
+            if(delta.parentHash !== parentHash) {
+                // This is occuring rarely, and intermittetently.  Occurred on 2012-08-14 suring an edit of the joinDB (which should never have errors because only the server edits it).
+                // I have a theory that the state is getting modified/tampered somehow.  I verified that 'parentHash' (derived from lastDelta) is valid, while the 'delta.parentHash' seems invalid.  Hence, my theory about tampered state.
+                console.log('Tampered state???  (You can compare to the file data of %s)',id);
+                console.log(JDelta.stringify(state.state));
+                console.log(JDelta._hash(JDelta.stringify(state.state)));
+                return stdOnErr(new Error('invalid parentHash: '+delta.parentHash+' != '+parentHash));
+            }
 
             waitForServerTime(function(serverTimeOffset) {
                 if(!delta.meta.hasOwnProperty('date'))
