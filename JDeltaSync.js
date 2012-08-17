@@ -1139,7 +1139,7 @@ JDeltaSync.Server = function(stateDB, joinDB, accessPolicy, options) {
     this._setJoinDB(joinDB);
 
     this.removeStaleConnectionsInterval = setInterval(_.bind(this._removeStaleConnections, this), 10000);
-    setTimeout(_.bind(this._removeStaleConnectionsFromJoins, this), this.clientConnectionIdleTime+30000);  // An extra 30 seconds padding so we don't conflict with the above interval.
+    //setTimeout(_.bind(this._removeStaleConnectionsFromJoins, this), this.clientConnectionIdleTime+30000);  // An extra 30 seconds padding so we don't conflict with the above interval.
 };
 JDeltaSync.Server.prototype._joinDbEventCallback = function(id, data) {
     data['id'] = id;
@@ -1151,15 +1151,23 @@ JDeltaSync.Server.prototype._setStateDB = function(stateDB) {
     this.stateDB = stateDB || new JDeltaDB.DB();
 };
 JDeltaSync.Server.prototype._setJoinDB = function(joinDB) {
+    var self = this;
     if(this.joinDB) throw new Error('Not implemented yet.');
     this.joinDB = joinDB || new JDeltaDB.DB();
 
-    // Do some initialization of things that definitely need to be there:
     this.joinDB.waitForLoad(function(joinDB) {
+        // Do some initialization of things that definitely need to be there:
         if(!joinDB.contains('/')) joinDB.createState('/');
         var alluserState = joinDB.getState('/');
         if(!alluserState.hasOwnProperty('__NOUSER__'))
             joinDB.edit('/', [{op:'create', key:'__NOUSER__', value:{}}]);
+
+        // Also initialize our activeConnections so there is no loss of data while our clients reconnect:
+        var connections = JDeltaSync.allConnections(alluserState),
+            i, ii;
+        for(i=0, ii=connections.length; i<ii; i++) {
+            self._getActiveClientConnection(connections[i]);
+        }
     });
 
     this.joinDB.on(JDeltaSync.MATCH_ALL_REGEX, '!', this._boundJoinDbEventCallback);
@@ -1186,19 +1194,19 @@ JDeltaSync.Server.prototype._removeStaleConnections = function() {
         }
     }
 };
-JDeltaSync.Server.prototype._removeStaleConnectionsFromJoins = function() {
-    var alluserState = this.joinDB.getState('/');
-    var allConnections = JDeltaSync.allConnections(alluserState),
-        i, ii, cID, cInfo;
-    for(i=0, ii=allConnections.length; i<ii; i++) {
-        cID = allConnections[i];
-        if(!this._activeConnections.hasOwnProperty(cID)) {
-            if(typeof console !== 'undefined') console.log('Removing Stale Connection from Joins:',cID);
-            cInfo = JDeltaSync.connectionInfo(alluserState, cID);
-            this._join_removeConnection(cInfo.userID, cInfo.browserID, cID);
-        }
-    }
-};
+//JDeltaSync.Server.prototype._removeStaleConnectionsFromJoins = function() {
+//    var alluserState = this.joinDB.getState('/');
+//    var allConnections = JDeltaSync.allConnections(alluserState),
+//        i, ii, cID, cInfo;
+//    for(i=0, ii=allConnections.length; i<ii; i++) {
+//        cID = allConnections[i];
+//        if(!this._activeConnections.hasOwnProperty(cID)) {
+//            if(typeof console !== 'undefined') console.log('Removing Stale Connection from Joins:',cID);
+//            cInfo = JDeltaSync.connectionInfo(alluserState, cID);
+//            this._join_removeConnection(cInfo.userID, cInfo.browserID, cID);
+//        }
+//    }
+//};
 JDeltaSync.Server.prototype.installIntoSebwebRouter = function(router, baseURL) {
     if(!_.isString(baseURL)) throw new Error('Expected a baseURL');
     if(!baseURL.length) throw new Error('Empty baseURL!');
