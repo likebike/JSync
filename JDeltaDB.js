@@ -169,11 +169,7 @@ JDeltaDB.DB.prototype.render = function(id, endSeq, onSuccess, onError) {
             // It is easily possible to optimize this algorithm by using the undo-hashes to
             // find the minimum number of deltas that we need to merge.  But I'll wait for
             // a performance need to arise before doing that, cuz it's a bit more complex.
-            var o = {},
-                i, ii;
-            for(i=0, ii=deltas.length; i<ii; i++) {
-                JDelta.patch(id, o, deltas[i]);
-            }
+            var o = JDelta.render(id, deltas);
             return onSuccess(o);
         }, function(error){
             if(onError) return onError(error);
@@ -307,6 +303,7 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, 
     //     { steps:[...], meta:{...}, parentHash:str, curHash:str, seq:int, undoSeq:int, redoSeq:int }
     var self = this;
     this._storage.acquireLock(_alreadyLocked, function(unlock) {
+        console.log('_addHashedDelta: ACQUIRED LOCK:',id);
         var stdOnErr = function(err) {
             setTimeout(unlock, 0);
             if(onError) return onError(err);
@@ -320,9 +317,13 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, 
             if(delta.parentHash !== parentHash) {
                 // This is occuring rarely, and intermittetently.  Occurred on 2012-08-14 suring an edit of the joinDB (which should never have errors because only the server edits it).
                 // I have a theory that the state is getting modified/tampered somehow.  I verified that 'parentHash' (derived from lastDelta) is valid, while the 'delta.parentHash' seems invalid.  Hence, my theory about tampered state.
+                // 2012-08-15.  This occurred again.  I was able to determine that the join subscription mode was not matching as expected.   On top of that, the subscription mode of one of the items was Silent, but the state was not the global state.  AS far as I know, the Silent state should only really occur in the global state.
+                // 2012-08-15.  Occurred when I opened more tabs to the same whiteboard, then closed them, and did a refresh on the final (original) one.  This time, the file had an extra state that the memory did not have.  The delta that triggered the problem was adding a new (different) join connection for the browser that we refreshed.
+                // 2012-08-16.  A connection in Memory had a subscription of "sJ+rS" while the disk was "".  Error occurred while creating a different connection.
                 console.log('Tampered state???  (You can compare to the file data of %s)',id);
                 console.log(JDelta.stringify(state.state));
                 console.log(JDelta._hash(JDelta.stringify(state.state)));
+                console.log(delta);
                 return stdOnErr(new Error('invalid parentHash: '+delta.parentHash+' != '+parentHash));
             }
 
@@ -341,6 +342,7 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, 
                 }
                 self._storage.addDelta(id, delta, function() {
                     self._trigger('!', id, {op:'deltaApplied', delta:delta});
+                    console.log('_addHashedDelta: RELEASING LOCK:',id);
                     unlock();  // unlock will never throw an exception.
                     if(onSuccess) return onSuccess();
                 }, stdOnErr);
@@ -614,7 +616,7 @@ JDeltaDB.RamStorage.prototype.getDelta = function(id, seq, onSuccess, onError) {
         var i, ii, d;
         for(i=0, ii=deltaList.length; i<ii; i++) {
             d = deltaList[i];
-            if(d.seq === seq) return onSuccess(id, d);
+            if(d.seq === seq) return onSuccess(id, JDelta._deepCopy(d));
         }
         var err = new Error('Not Found: '+id+', '+seq);
         if(onError) return onError(err);
@@ -636,7 +638,7 @@ JDeltaDB.RamStorage.prototype.getDeltas = function(id, startSeq, endSeq, onSucce
             if(inRange)
                 out[out.length] = deltaList[i];
         }
-        return onSuccess(id, out);
+        return onSuccess(id, JDelta._deepCopy(out));
     }, onError);
 };
 JDeltaDB.RamStorage.prototype.getLastDelta = function(id, onSuccess, onError) {
@@ -647,7 +649,7 @@ JDeltaDB.RamStorage.prototype.getLastDelta = function(id, onSuccess, onError) {
             // There are no deltas.  Fake one:
             lastDelta = JDeltaDB._PSEUDO_DELTA_0;
         }
-        return onSuccess(id, lastDelta);
+        return onSuccess(id, JDelta._deepCopy(lastDelta));
     }, onError);
 };
 JDeltaDB.RamStorage.prototype.addDelta = function(id, delta, onSuccess, onError) {
