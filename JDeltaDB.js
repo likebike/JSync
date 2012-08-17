@@ -242,9 +242,9 @@ JDeltaDB.DB.prototype.rollback = function(id, toSeq, onSuccess, onError, _alread
             self.render(id, toSeq,
                         function(o){
                             state.state = o;
-                            unlock();
                             self._trigger('!', id, {op:'reset'});
-                            if(onSuccess) return onSuccess(id);
+                            onSuccess && onSuccess(id);
+                            return unlock();
                         },
                         function(err){
                             setTimeout(unlock, 0);
@@ -320,6 +320,8 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, 
                 // 2012-08-15.  This occurred again.  I was able to determine that the join subscription mode was not matching as expected.   On top of that, the subscription mode of one of the items was Silent, but the state was not the global state.  AS far as I know, the Silent state should only really occur in the global state.
                 // 2012-08-15.  Occurred when I opened more tabs to the same whiteboard, then closed them, and did a refresh on the final (original) one.  This time, the file had an extra state that the memory did not have.  The delta that triggered the problem was adding a new (different) join connection for the browser that we refreshed.
                 // 2012-08-16.  A connection in Memory had a subscription of "sJ+rS" while the disk was "".  Error occurred while creating a different connection.
+                // 2012-08-16.  Same as above, except the error occurred while DELETING a different connection.
+                // 2012-08-16.  Same as above.
                 console.log('Tampered state???  (You can compare to the file data of %s)',id);
                 console.log(JDelta.stringify(state.state));
                 console.log(JDelta._hash(JDelta.stringify(state.state)));
@@ -343,8 +345,8 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, 
                 self._storage.addDelta(id, delta, function() {
                     self._trigger('!', id, {op:'deltaApplied', delta:delta});
                     console.log('_addHashedDelta: RELEASING LOCK:',id);
-                    unlock();  // unlock will never throw an exception.
-                    if(onSuccess) return onSuccess();
+                    onSuccess && onSuccess();
+                    return unlock();
                 }, stdOnErr);
             });
         }, stdOnErr);
@@ -352,27 +354,29 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, 
 };
 JDeltaDB.DB.prototype._addDelta = function(id, delta, onSuccess, onError, _alreadyLocked) {
     var self = this;
-    var state = this._getRawState(id);
-    var oldHash = JDelta._hash(JDelta.stringify(state.state));
-    var newStateCopy = JDelta.patch(id, JDelta._deepCopy(state.state), delta);
-    var newHash = JDelta._hash(JDelta.stringify(newStateCopy));
-    if(newHash === oldHash) {
-        // No change.  Let's just pretend this never happend...
-        if(onSuccess) return onSuccess();
-        return;
-    }
     this._storage.acquireLock(_alreadyLocked, function(unlock) {
         var stdOnErr = function(err) {
             setTimeout(unlock, 0);
             if(onError) return onError(err);
             else throw err;
         };
+
+        var state = self._getRawState(id);
+        var oldHash = JDelta._hash(JDelta.stringify(state.state));
+        var newStateCopy = JDelta.patch(id, JDelta._deepCopy(state.state), delta);
+        var newHash = JDelta._hash(JDelta.stringify(newStateCopy));
+        if(newHash === oldHash) {
+            // No change.  Let's just pretend this never happend...
+            onSuccess && onSuccess();
+            return unlock();
+        }
+
         self._storage.getLastDelta(id, function(id, lastDelta) {
             var newSeq = lastDelta.seq + 1;
             var hashedDelta = { steps:delta.steps, meta:delta.meta || {}, parentHash:oldHash, curHash:newHash, seq:newSeq, undoSeq:-newSeq, redoSeq:null };
             self._addHashedDelta(id, hashedDelta, function() {
-                unlock();
-                if(onSuccess) return onSuccess();
+                onSuccess && onSuccess();
+                return unlock();
             }, stdOnErr, true);  // true = alreadyLocked.
         }, stdOnErr);
     });
@@ -386,8 +390,8 @@ JDeltaDB.DB.prototype.edit = function(id, operations, meta, onSuccess, onError) 
         var delta = JDelta.create(state.state, operations);
         delta.meta = meta;
         self._addDelta(id, delta, function() {
-            unlock();
-            if(onSuccess) return onSuccess();
+            onSuccess && onSuccess();
+            return unlock();
         }, function(err) {
             setTimeout(unlock, 0);
             if(onError) return onError(err);
@@ -423,8 +427,8 @@ JDeltaDB.DB.prototype.undo = function(id, onSuccess, onError) {
                     var newMeta = _.extend(JDelta._deepCopy(postUndoDelta.meta), {operation:'undo'});
                     var hashedDelta = { steps:undoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postUndoHash, seq:newSeq, undoSeq:postUndoUndoSeq, redoSeq:newRedoSeq };
                     self._addHashedDelta(id, hashedDelta, function() {
-                        unlock();
-                        if(onSuccess) return onSuccess();
+                        onSuccess && onSuccess();
+                        return unlock();
                     }, stdOnErr, true);  // true = alreadyLocked.
                 };
 
@@ -464,8 +468,8 @@ JDeltaDB.DB.prototype.redo = function(id, onSuccess, onError) {
                     var newMeta = _.extend(JDelta._deepCopy(postRedoDelta.meta), {operation:'redo'});
                     var hashedDelta = { steps:redoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postRedoHash, seq:newSeq, undoSeq:newUndoSeq, redoSeq:postRedoRedoSeq };
                     self._addHashedDelta(id, hashedDelta, function() {
-                        unlock();
-                        if(onSuccess) return onSuccess();
+                        onSuccess && onSuccess();
+                        return unlock();
                     }, stdOnErr, true); // true = alreadyLocked
                 }, stdOnErr);
             }, stdOnErr);
@@ -785,9 +789,15 @@ JDeltaDB.DirStorage.prototype._getRawDeltas = function(id, onSuccess, onError) {
     if(!this.__statesCurrentlyInRam.hasOwnProperty(id)) {
         var filepath = this.__idToFilepath(id);
         fs.readFile(filepath, 'utf8', function(err, data) {
-            if(self.__statesCurrentlyInRam.hasOwnProperty(id)) return onSuccess(self.__statesCurrentlyInRam[id]);  // It got added by someone else while we were reading the file.
             console.log('getRawDeltas: read done:',filepath);
-            if(err) return onError(err);
+            if(self.__statesCurrentlyInRam.hasOwnProperty(id)) {
+                console.log('Already read by something else!  Re-using that.');
+                return onSuccess(self.__statesCurrentlyInRam[id]);  // It got added by someone else while we were reading the file.
+            }
+            if(err) {
+                if(onError) return onError(err);
+                else throw err;
+            }
             var state = self.__statesCurrentlyInRam[id] = JSON.parse(data);
             return onSuccess(state);
         });
