@@ -322,6 +322,9 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, 
                 // 2012-08-16.  A connection in Memory had a subscription of "sJ+rS" while the disk was "".  Error occurred while creating a different connection.
                 // 2012-08-16.  Same as above, except the error occurred while DELETING a different connection.
                 // 2012-08-16.  Same as above.
+                // 2012-08-17.  Same as above.  (Disk: "", Mem: "sJ+rS", Deleting different connection)
+                // ---  Here, I adjusted the logic so that blank subscriptions no longer get placed into non-root join states.
+                // 2012-08-21.  The Mem object had an entry that the disk did not.  The operation that triggered this was unrelated.
                 console.log('Tampered state???  (You can compare to the file data of %s)',id);
                 console.log(JDelta.stringify(state.state));
                 console.log(JDelta._hash(JDelta.stringify(state.state)));
@@ -404,7 +407,7 @@ JDeltaDB.DB.prototype.canUndo = function(id, onSuccess, onError) {
         return onSuccess(lastDelta.undoSeq !== null);
     }, onError);
 };
-JDeltaDB.DB.prototype.undo = function(id, onSuccess, onError) {
+JDeltaDB.DB.prototype.undo = function(id, meta, onSuccess, onError) {
     var self = this;
     this._storage.acquireLock(false, function(unlock) {
         var stdOnErr = function(err) {
@@ -424,7 +427,7 @@ JDeltaDB.DB.prototype.undo = function(id, onSuccess, onError) {
                 var finishProcessWithPostUndoDelta = function(id, postUndoDelta) {
                     var postUndoUndoSeq = postUndoDelta.undoSeq;
                     var postUndoHash = postUndoDelta.curHash;
-                    var newMeta = _.extend(JDelta._deepCopy(postUndoDelta.meta), {operation:'undo'});
+                    var newMeta = _.extend(JDelta._deepCopy(postUndoDelta.meta), {operation:'undo'}, meta);
                     var hashedDelta = { steps:undoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postUndoHash, seq:newSeq, undoSeq:postUndoUndoSeq, redoSeq:newRedoSeq };
                     self._addHashedDelta(id, hashedDelta, function() {
                         onSuccess && onSuccess();
@@ -446,7 +449,7 @@ JDeltaDB.DB.prototype.canRedo = function(id, onSuccess, onError) {
         return onSuccess(lastDelta.redoSeq !== null);
     }, onError);
 };
-JDeltaDB.DB.prototype.redo = function(id, onSuccess, onError) {
+JDeltaDB.DB.prototype.redo = function(id, meta, onSuccess, onError) {
     var self = this;
     this._storage.acquireLock(false, function(unlock) {
         var stdOnErr = function(err) {
@@ -465,7 +468,7 @@ JDeltaDB.DB.prototype.redo = function(id, onSuccess, onError) {
                 self._storage.getDelta(id, postRedoSeq, function(id, postRedoDelta) {
                     var postRedoRedoSeq = postRedoDelta.redoSeq;
                     var postRedoHash = postRedoDelta.curHash;
-                    var newMeta = _.extend(JDelta._deepCopy(postRedoDelta.meta), {operation:'redo'});
+                    var newMeta = _.extend(JDelta._deepCopy(postRedoDelta.meta), {operation:'redo'}, meta);
                     var hashedDelta = { steps:redoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postRedoHash, seq:newSeq, undoSeq:newUndoSeq, redoSeq:postRedoRedoSeq };
                     self._addHashedDelta(id, hashedDelta, function() {
                         onSuccess && onSuccess();
@@ -485,6 +488,72 @@ JDeltaDB.DB.prototype.redo = function(id, onSuccess, onError) {
 ////      // ...but VIEWS are usually a better solution.
 ////      throw new Error('not implemented yet because Views will probably be way better.');
 ////  };
+
+JDeltaDB.DB.prototype.getEditHistory = function(id, onSuccess, onError) {
+    var self = this;
+    this._storage.getDeltas(id, undefined, undefined, function(id, deltas) {
+        var history = {},
+            i, ii, steps, j, jj, totalPath;
+        for(i=0, ii=deltas.length; i<ii; i++) {
+            steps = deltas[i].steps;
+            for(j=0, jj=steps.length; j<jj; j++) {
+                totalPath = steps[j].path +'.'+ steps[j].key;
+                if(steps[j].op === 'arrayInsert') {
+                    var curKey = steps[j].key,
+                        curValue = [deltas[i]],
+                        nextKey, nextValue, curTotalPath, nextTotalPath;
+                    while(true) {
+                        nextKey = curKey + 1;
+                        curTotalPath = steps[j].path +'.'+ curKey;
+                        nextTotalPath = steps[j].path +'.'+ nextKey;
+                        nextValue = history[nextTotalPath];
+                        history[curTotalPath] = curValue;
+                        if(!history.hasOwnProperty(nextTotalPath)) break;
+                        curKey = nextKey;
+                        curValue = nextValue;
+                    }
+                } else if(steps[j].op === 'arrayRemove') {
+                    if(!history.hasOwnProperty(totalPath)) {
+                        if(typeof console !== 'undefined') console.log('Delta for upcoming error:', deltas[i]);
+                        var err = new Error('getEditHistory: Invalid arrayRemove');
+                        if(onError) return onError(err);
+                        else throw err;
+                    }
+                    var prevKey = steps[j].key,
+                        curKey, prevTotalPath, curTotalPath;
+                    while(true) {
+                        curKey = prevKey + 1,
+                        prevTotalPath = steps[j].path +'.'+ prevKey;
+                        curTotalPath = steps[j].path +'.'+ curKey;
+                        if(!history.hasOwnProperty(curTotalPath)) break;
+                        history[prevTotalPath] = history[curTotalPath];
+                        prevKey = curKey;
+                    }
+                    delete history[prevTotalPath];
+                } else if(steps[j].after) {
+                    if(history.hasOwnProperty(totalPath)) {
+                        history[totalPath].push(deltas[i]);
+                    } else {
+                        history[totalPath] = [deltas[i]];
+                    }
+                } else {
+                    if(!history.hasOwnProperty(totalPath)) {
+                        if(typeof console !== 'undefined') console.log(deltas[i]);
+                        var err = new Error('getEditHistory: Invalid delete');
+                        if(onError) return onError(err);
+                        else throw err;
+                    }
+                    delete history[totalPath]
+                }
+            }
+        }
+        return onSuccess(history);
+    }, onError);
+};
+
+
+
+
 
 
 
@@ -679,7 +748,7 @@ JDeltaDB.DirStorage = function(dirpath) {
     this.__statesCurrentlyInRam = {};
     this.__statesToSave = {};
     this.__stateAccessTimes = {};
-    this.__stateIdleTime = 60000;
+    this.__stateIdleTime = 6000;//60000;
     this.save = _.debounce(_.bind(this._rawSave, this), 1000);
     this.removeStatesInterval = setInterval(_.bind(this.__removeInactiveStatesFromRam, this), 10000);
 };

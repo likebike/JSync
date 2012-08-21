@@ -173,6 +173,14 @@ JDeltaSync.Client = function(url, stateDB, joinDB) {
     setTimeout(function() { self._rawDoReceive(); }, 1000);
     this.login();
 };
+JDeltaSync.Client.prototype.getConnectionInfo = function() {
+    // A convenience function for a frequently-needed piece of functionality.
+    for(var jID in this._joins) if(this._joins.hasOwnProperty(jID)) {
+        // Just take the first one we can get.
+        return JDeltaSync.connectionInfo(this.joinDB.getState(jID), this.connectionID);
+    }
+    return null;
+};
 JDeltaSync.Client.prototype.login = function(callback) {
     var self = this;
     var errRetryMS = 1000;
@@ -182,6 +190,7 @@ JDeltaSync.Client.prototype.login = function(callback) {
             type:'POST',
             data:{op:'login'},
             dataType:'json',
+            cache:false,
             success:function(data, retCodeStr, jqXHR) {
                 if(!_.isObject(data)) throw new Error('Expected object from server!');
                 self.connectionID = data.connectionID;
@@ -209,6 +218,7 @@ JDeltaSync.Client.prototype.logout = function(callback) {
             data:{op:'logout',
                   connectionID:self.connectionID},
             dataType:'json',
+            cache:false,
             success:function(data, retCodeStr, jqXHR) {
                 if(!_.isObject(data)) throw new Error('Expected object from server!');
                 self.connectionID = null;
@@ -391,6 +401,7 @@ JDeltaSync.Client.prototype._rawDoSend = function() {
             data:{connectionID:self.connectionID,
                   bundle:JSON.stringify(bundle)},
             dataType:'json',
+            cache:false,
             success:function(data, retCodeStr, jqXHR) {
                 for(var i=self._activeAJAX.length-1; i>=0; i--) {
                     if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
@@ -601,10 +612,11 @@ JDeltaSync.Client.prototype._rawDoReceive = function() {
         if(self._receiving) return;
         self._receiving = true;
         var myRequest = self._activeAJAX[self._activeAJAX.length] = jQuery.ajax(_.extend({
-            url:self._url+'/clientReceive?connectionID='+self.connectionID+'&ignore='+JDeltaSync._generateID(),
+            url:self._url+'/clientReceive?connectionID='+self.connectionID,
             type:'GET', // Firefox v14 is CACHING GET responses, even though I have the "Cache-Control: no-cache, must-revalidate" header set.  That's why i'm sending an 'ignore' param.
             //timeout:self.ReceiveTimeoutMS,  // Timeout does NOT WORK in Chrome (v20)!
             dataType:'json',
+            cache:false,
             success:function(data, retCodeStr, jqXHR) {
                 for(var i=self._activeAJAX.length-1; i>=0; i--) {
                     if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
@@ -711,9 +723,10 @@ JDeltaSync.Client.prototype.listStates = function(type, ids, onSuccess, onError)
     }
     if(!ids.length) return onSuccess([]);
     jQuery.ajax(_.extend({
-        url:this._url+'/query?cmd=listStates&type='+type+'&ids='+encodeURIComponent(JSON.stringify(ids))+'&ignore='+JDeltaSync._generateID(),
+        url:this._url+'/query?cmd=listStates&type='+type+'&ids='+encodeURIComponent(JSON.stringify(ids)),
         type:'GET',
         dataType:'json',
+        cache:false,
         success:function(data, retCodeStr, jqXHR) {
             if(!_.isArray(data)) {
                 var err = new Error('Expected array from server!');
@@ -742,9 +755,10 @@ JDeltaSync.Client.prototype.listStates = function(type, ids, onSuccess, onError)
 JDeltaSync.Client.prototype._listStatesRegex = function(type, idRegex, onSuccess, onError) {
     var regexStr = idRegex.toString();
     jQuery.ajax(_.extend({
-        url:this._url+'/query?cmd=listStatesRegex&type='+type+'&idRegex='+encodeURIComponent(regexStr)+'&ignore='+JDeltaSync._generateID(),
+        url:this._url+'/query?cmd=listStatesRegex&type='+type+'&idRegex='+encodeURIComponent(regexStr),
         type:'GET',
         dataType:'json',
+        cache:false,
         success:function(data, retCodeStr, jqXHR) {
             if(!_.isArray(data)) {
                 var err = new Error('Expected array from server!');
@@ -770,9 +784,10 @@ JDeltaSync.Client.prototype.fetchDeltas = function(items, onSuccess, onError) {
     }
     if(!items.length) return onSucceess([]);
     jQuery.ajax(_.extend({
-        url:this._url+'/query?cmd=fetchDeltas&items='+encodeURIComponent(JSON.stringify(items))+'&ignore='+JDeltaSync._generateID(),
+        url:this._url+'/query?cmd=fetchDeltas&items='+encodeURIComponent(JSON.stringify(items)),
         type:'GET',
         dataType:'json',
+        cache:false,
         success:function(data, retCodeStr, jqXHR) {
             if(!_.isArray(data)) {
                 var err = new Error('Expected array from server!');
@@ -1090,30 +1105,43 @@ JDeltaSync.sebwebHandler_query = function(syncServer) {
 
 
 
-JDeltaSync.WideOpenAccessPolicy = function() {
-    if(!(this instanceof JDeltaSync.WideOpenAccessPolicy)) return new JDeltaSync.WideOpenAccessPolicy();
+JDeltaSync.AccessPolicy_WideOpen = function() {
+    if(!(this instanceof JDeltaSync.AccessPolicy_WideOpen)) return new JDeltaSync.AccessPolicy_WideOpen();
 };
-JDeltaSync.WideOpenAccessPolicy.prototype.canLogin   = function(syncServer, req, connectionID, stateID) { return true; };
-JDeltaSync.WideOpenAccessPolicy.prototype.canJoin    = function(syncServer, req, connectionID, stateID) { return true; };
-JDeltaSync.WideOpenAccessPolicy.prototype.canRead    = function(syncServer, req, connectionID, stateID) { return true; };
-JDeltaSync.WideOpenAccessPolicy.prototype.canCreate  = function(syncServer, req, connectionID, stateID) { return true; };
-JDeltaSync.WideOpenAccessPolicy.prototype.canUpdate  = function(syncServer, req, connectionID, stateID) { return true; };
-JDeltaSync.WideOpenAccessPolicy.prototype.canDelete  = function(syncServer, req, connectionID, stateID) { return true; };
-JDeltaSync.WideOpenAccessPolicy.prototype.canMessage = function(syncServer, req, connectionID, stateID) { return true; };
+JDeltaSync.AccessPolicy_WideOpen.prototype.canLogin   = function(syncServer, req, connectionID, stateID) { return true; };
+JDeltaSync.AccessPolicy_WideOpen.prototype.canJoin    = function(syncServer, req, connectionID, stateID) { return true; };
+JDeltaSync.AccessPolicy_WideOpen.prototype.canRead    = function(syncServer, req, connectionID, stateID) { return true; };
+JDeltaSync.AccessPolicy_WideOpen.prototype.canCreate  = function(syncServer, req, connectionID, stateID) { return true; };
+JDeltaSync.AccessPolicy_WideOpen.prototype.canUpdate  = function(syncServer, req, connectionID, stateID) { return true; };
+JDeltaSync.AccessPolicy_WideOpen.prototype.canDelete  = function(syncServer, req, connectionID, stateID) { return true; };
+JDeltaSync.AccessPolicy_WideOpen.prototype.canMessage = function(syncServer, req, connectionID, stateID) { return true; };
 
-JDeltaSync.RequireUserIDToEditAccessPolicy = function() {
-    if(!(this instanceof JDeltaSync.RequireUserIDToEditAccessPolicy)) return new JDeltaSync.RequireUserIDToEditAccessPolicy();
-}
-JDeltaSync.RequireUserIDToEditAccessPolicy.prototype.canLogin   = function(syncServer, req, connectionID, stateID) { return true; };
-JDeltaSync.RequireUserIDToEditAccessPolicy.prototype.canJoin    = function(syncServer, req, connectionID, stateID) { return true; };
-JDeltaSync.RequireUserIDToEditAccessPolicy.prototype.canRead    = function(syncServer, req, connectionID, stateID) { return true; };
-JDeltaSync.RequireUserIDToEditAccessPolicy.prototype.canCreate  = function(syncServer, req, connectionID, stateID) {
+
+JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete = function() {
+    if(!(this instanceof JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete)) return new JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete();
+};
+JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete.prototype.canLogin   = function(syncServer, req, connectionID, stateID) { return true; };
+JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete.prototype.canJoin    = function(syncServer, req, connectionID, stateID) { return true; };
+JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete.prototype.canRead    = function(syncServer, req, connectionID, stateID) { return true; };
+JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete.prototype.canCreate  = function(syncServer, req, connectionID, stateID) {
     var connectionInfo = JDeltaSync.connectionInfo(syncServer.joinDB.getState('/'), connectionID);
     return !(connectionInfo.userID in {'__NOUSER__':1});
 };
-JDeltaSync.RequireUserIDToEditAccessPolicy.prototype.canUpdate  = JDeltaSync.RequireUserIDToEditAccessPolicy.prototype.canCreate;
-JDeltaSync.RequireUserIDToEditAccessPolicy.prototype.canDelete  = JDeltaSync.RequireUserIDToEditAccessPolicy.prototype.canCreate;
-JDeltaSync.RequireUserIDToEditAccessPolicy.prototype.canMessage = function(syncServer, req, connectionID, stateID) { return true; };
+JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete.prototype.canUpdate  = JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete.prototype.canCreate;
+JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete.prototype.canDelete  = JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete.prototype.canCreate;
+JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete.prototype.canMessage = function(syncServer, req, connectionID, stateID) { return true; };
+
+
+JDeltaSync.AccessPolicy_RequireUserIDToUpdate = function() {
+    if(!(this instanceof JDeltaSync.AccessPolicy_RequireUserIDToUpdate)) return new JDeltaSync.AccessPolicy_RequireUserIDToUpdate();
+};
+JDeltaSync.AccessPolicy_RequireUserIDToUpdate.prototype.canLogin   = function(syncServer, req, connectionID, stateID) { return true; };
+JDeltaSync.AccessPolicy_RequireUserIDToUpdate.prototype.canJoin    = function(syncServer, req, connectionID, stateID) { return true; };
+JDeltaSync.AccessPolicy_RequireUserIDToUpdate.prototype.canRead    = function(syncServer, req, connectionID, stateID) { return true; };
+JDeltaSync.AccessPolicy_RequireUserIDToUpdate.prototype.canCreate  = function(syncServer, req, connectionID, stateID) { return false; };
+JDeltaSync.AccessPolicy_RequireUserIDToUpdate.prototype.canUpdate  = JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete.prototype.canUpdate;
+JDeltaSync.AccessPolicy_RequireUserIDToUpdate.prototype.canDelete  = function(syncServer, req, connectionID, stateID) { return false; };
+JDeltaSync.AccessPolicy_RequireUserIDToUpdate.prototype.canMessage = function(syncServer, req, connectionID, stateID) { return true; };
 
 
 
@@ -1324,6 +1352,8 @@ JDeltaSync.Server.prototype._getActiveClientConnection = function(connectionID) 
     var clientConn = this._activeConnections[connectionID];
     if(!clientConn) {
         // Any code that gets here already had to pass through a connectionInfo verification layer, so it is safe to auto-create activeConnections (usually absent due to server restarts).
+        // Actually, this should no longer occur since I now auto-create all connnections at server startup.   Hmmm.. Maybe it might occur when a computer goes to sleep and wakes up.
+        console.log('(Does this ever happen???) Auto-creating connection that was not in active connetions, but passed security:',connectionID);
         this._activeConnections[connectionID] = clientConn = {queue:[]};
     }
     clientConn.lastActivityTime = new Date().getTime();
@@ -1336,15 +1366,17 @@ JDeltaSync.Server.prototype._join_addConnection = function(userID, browserID, co
     if(!browserInfo) throw new Error('browserID does not exist!');
     if(browserInfo.userID !== userID) throw new Error('userID does not match!');
     this.joinDB.edit('/', [{op:'create', path:'$.'+userID+'.'+browserID, key:connectionID, value:JDeltaSync.Silent}]);
-    var states = this.joinDB.listStates(),
-        i, ii;
-    for(i=0, ii=states.length; i<ii; i++) {
-        if(states[i] === '/') continue;  // Already done above.
-        if(JDeltaSync.browserInfo(this.joinDB.getState(states[i]), browserID)) {
-            // This state has info about the affected browserID.  Edit.
-            this.joinDB.edit(states[i], [{op:'create', path:'$.'+userID+'.'+browserID, key:connectionID, value:JDeltaSync.Silent}]);
-        }
-    }
+
+    //// 2012-08-17: I believe it was a mistake to add the connection to all states because the behavior is not consistent.  If i really want to do this, then I need to copy all connections whenever a user joins a state... otherwise you only end up with a partial list of connections.  So rather than partial, i'd prefer to have nothing.
+    //var states = this.joinDB.listStates(),
+    //    i, ii;
+    //for(i=0, ii=states.length; i<ii; i++) {
+    //    if(states[i] === '/') continue;  // Already done above.
+    //    if(JDeltaSync.browserInfo(this.joinDB.getState(states[i]), browserID)) {
+    //        // This state has info about the affected browserID.  Edit.
+    //        this.joinDB.edit(states[i], [{op:'create', path:'$.'+userID+'.'+browserID, key:connectionID, value:JDeltaSync.Silent}]);
+    //    }
+    //}
 };
 JDeltaSync.Server.prototype._join_removeConnection = function(userID, browserID, connectionID) {
     var alluserState = this.joinDB.getState('/');
@@ -1455,9 +1487,8 @@ JDeltaSync.Server.prototype.clientReceive = function(connectionID, req, onSucces
         var sendToLongPoll = clientConn.sendToLongPoll;
         setTimeout(function() {  // Force the long-poll to execute before the server or filewalls close our connection.  The reason we need to do this from the server is becasue Chrome does not support the ajax 'timeout' option.
             if(clientConn.sendToLongPoll === sendToLongPoll) {
-                console.log('Force-timeout connection:',connectionID);
                 if(clientConn.queue.length) {
-                    console.log('The queue was non-empty!  This should not happen.');
+                    console.log('During force-timeout, the queue was non-empty!  This should not happen.');
                 }
                 sendToLongPoll();
             }
@@ -1479,6 +1510,7 @@ JDeltaSync.Server.prototype.clientSend = function(req, connectionID, bundle, onS
                     },
                     FAIL = function(err) {
                         result[result.length] = {msgID:bundleItem.msgID, result:'fail', details:err};
+                        console.log('clientSend FAIL:',result[result.length-1]);
                         return next();
                     },
                     excludes = {};
@@ -1502,6 +1534,19 @@ JDeltaSync.Server.prototype.clientSend = function(req, connectionID, bundle, onS
                     case 'deltaApplied':
                         if(bundleItem.data.type !== 'state') return FAIL('type!=state'); // Client modification of Join states not allowed.
                         if(!self._accessPolicy.canUpdate(self, req, connectionID, bundleItem.data.id)) return FAIL('Access Denied');
+
+                        if(!bundleItem.data.delta) return FAIL("No 'delta'");
+                        if(!bundleItem.data.delta.meta) return FAIL("No 'meta'");
+                        var from = bundleItem.data.delta.meta.from;
+                        if(!from) return FAIL("No 'from'");
+                        if(!from.userID) return FAIL("No 'userID'");
+                        if(!from.browserID) return FAIL("No 'browserID'");
+                        if(!from.connectionID) return FAIL("No 'connectionID'");
+                        var cInfo = JDeltaSync.connectionInfo(self.joinDB.getState('/'), connectionID);
+                        if(!cInfo) return FAIL("connectionID not found!");
+                        if(from.userID!==cInfo.userID  ||  from.browserID!==cInfo.browserID  ||  from.connectionID!==cInfo.connectionID)
+                            return FAIL("'from' does not match!");
+
                         db = self._getDB(bundleItem.data.type);
                         try {
                             db._addHashedDelta(bundleItem.data.id, bundleItem.data.delta, function() {
@@ -1524,6 +1569,7 @@ JDeltaSync.Server.prototype.clientSend = function(req, connectionID, bundle, onS
                         break;
 
                     case 'join':
+                        if(!self._accessPolicy.canJoin(self, req, connectionID, bundleItem.data.id)) return FAIL('Access Denied');
                         self.clientJoin(connectionID, bundleItem.data.id, bundleItem.data.subscribeMode, OK, FAIL);
                         break;
 
@@ -1532,6 +1578,7 @@ JDeltaSync.Server.prototype.clientSend = function(req, connectionID, bundle, onS
                         break;
 
                     case 'sendMessage':
+                        if(!self._accessPolicy.canMessage(self, req, connectionID, bundleItem.data.id)) return FAIL('Access Denied');
                         var message = {msgID:bundleItem.msgID, importance:bundleItem.data.importance, data:{op:'message', id:bundleItem.data.id, data:bundleItem.data.data, from:JDeltaSync.connectionInfo(self.joinDB.getState('/'), connectionID)}};
                         self._broadcast(message, bundleItem.data.to, excludes);
                         return OK();
