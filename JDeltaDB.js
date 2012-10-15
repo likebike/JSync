@@ -296,7 +296,7 @@ JDeltaDB.DB.prototype.rollback = function(id, toSeq, onSuccess, onError, _alread
  *   25      -15      -25           f        c  #25= rev(#20) <--- undo  // f  --> c.  Did you notice that either the undoSeq or redoSeq is always equal to -seq?
  *
  ******************************************************************************/
-JDeltaDB._EMPTY_OBJ_HASH = JDelta._hash('{}');
+JDeltaDB._EMPTY_OBJ_HASH = JDelta._dsHash('{}');
 JDeltaDB._PSEUDO_DELTA_0 = { steps:[], meta:{pseudoDelta:true}, parentHash:null, curHash:JDeltaDB._EMPTY_OBJ_HASH, seq:0, undoSeq:null, redoSeq:null };
 JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, _alreadyLocked) {
     // Called by the JDeltaDB API (not the end user) with a delta object like this:
@@ -327,7 +327,7 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, 
                 // 2012-08-21.  The Mem object had an entry that the disk did not.  The operation that triggered this was unrelated.
                 console.log('Tampered state???  (You can compare to the file data of %s)',id);
                 console.log(JDelta.stringify(state.state));
-                console.log(JDelta._hash(JDelta.stringify(state.state)));
+                console.log(JDelta._dsHash(JDelta.stringify(state.state)));
                 console.log(delta);
                 return stdOnErr(new Error('invalid parentHash: '+delta.parentHash+' != '+parentHash));
             }
@@ -337,7 +337,7 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, 
                     delta.meta.date = new Date(new Date().getTime() + serverTimeOffset).toUTCString();
                 try {
                     JDelta.patch(id, state.state, delta, state.dispatcher);
-                    if(JDelta._hash(JDelta.stringify(state.state)) !== delta.curHash)
+                    if(JDelta._dsHash(JDelta.stringify(state.state)) !== delta.curHash)
                         throw new Error('invalid curHash!');  // Rollback in the catch.
                 } catch(e) {
                     var delayedUnlock = function() { setTimeout(unlock, 0); };
@@ -365,9 +365,9 @@ JDeltaDB.DB.prototype._addDelta = function(id, delta, onSuccess, onError, _alrea
         };
 
         var state = self._getRawState(id);
-        var oldHash = JDelta._hash(JDelta.stringify(state.state));
+        var oldHash = JDelta._dsHash(JDelta.stringify(state.state));
         var newStateCopy = JDelta.patch(id, JDelta._deepCopy(state.state), delta);
-        var newHash = JDelta._hash(JDelta.stringify(newStateCopy));
+        var newHash = JDelta._dsHash(JDelta.stringify(newStateCopy));
         if(newHash === oldHash) {
             // No change.  Let's just pretend this never happend...
             onSuccess && onSuccess();
@@ -760,7 +760,7 @@ JDeltaDB.DirStorage.prototype.__idToFilepath = function(id) {
     if(!id.length) throw new Error('Blank id!');
     var encodedID = encodeURIComponent(id);
     encodedID = encodedID.replace(/\./g, '%2E');  // Also encode '.' to avoid the '.' and '..' filenames.
-    var hash = JDelta._hash(encodedID);
+    var hash = JDelta._dsHash(encodedID);
     if(hash.length !== 10) throw new Error('Unexpected hash length!' + hash);
     var hashPiece = hash.substring(10-this.__hashPieceLen,10);
     return this.__dirpath + '/' + hashPiece + '/' + encodedID;
@@ -771,7 +771,7 @@ JDeltaDB.DirStorage.prototype.__filepathToID = function(filepath) {
     var hashPiece = filepath.substr(this.__dirpath.length+1, this.__hashPieceLen);
     if(filepath.charAt(this.__dirpath.length+1+this.__hashPieceLen) !== '/') throw new Error("Expected '/'.");
     var encodedID = filepath.substring(this.__dirpath.length+2+this.__hashPieceLen);
-    var hash = JDelta._hash(encodedID);
+    var hash = JDelta._dsHash(encodedID);
     if(hash.substring(10-this.__hashPieceLen,10) !== hashPiece) throw new Error('hashPiece did not match!');
     return decodeURIComponent(encodedID);
 };
