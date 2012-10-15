@@ -37,18 +37,6 @@ JDeltaSync.extraAjaxOptions = { xhrFields: {withCredentials:true} };    // Enabl
 if(jQuery  &&  !jQuery.support.cors) JDeltaSync.extraAjaxOptions = {};  // If you try to use the 'withCredentials' field on IE6, you get an exception.
 
 
-var ID_CHARS = '0123456789abcdefghijkmnopqrstuvwxyzABCDEFGHIJKLMNPQRSTUVWXYZ';  // Removed l and O because they are easily confused with 1 and 0.
-JDeltaSync._generateID = function(len) {
-    if(len === undefined) len = 8;
-    var id = [];
-    while(len--) {
-        id[id.length] = ID_CHARS.charAt(Math.floor(Math.random()*ID_CHARS.length));
-    }
-    return id.join('');
-    //var hexStr = Math.floor(Math.random()*0xffffffff).toString(16);
-    //while(hexStr.length < 8) hexStr = '0'+hexStr;
-    //return '0x' + hexStr;
-};
 
 
 JDeltaSync.allConnectionInfos = function(joinState, stateType, minDepth) {
@@ -352,7 +340,7 @@ JDeltaSync.Client.prototype._addToSendQueue = function(data, callback) {
         }
     }
 
-    var msgID = JDeltaSync._generateID();
+    var msgID = JDelta._generateID();
     this._sendQueue[this._sendQueue.length] = {msgID:msgID, data:data};
     if(callback) this._sendQueueCallbacks[msgID] = callback;
     this._triggerSend();
@@ -864,7 +852,7 @@ JDeltaSync.sebwebHandler_clientLogin = function(syncServer) {
             if(!_.isString(op)) return onError(new Error('non-string op!'));
             switch(op) {
                 case 'login':
-                    console.log('Logging IN: ',browserID);
+                    console.log('Logging IN:',browserID);
                     syncServer.clientLogin(browserID, req, function(result) {
                         res.setHeader('Content-Type', 'application/json');
                         res.setHeader('Cache-Control', 'no-cache, must-revalidate');
@@ -876,7 +864,7 @@ JDeltaSync.sebwebHandler_clientLogin = function(syncServer) {
                     break;
 
                 case 'logout':
-                    console.log('Logging OUT: ',browserID);
+                    console.log('Logging OUT:',browserID);
                     var connectionIdArray = req.formidable_form.fields.connectionID;
                     if(!_.isArray(connectionIdArray)) return onError(new Error('no connectionID!'));
                     if(connectionIdArray.length !== 1) return onError(new Error('Wrong number of connectionIDs!'));
@@ -907,7 +895,7 @@ JDeltaSync.sebwebHandler_clientLogin = function(syncServer) {
             return afterWeHaveABrowserID(browserID);
         } else {
             while(true) {
-                browserID = JDeltaSync._generateID();
+                browserID = JDelta._generateID();
                 if(!JDeltaSync.browserInfo(syncServer.joinDB.getState('/'), browserID)) break; // check for collision
             }
             return syncServer._join_addBrowser(browserID, function() {
@@ -1434,7 +1422,7 @@ JDeltaSync.Server.prototype.clientLogin = function(browserID, req, onSuccess, on
     var alluserState = this.joinDB.getState('/'),
         connectionID;
     while(true) {
-        connectionID = JDeltaSync._generateID();
+        connectionID = JDelta._generateID();
         if(!JDeltaSync.connectionInfo(alluserState, connectionID)) break;
     }
     console.log('New Connection:', browserID, connectionID);

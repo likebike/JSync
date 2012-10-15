@@ -280,6 +280,20 @@ JDelta._pad = function(s, p, n) {
         s = p+s;
     return s;
 };
+
+var ID_CHARS = '0123456789abcdefghijkmnopqrstuvwxyzABCDEFGHIJKLMNPQRSTUVWXYZ';  // Removed l and O because they are easily confused with 1 and 0.
+JDelta._generateID = function(len) {
+    if(len === undefined) len = 8;
+    var id = [];
+    while(len--) {
+        id[id.length] = ID_CHARS.charAt(Math.floor(Math.random()*ID_CHARS.length));
+    }
+    return id.join('');
+    //var hexStr = Math.floor(Math.random()*0xffffffff).toString(16);
+    //while(hexStr.length < 8) hexStr = '0'+hexStr;
+    //return '0x' + hexStr;
+};
+
 JDelta._hash = function(s) {
     // A fast simple hash function for detecting errors, NOT for cryptography!
     // Currently, out of    10,000 hashes, there will be approximately   0 collisions.
