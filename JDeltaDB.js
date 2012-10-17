@@ -112,6 +112,28 @@ JDeltaDB.DB.prototype._load = function() {
         throw err;
     });
 };
+JDeltaDB.DB.prototype.waitForData = function(id, callback) {
+    // Convenience function for when you are requesting data from the server (usually with 'reset'), and you want to run a function when the data arrives.
+    // Mostly used for testing and hoaky stuff.  If you find yourself using this a lot in your code, you probably need to re-structure your design to use normal 'on'.
+    if(!_.isString(id)) throw new Error('non-string id!');
+    if(!callback) throw new Error('!callback');
+    var self = this;
+    var afterData = function() { return callback(id, self); };
+    if(this.contains(id)) return afterData();
+    else {
+        var idRegex = RegExp('^'+XRegExp.escape(id)+'$');
+        var event = 'all';
+        var cb = function(_path, _id, _data) {
+            if(_path === '!') {
+                if(_data.op === 'createState') return;  // There will be no data at this point.
+            }
+            // console.log('waidForData: received:',_path, _id, _data);
+            self.off(idRegex, event, cb);
+            return callback(id, self);
+        };
+        this.on(idRegex, event, cb);
+    }
+};
 JDeltaDB.DB.prototype.on = function(id, event, callback) {
     if(!id)
         throw new Error('Invalid id!');

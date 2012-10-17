@@ -1720,7 +1720,7 @@ JDeltaSync.Server.prototype.fetchDeltas = function(items, onSuccess, onError) {
                 db = self._getDB(type);
                 id = items[i].id;
                 if(!_.isString(id)) return onError(new Error('non-string id'));
-                if(!db.contains(id)) return;
+                if(!db.contains(id)) return next();
                 seq = items[i].seq;
                 if(seq) {
                     db._storage.getDelta(id, seq, function(id, delta) {
