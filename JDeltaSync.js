@@ -127,6 +127,9 @@ JDeltaSync.userInfo = function(joinState, userID) {
 
 
 
+
+
+
 JDeltaSync.MATCH_ALL_REGEX = /.*/;
 JDeltaSync.Client = function(url, stateDB, joinDB) {
     // Guard against forgetting the 'new' operator:
@@ -160,6 +163,7 @@ JDeltaSync.Client = function(url, stateDB, joinDB) {
     this._doReset = _.debounce(_.bind(this._rawDoReset, this), 10);
     setTimeout(function() { self._rawDoReceive(); }, 1000);
     this.login();
+    this.installAutoUnloader();
 };
 JDeltaSync.Client.prototype.getConnectionInfo = function() {
     // A convenience function for a frequently-needed piece of functionality.
@@ -193,7 +197,7 @@ JDeltaSync.Client.prototype.login = function(callback) {
     };
     DOIT();
 };
-JDeltaSync.Client.prototype.logout = function(callback) {
+JDeltaSync.Client.prototype.logout = function(callback, sync) {
     if(!this.connectionID) {
         if(callback) return callback(this);     // Already logged out.
         else return;
@@ -207,6 +211,7 @@ JDeltaSync.Client.prototype.logout = function(callback) {
                   connectionID:self.connectionID},
             dataType:'json',
             cache:false,
+            async:!sync,
             success:function(data, retCodeStr, jqXHR) {
                 if(!_.isObject(data)) throw new Error('Expected object from server!');
                 self.connectionID = null;
@@ -236,6 +241,22 @@ JDeltaSync.Client.prototype.relogin = function() {
     });
 };
 
+JDeltaSync.Client.prototype.installAutoUnloader = function() {
+    if(typeof window === 'undefined') return;
+    var self = this;
+    window.onbeforeunload = function(e) {
+        if(jQuery.browser.mozilla) {
+            // Firefox does not support "withCredentials" for cross-domain synchronous AJAX... and can therefore not pass the cookie unless we use async.
+            self.logout();
+            // Issue a synchronouse request to give the above async some time to get to the server.
+            jQuery.ajax({url:'/jdelta_gettime',
+                         cache:false,
+                         async:false});
+        } else {
+            self.logout(null, true);  // Use a synchronous request.
+        }
+    };
+};
 
 JDeltaSync.Client.prototype._stateDbEventCallback = function(id, data) {
     data['id'] = id;
@@ -892,18 +913,25 @@ JDeltaSync.sebwebHandler_clientLogin = function(syncServer) {
         var browserID = res.SWCS_get('JDelta_BrowserID');
 
         if(browserID) {
-            return afterWeHaveABrowserID(browserID);
-        } else {
-            while(true) {
-                browserID = JDelta._generateID();
-                if(!JDeltaSync.browserInfo(syncServer.joinDB.getState('/'), browserID)) break; // check for collision
-            }
-            return syncServer._join_addBrowser(browserID, function() {
-                res.SWCS_set('JDelta_BrowserID', browserID);
+            // Make sure that the given browserID is in our join state.  If the join state gets reset, we won't know about the existing browserIDs out there...
+            if(JDeltaSync.browserInfo(syncServer.joinDB.getState('/'), browserID)) {
                 return afterWeHaveABrowserID(browserID);
-            });
+            }
+            console.log('BrowserID was provided by client, but not recognized by server:', browserID);
+        } else {
+            console.log('No BrowserID was provided.');
         }
-    }));
+
+        // Either no browserID was given, or we did not recognize the given browserID.  Generate a new one:
+        while(true) {
+            browserID = JDelta._generateID();
+            if(!JDeltaSync.browserInfo(syncServer.joinDB.getState('/'), browserID)) break; // check for collision
+        }
+        return syncServer._join_addBrowser(browserID, function() {
+            res.SWCS_set('JDelta_BrowserID', browserID);
+            return afterWeHaveABrowserID(browserID);
+        });
+    }, syncServer.options.sebweb_cookie_options));
 };
 JDeltaSync.sebwebHandler_clientReceive = function(syncServer) {
     var sebweb = require('sebweb');
@@ -940,7 +968,7 @@ JDeltaSync.sebwebHandler_clientReceive = function(syncServer) {
             res.end(JSON.stringify(result));
             onSuccess();
         }, onError);
-    });
+    }, syncServer.options.sebweb_cookie_options);
 };
 JDeltaSync.sebwebHandler_clientSend = function(syncServer) {
     var sebweb = require('sebweb');
@@ -1013,7 +1041,7 @@ JDeltaSync.sebwebHandler_clientSend = function(syncServer) {
             res.end(JSON.stringify(result));
             onSuccess();
         }, onError);
-    }));
+    }, syncServer.options.sebweb_cookie_options));
 };
 JDeltaSync._parseRegexString = function(regexStr, expectCaretDollar) {
     if(!_.isString(regexStr))
@@ -1170,6 +1198,7 @@ JDeltaSync.Server.prototype._setJoinDB = function(joinDB) {
     var self = this;
     if(this.joinDB) throw new Error('Not implemented yet.');
     this.joinDB = joinDB || new JDeltaDB.DB();
+    this.joinDB._requireMetaFrom = false;  // Because join edits will always be performed by the server.
 
     this.joinDB.waitForLoad(function(joinDB) {
         // Do some initialization of things that definitely need to be there:
@@ -1341,7 +1370,8 @@ JDeltaSync.Server.prototype._getActiveClientConnection = function(connectionID) 
     if(!clientConn) {
         // Any code that gets here already had to pass through a connectionInfo verification layer, so it is safe to auto-create activeConnections (usually absent due to server restarts).
         // Actually, this should no longer occur since I now auto-create all connnections at server startup.   Hmmm.. Maybe it might occur when a computer goes to sleep and wakes up.
-        console.log('(Does this ever happen???) Auto-creating connection that was not in active connetions, but passed security:',connectionID);
+        // 2012-10-16 -- According to my server logs, this is the primary (and only!) method of creating activeConnections entries... so, yes.  This does happen... all the time.
+        //console.log('(Does this ever happen???) Auto-creating connection that was not in active connetions, but passed security:',connectionID);
         this._activeConnections[connectionID] = clientConn = {queue:[]};
     }
     clientConn.lastActivityTime = new Date().getTime();

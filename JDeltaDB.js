@@ -67,6 +67,7 @@ JDeltaDB.DB = function(storage, onSuccess, onError) {
     if(!(this instanceof JDeltaDB.DB))
         return new JDeltaDB.DB(storage, onSuccess, onError);
     this._states = {}; // State Structure: { state:json, dispatcher:obj }
+    this._requireMetaFrom = true;
     this._regexListeners = [];
     this._loadListeners = [];
     this._storage = storage || new JDeltaDB.RamStorage();
@@ -247,7 +248,7 @@ JDeltaDB.DB.prototype.rollback = function(id, toSeq, onSuccess, onError, _alread
                             return unlock();
                         },
                         function(err){
-                            setTimeout(unlock, 0);
+                            setTimeout(function(){unlock(true)}, 0);
                             if(onError) return onError(err);
                             else throw err;
                         });
@@ -302,10 +303,15 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, 
     // Called by the JDeltaDB API (not the end user) with a delta object like this:
     //     { steps:[...], meta:{...}, parentHash:str, curHash:str, seq:int, undoSeq:int, redoSeq:int }
     var self = this;
+    if(this._requireMetaFrom  &&  (!delta.meta  ||  !delta.meta.from)) {
+        var err = new Error('You must define meta.from={userID:..., browserID:..., connectionID:...}');
+        if(onError) return onError(err);
+        throw err;
+    }
     this._storage.acquireLock(_alreadyLocked, function(unlock) {
         console.log('_addHashedDelta: ACQUIRED LOCK:',id);
         var stdOnErr = function(err) {
-            setTimeout(unlock, 0);
+            setTimeout(function(){unlock(true)}, 0);
             if(onError) return onError(err);
             else throw err;
         };
@@ -340,7 +346,7 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, 
                     if(JDelta._dsHash(JDelta.stringify(state.state)) !== delta.curHash)
                         throw new Error('invalid curHash!');  // Rollback in the catch.
                 } catch(e) {
-                    var delayedUnlock = function() { setTimeout(unlock, 0); };
+                    var delayedUnlock = function() { setTimeout(function(){unlock(true)}, 0); };
                     self.rollback(id, parentSeq, delayedUnlock, delayedUnlock, true);  // true = alreadyLocked.
                     if(onError) return onError(e);
                     else throw e;
@@ -357,9 +363,14 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, 
 };
 JDeltaDB.DB.prototype._addDelta = function(id, delta, onSuccess, onError, _alreadyLocked) {
     var self = this;
+    if(this._requireMetaFrom  &&  (!delta.meta  ||  !delta.meta.from)) {
+        var err = new Error('You must define meta.from={userID:..., browserID:..., connectionID:...}');
+        if(onError) return onError(err);
+        throw err;
+    }
     this._storage.acquireLock(_alreadyLocked, function(unlock) {
         var stdOnErr = function(err) {
-            setTimeout(unlock, 0);
+            setTimeout(function() {unlock(true)}, 0);
             if(onError) return onError(err);
             else throw err;
         };
@@ -388,6 +399,11 @@ JDeltaDB.DB.prototype.edit = function(id, operations, meta, onSuccess, onError) 
     // Called by the end user with an 'operations' arg like JDelta.create.
     // Can also include an optional 'meta' object to include info about the change, such as date, user, etc.
     var self = this;
+    if(this._requireMetaFrom  &&  (!meta  ||  !meta.from)) {
+        var err = new Error('You must define meta.from={userID:..., browserID:..., connectionID:...}');
+        if(onError) return onError(err);
+        throw err;
+    }
     this._storage.acquireLock(false, function(unlock) {
         var state = self._getRawState(id);
         var delta = JDelta.create(state.state, operations);
@@ -396,7 +412,7 @@ JDeltaDB.DB.prototype.edit = function(id, operations, meta, onSuccess, onError) 
             onSuccess && onSuccess();
             return unlock();
         }, function(err) {
-            setTimeout(unlock, 0);
+            setTimeout(function() {unlock(true)}, 0);
             if(onError) return onError(err);
             else throw err;
         }, true);  // true = alreadyLocked.
@@ -411,7 +427,7 @@ JDeltaDB.DB.prototype.undo = function(id, meta, onSuccess, onError) {
     var self = this;
     this._storage.acquireLock(false, function(unlock) {
         var stdOnErr = function(err) {
-            setTimeout(unlock, 0);
+            setTimeout(function() {unlock(true)}, 0);
             if(onError) return onError(err);
             else throw err;
         };
@@ -453,7 +469,7 @@ JDeltaDB.DB.prototype.redo = function(id, meta, onSuccess, onError) {
     var self = this;
     this._storage.acquireLock(false, function(unlock) {
         var stdOnErr = function(err) {
-            setTimeout(unlock, 0);
+            setTimeout(function() {unlock(true)}, 0);
             if(onError) return onError(err);
             else throw err;
         };
@@ -601,8 +617,11 @@ JDeltaDB.RamStorage.prototype._nextLockCB = function() {
     var lockKey = this.lockKey = {};  // Create a unique object.
     //console.log('Lock Acquired.');
     //console.trace();
-    var unlock = function() {
-        //console.log('Unlock Called.');
+    var unlock = function(possibleDoubleUnlock) {
+        if(possibleDoubleUnlock) {
+            // Double-unlocks can occur in siutaions where we have encountered an error, so we are going to schedule an unlock, and then throw and exception.  In this case, the exception handler may auto-unlock... and then when the delayed unlock gets run, it causes a double-unlock.  This 'possibleDoubleUnlock' parameter allows us to gracefully handle this situation by using it when we schedule the delayed unlock.
+            if(self.lockKey !== lockKey) return;
+        }
         return self._releaseLock(lockKey);
     };
     try {
@@ -623,7 +642,7 @@ JDeltaDB.RamStorage.prototype._nextLockCB = function() {
 };
 JDeltaDB.RamStorage.prototype._releaseLock = function(key) {
     //console.log('releaseLock...');
-    if(key !== this.lockKey) throw new Error('Incorrect LockKey!');
+    if(key !== this.lockKey) throw new Error('Incorrect LockKey! '+key+' != '+this.lockKey);
     this.lockKey = null;
     return this._nextLockCB(); // I was thinking of using setTimeout or postMessage to delay this (and allow the caller stack to run as expected), but it creates some corner cases (like double-calls of nextLockCB) and performance issues on IE6 (because setTimeout is always a minimum of 10ms ??? need to verify).  So i'll just chain the calls for now and change it if it's a problem.
 };
