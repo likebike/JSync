@@ -278,6 +278,7 @@ JDeltaSync.Client.prototype._setJoinDB = function(joinDB) {
         throw new Error('Unregistration of old joinDB is not implemented yet.');
     }
     this.joinDB = joinDB || new JDeltaDB.DB();
+    this.joinDB._requireMetaFrom = false;  // Because join edits will always be performed by the server.
 };
 JDeltaSync.Client.prototype._getDB = function(type) {
     switch(type) {
@@ -1120,45 +1121,57 @@ JDeltaSync.sebwebHandler_query = function(syncServer) {
 
 
 
+var AP_TRUE  = function(syncServer, req, connectionID, stateID) { return true;  },
+    AP_FALSE = function(syncServer, req, connectionID, stateID) { return false; };
 
 JDeltaSync.AccessPolicy_WideOpen = function() {
     if(!(this instanceof JDeltaSync.AccessPolicy_WideOpen)) return new JDeltaSync.AccessPolicy_WideOpen();
 };
-JDeltaSync.AccessPolicy_WideOpen.prototype.canLogin   = function(syncServer, req, connectionID, stateID) { return true; };
-JDeltaSync.AccessPolicy_WideOpen.prototype.canJoin    = function(syncServer, req, connectionID, stateID) { return true; };
-JDeltaSync.AccessPolicy_WideOpen.prototype.canRead    = function(syncServer, req, connectionID, stateID) { return true; };
-JDeltaSync.AccessPolicy_WideOpen.prototype.canCreate  = function(syncServer, req, connectionID, stateID) { return true; };
-JDeltaSync.AccessPolicy_WideOpen.prototype.canUpdate  = function(syncServer, req, connectionID, stateID) { return true; };
-JDeltaSync.AccessPolicy_WideOpen.prototype.canDelete  = function(syncServer, req, connectionID, stateID) { return true; };
-JDeltaSync.AccessPolicy_WideOpen.prototype.canMessage = function(syncServer, req, connectionID, stateID) { return true; };
+JDeltaSync.AccessPolicy_WideOpen.prototype.canLogin   = AP_TRUE;
+JDeltaSync.AccessPolicy_WideOpen.prototype.canJoin    = AP_TRUE;
+JDeltaSync.AccessPolicy_WideOpen.prototype.canRead    = AP_TRUE;
+JDeltaSync.AccessPolicy_WideOpen.prototype.canCreate  = AP_TRUE;
+JDeltaSync.AccessPolicy_WideOpen.prototype.canUpdate  = AP_TRUE;
+JDeltaSync.AccessPolicy_WideOpen.prototype.canDelete  = AP_TRUE;
+JDeltaSync.AccessPolicy_WideOpen.prototype.canMessage = AP_TRUE;
 
 
 JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete = function() {
     if(!(this instanceof JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete)) return new JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete();
 };
-JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete.prototype.canLogin   = function(syncServer, req, connectionID, stateID) { return true; };
-JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete.prototype.canJoin    = function(syncServer, req, connectionID, stateID) { return true; };
-JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete.prototype.canRead    = function(syncServer, req, connectionID, stateID) { return true; };
+JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete.prototype.canLogin   = AP_TRUE;
+JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete.prototype.canJoin    = AP_TRUE;
+JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete.prototype.canRead    = AP_TRUE;
 JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete.prototype.canCreate  = function(syncServer, req, connectionID, stateID) {
     var connectionInfo = JDeltaSync.connectionInfo(syncServer.joinDB.getState('/'), connectionID);
     return !(connectionInfo.userID in {'__NOUSER__':1});
 };
 JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete.prototype.canUpdate  = JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete.prototype.canCreate;
 JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete.prototype.canDelete  = JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete.prototype.canCreate;
-JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete.prototype.canMessage = function(syncServer, req, connectionID, stateID) { return true; };
+JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete.prototype.canMessage = AP_TRUE;
 
 
 JDeltaSync.AccessPolicy_RequireUserIDToUpdate = function() {
     if(!(this instanceof JDeltaSync.AccessPolicy_RequireUserIDToUpdate)) return new JDeltaSync.AccessPolicy_RequireUserIDToUpdate();
 };
-JDeltaSync.AccessPolicy_RequireUserIDToUpdate.prototype.canLogin   = function(syncServer, req, connectionID, stateID) { return true; };
-JDeltaSync.AccessPolicy_RequireUserIDToUpdate.prototype.canJoin    = function(syncServer, req, connectionID, stateID) { return true; };
-JDeltaSync.AccessPolicy_RequireUserIDToUpdate.prototype.canRead    = function(syncServer, req, connectionID, stateID) { return true; };
-JDeltaSync.AccessPolicy_RequireUserIDToUpdate.prototype.canCreate  = function(syncServer, req, connectionID, stateID) { return false; };
+JDeltaSync.AccessPolicy_RequireUserIDToUpdate.prototype.canLogin   = AP_TRUE;
+JDeltaSync.AccessPolicy_RequireUserIDToUpdate.prototype.canJoin    = AP_TRUE;
+JDeltaSync.AccessPolicy_RequireUserIDToUpdate.prototype.canRead    = AP_TRUE;
+JDeltaSync.AccessPolicy_RequireUserIDToUpdate.prototype.canCreate  = AP_FALSE;
 JDeltaSync.AccessPolicy_RequireUserIDToUpdate.prototype.canUpdate  = JDeltaSync.AccessPolicy_RequireUserIDToCreateUpdateDelete.prototype.canUpdate;
-JDeltaSync.AccessPolicy_RequireUserIDToUpdate.prototype.canDelete  = function(syncServer, req, connectionID, stateID) { return false; };
-JDeltaSync.AccessPolicy_RequireUserIDToUpdate.prototype.canMessage = function(syncServer, req, connectionID, stateID) { return true; };
+JDeltaSync.AccessPolicy_RequireUserIDToUpdate.prototype.canDelete  = AP_FALSE;
+JDeltaSync.AccessPolicy_RequireUserIDToUpdate.prototype.canMessage = AP_TRUE;
 
+
+JDeltaSync.AccessPolicy_NoClientEdits = function() {
+    if(!(this instanceof JDeltaSync.AccessPolicy_NoClientEdits)) return new JDeltaSync.AccessPolicy_NoClientEdits();
+};
+JDeltaSync.AccessPolicy_NoClientEdits.prototype.canLogin  = AP_TRUE;
+JDeltaSync.AccessPolicy_NoClientEdits.prototype.canJoin   = AP_TRUE;
+JDeltaSync.AccessPolicy_NoClientEdits.prototype.canRead   = AP_TRUE;
+JDeltaSync.AccessPolicy_NoClientEdits.prototype.canCreate = AP_FALSE;
+JDeltaSync.AccessPolicy_NoClientEdits.prototype.canUpdate = AP_FALSE;
+JDeltaSync.AccessPolicy_NoClientEdits.prototype.canDelete = AP_FALSE;
 
 
 

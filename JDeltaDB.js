@@ -124,10 +124,8 @@ JDeltaDB.DB.prototype.waitForData = function(id, callback) {
         var idRegex = RegExp('^'+XRegExp.escape(id)+'$');
         var event = 'all';
         var cb = function(_path, _id, _data) {
-            if(_path === '!') {
-                if(_data.op === 'createState') return;  // There will be no data at this point.
-            }
-            // console.log('waidForData: received:',_path, _id, _data);
+            if(_path === '!'  &&  _data.op === 'createState') return;  // There will be no data at this point.
+            console.log('waitForData: received:',_path, _id, _data);  // Comment out this line when we are out of "super-alpha" phase for this function.
             self.off(idRegex, event, cb);
             return callback(id, self);
         };
