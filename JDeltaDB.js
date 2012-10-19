@@ -124,8 +124,9 @@ JDeltaDB.DB.prototype.waitForData = function(id, callback) {
         var idRegex = RegExp('^'+XRegExp.escape(id)+'$');
         var event = 'all';
         var cb = function(_path, _id, _data) {
-            if(_path === '!'  &&  _data.op === 'createState') return;  // There will be no data at this point.
-            console.log('waitForData: received:',_path, _id, _data);  // Comment out this line when we are out of "super-alpha" phase for this function.
+            if(_path==='!'  &&  _data.op==='createState') return;  // There will be no data at this point.
+            if(_path==='!'  &&  _data.op==='reset') {     // Don't log this cuz we know that it is a valid data signal.
+            } else console.log('waitForData: received:',_path, _id, _data);  // Comment out this line when we are out of "super-alpha" phase for this function.
             self.off(idRegex, event, cb);
             return callback(id, self);
         };
@@ -329,7 +330,7 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, 
         throw err;
     }
     this._storage.acquireLock(_alreadyLocked, function(unlock) {
-        console.log('_addHashedDelta: ACQUIRED LOCK:',id);
+        //console.log('_addHashedDelta: ACQUIRED LOCK:',id);
         var stdOnErr = function(err) {
             setTimeout(function(){unlock(true)}, 0);
             if(onError) return onError(err);
@@ -384,8 +385,8 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, 
                 }
                 self._storage.addDelta(id, delta, function() {
                     self._trigger('!', id, {op:'deltaApplied', delta:delta});
-                    console.log('_addHashedDelta: RELEASING LOCK:',id);
                     onSuccess && onSuccess();
+                    //console.log('_addHashedDelta: RELEASING LOCK:',id);
                     return unlock();
                 }, stdOnErr);
             });
@@ -698,7 +699,7 @@ JDeltaDB.RamStorage.prototype._existsSync = function(id) {
 JDeltaDB.RamStorage.prototype._getRawDeltas = function(id, onSuccess, onError) {
     if(!onSuccess) throw new Error('You need to provide a callback.');
     if(!this.__data.hasOwnProperty(id)) {
-        var err = new Error("'id' not found: "+id);
+        var err = new Error("id not found in storage: "+id);
         if(onError) return onError(err);
         else throw err;
     }

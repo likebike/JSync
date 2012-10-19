@@ -305,11 +305,15 @@ JDeltaSync.Client.prototype.join = function(stateID, subscribeMode) {
     // We keep track of our joins so that we can easily re-create them if we relogin:
     this._joins[stateID] = subscribeMode;
     
-    // In order to avoid an Delta Application Error from being displayed to the console, we need to reset the Join state before we join!
+    // In order to avoid a Delta Application Error from being displayed to the console, we need to reset the Join state before we join!
+    var afterData = function() {
+        return self._addToSendQueue({op:'join', id:stateID, subscribeMode:subscribeMode});
+    };
     if(!this.joinDB.contains(stateID)) {
-        this.reset('join', stateID);  // For now, we just assume that the reset will go thru first since we call it first.  If this proves inadequate, we will need to add a callback to the reset() function somehow.
+        this.reset('join', stateID);  // For now, we just assume that the reset will go thru first since we call it first.  If this proves inadequate, we will need to add a callback to the reset() function somehow.  ///  2012-10-18: I was getting race conditions where the 'join' and 'reset' messages were coming in sometimes in an incompatible order, which totally prevented operations because of invalid connectionID info... so I started using the recently-added 'waitForData' stuff:
+        return this.joinDB.waitForData(stateID, afterData);
     }
-    return this._addToSendQueue({op:'join', id:stateID, subscribeMode:subscribeMode});
+    return afterData();
 };
 JDeltaSync.Client.prototype.leave = function(stateID) {
     // If you want to receive notification when the full leave is done, you can register a listener to the '!'/'deleteState' event on the stateID in the joinDB.
@@ -524,6 +528,8 @@ JDeltaSync.Client.prototype._rawDoReset = function() {
                 item = data[i];
                 itemsIReceived[item.type+'::'+item.id] = item;
             }
+            //for(var _tmpK in itemsIReceived) if(itemsIReceived.hasOwnProperty(_tmpK)) console.log('Reset Started:', _tmpK);
+
             // Delete items that went away:
             var db;
             for(itemStr in itemsIRequested) if(itemsIRequested.hasOwnProperty(itemStr)) {
@@ -562,6 +568,7 @@ JDeltaSync.Client.prototype._rawDoReset = function() {
                     var i, ii;
                     for(i=0, ii=itemsToReset.length; i<ii; i++) {
                         item3 = itemsToReset[i];
+                        //console.log('Reset Complete:', item3.type, item3.id);
                         delete self._resetQueue[item3.type+'::'+item3.id];
                     }
                     self._resetting = false;
@@ -653,12 +660,13 @@ JDeltaSync.Client.prototype._rawDoReceive = function() {
 
                                 case 'deltaApplied':
                                     try {
+                                        //console.log('Received deltaApplied message:',item);
                                         db = self._getDB(item.data.type);
                                         if(item.data.type === 'state') {
                                             self._receivedFromServer[self._receivedFromServer.length] = {type:item.data.type, id:item.data.id, dataStr:JDelta.stringify({op:'deltaApplied', delta:item.data.delta, type:'state', id:item.data.id})};
                                         }
                                         db._addHashedDelta(item.data.id, item.data.delta, next, function(err) {
-                                            if(typeof console !== 'undefined') console.log('Error Applying Delta.  Resetting: ', item.data.type, item.data.id, err);
+                                            if(typeof console !== 'undefined') console.log('Error Applying Delta.  Resetting: ', item.data.type, item.data.id, item.data.delta, err, err.stack);
                                             self.reset(item.data.type, item.data.id);
                                             return next();
                                         });
@@ -1653,7 +1661,9 @@ JDeltaSync.Server.prototype.clientJoin = function(connectionID, stateID, subscri
 JDeltaSync.Server.prototype.clientLeave = function(connectionID, stateID, onSuccess, onError) {
     // Never leave the global state.  Just switch the subscription mode to silent:
     if(stateID === '/') return this.clientJoin(connectionID, stateID, JDeltaSync.Silent, onSuccess, onError);
-    var state = this.joinDB.getState(stateID);
+    var state;
+    try { state = this.joinDB.getState(stateID);
+    } catch(err) { return onError(err); }
     var connectionInfo = JDeltaSync.connectionInfo(state, connectionID);
     if(!connectionInfo) {
         var err = new Error('not joined!');
