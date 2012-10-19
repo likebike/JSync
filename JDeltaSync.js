@@ -165,7 +165,7 @@ JDeltaSync.Client = function(url, stateDB, joinDB) {
     this.login();
     this.installAutoUnloader();
 };
-JDeltaSync.Client.prototype.getConnectionInfo = function() {
+JDeltaSync.Client.prototype.connectionInfo = function() {
     // A convenience function for a frequently-needed piece of functionality.
     for(var jID in this._joins) if(this._joins.hasOwnProperty(jID)) {
         // Just take the first one we can get.

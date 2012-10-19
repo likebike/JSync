@@ -341,7 +341,17 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, 
                 parentHash = lastDelta.curHash;
             if(delta.seq !== parentSeq + 1) return stdOnErr(new Error('invalid sequence! '+delta.seq+' != '+(parentSeq+1)));
             if(delta.parentHash !== parentHash) {
-                // This is occuring rarely, and intermittetently.  Occurred on 2012-08-14 suring an edit of the joinDB (which should never have errors because only the server edits it).
+                // NOTE:  Here is how to compare the in-memory data (that the server crashed with) against the on-disk data:
+                //     # (Get the tampered state path from the error message (c11f/%2F in this case).)
+                //     cd ~/whiteboard_site
+                //     node
+                //         var JDelta = require('JDelta/JDelta.js').JDelta;
+                //         var fs = require('fs');
+                //         var str = JDelta.stringify(JDelta.render(null, JSON.parse(fs.readFileSync('/home/whiteboard322/whiteboard_site/db/joins/c11f/%2F'))));
+                //         str;   // Copy-paste the result into VIM and compare to the error message data.
+                //         JDelta._dsHash(str);
+                //         
+                // This is occuring rarely, and intermittetently.  Occurred on 2012-08-14 during an edit of the joinDB (which should never have errors because only the server edits it).
                 // I have a theory that the state is getting modified/tampered somehow.  I verified that 'parentHash' (derived from lastDelta) is valid, while the 'delta.parentHash' seems invalid.  Hence, my theory about tampered state.
                 // 2012-08-15.  This occurred again.  I was able to determine that the join subscription mode was not matching as expected.   On top of that, the subscription mode of one of the items was Silent, but the state was not the global state.  AS far as I know, the Silent state should only really occur in the global state.
                 // 2012-08-15.  Occurred when I opened more tabs to the same whiteboard, then closed them, and did a refresh on the final (original) one.  This time, the file had an extra state that the memory did not have.  The delta that triggered the problem was adding a new (different) join connection for the browser that we refreshed.
@@ -351,6 +361,7 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, 
                 // 2012-08-17.  Same as above.  (Disk: "", Mem: "sJ+rS", Deleting different connection)
                 // ---  Here, I adjusted the logic so that blank subscriptions no longer get placed into non-root join states.
                 // 2012-08-21.  The Mem object had an entry that the disk did not.  The operation that triggered this was unrelated.
+                // 2012-10-18.  There is a Silent Join in memory that is not on disk, state=join-/.  I have added some logging messages to let me see when files are read and written... to see if the old file is being re-read before new data is written.  ALSO, I moved the location of the 'statesToSave' delete point.  I found a race condition in the save code that could have been causing all this (search for 2012-10-18).  Ya, i think i solved this bug... finally!  :P
                 console.log('Tampered state???  (You can compare to the file data of %s)',id);
                 console.log(JDelta.stringify(state.state));
                 console.log(JDelta._dsHash(JDelta.stringify(state.state)));
@@ -835,6 +846,7 @@ JDeltaDB.DirStorage.prototype.__rawSaveState = function(id, onSuccess, onError) 
             if(err) return onError(err);
             fs.rename(newFilepath, filepath, function(err) {
                 if(err) return onError(err);
+                console.log('Wrote:', filepath);
                 onSuccess();
             });
         });
@@ -849,10 +861,13 @@ JDeltaDB.DirStorage.prototype._rawSave = function() {
             break;
         }
         if(id === null) return; // No more states to save.
+        console.log('Scheduled Save and Removal of:',id);
+        delete self.__statesToSave[id];  // 2012-10-18:  moved here so that if any edits are made during the save, they will get an additional save.
         self.__rawSaveState(id, function() {
-            delete self.__statesToSave[id];
+            // delete self.__statesToSave[id];  // 2012-10-18: commented this out and moved it up above.  My theory is that this is the cause of the tamper-data race condition.
             return saveNextState();
         }, function(err) {
+            self.__statesToSave[id] = true;  // Re-schedule.
             throw err;
         })
     };
