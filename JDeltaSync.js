@@ -944,7 +944,7 @@ JDeltaSync.sebwebHandler_clientReceive = function(syncServer) {
     var sebweb = require('sebweb');
     return sebweb.CookieStore(syncServer.options.sebweb_cookie_secret, function(req, res, onSuccess, onError) {
         res.setHeader('Access-Control-Allow-Origin', syncServer.options.accessControlAllowOrigin || req.headers.origin);  // Allow cross-domain requests.  ...otherwise javascript can't see the status code (it sees 0 instead because it is not allows to see any data that is not granted access via CORS).
-        res.setHeader('Access-Control-Allow-Credentials', 'true');  // Allow cross-domain cookies.
+        res.setHeader('Access-Control-Allow-Credentials', 'true');  // Allow cross-domain cookies.   ...otherwise, javascript can't access the response body.  :/
         var url = URL.parse(req.url, true);
         var connectionID = url.query.connectionID;
         if(!_.isString(connectionID))
