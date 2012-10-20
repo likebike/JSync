@@ -67,6 +67,7 @@ JDeltaDB.DB = function(storage, onSuccess, onError) {
     if(!(this instanceof JDeltaDB.DB))
         return new JDeltaDB.DB(storage, onSuccess, onError);
     this._states = {}; // State Structure: { state:json, dispatcher:obj }
+    this._requireMetaFrom = true;
     this._regexListeners = [];
     this._loadListeners = [];
     this._storage = storage || new JDeltaDB.RamStorage();
@@ -110,6 +111,27 @@ JDeltaDB.DB.prototype._load = function() {
         setTimeout(notifyLoadListeners, 0);
         throw err;
     });
+};
+JDeltaDB.DB.prototype.waitForData = function(id, callback) {
+    // Convenience function for when you are requesting data from the server (usually with 'reset'), and you want to run a function when the data arrives.
+    // Mostly used for testing and hoaky stuff.  If you find yourself using this a lot in your code, you probably need to re-structure your design to use normal 'on'.
+    if(!_.isString(id)) throw new Error('non-string id!');
+    if(!callback) throw new Error('!callback');
+    var self = this;
+    var afterData = function() { return callback(id, self); };
+    if(this.contains(id)) return afterData();
+    else {
+        var idRegex = RegExp('^'+XRegExp.escape(id)+'$');
+        var event = 'all';
+        var cb = function(_path, _id, _data) {
+            if(_path==='!'  &&  _data.op==='createState') return;  // There will be no data at this point.
+            if(_path==='!'  &&  _data.op==='reset') {     // Don't log this cuz we know that it is a valid data signal.
+            } else console.log('waitForData: received:',_path, _id, _data);  // Comment out this line when we are out of "super-alpha" phase for this function.
+            self.off(idRegex, event, cb);
+            return callback(id, self);
+        };
+        this.on(idRegex, event, cb);
+    }
 };
 JDeltaDB.DB.prototype.on = function(id, event, callback) {
     if(!id)
@@ -242,12 +264,12 @@ JDeltaDB.DB.prototype.rollback = function(id, toSeq, onSuccess, onError, _alread
             self.render(id, toSeq,
                         function(o){
                             state.state = o;
-                            unlock();
                             self._trigger('!', id, {op:'reset'});
-                            if(onSuccess) return onSuccess(id);
+                            onSuccess && onSuccess(id);
+                            return unlock();
                         },
                         function(err){
-                            setTimeout(unlock, 0);
+                            setTimeout(function(){unlock(true)}, 0);
                             if(onError) return onError(err);
                             else throw err;
                         });
@@ -296,16 +318,21 @@ JDeltaDB.DB.prototype.rollback = function(id, toSeq, onSuccess, onError, _alread
  *   25      -15      -25           f        c  #25= rev(#20) <--- undo  // f  --> c.  Did you notice that either the undoSeq or redoSeq is always equal to -seq?
  *
  ******************************************************************************/
-JDeltaDB._EMPTY_OBJ_HASH = JDelta._hash('{}');
+JDeltaDB._EMPTY_OBJ_HASH = JDelta._dsHash('{}');
 JDeltaDB._PSEUDO_DELTA_0 = { steps:[], meta:{pseudoDelta:true}, parentHash:null, curHash:JDeltaDB._EMPTY_OBJ_HASH, seq:0, undoSeq:null, redoSeq:null };
 JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, _alreadyLocked) {
     // Called by the JDeltaDB API (not the end user) with a delta object like this:
     //     { steps:[...], meta:{...}, parentHash:str, curHash:str, seq:int, undoSeq:int, redoSeq:int }
     var self = this;
+    if(this._requireMetaFrom  &&  (!delta.meta  ||  !delta.meta.from)) {
+        var err = new Error('You must define meta.from={userID:..., browserID:..., connectionID:...}');
+        if(onError) return onError(err);
+        throw err;
+    }
     this._storage.acquireLock(_alreadyLocked, function(unlock) {
-        console.log('_addHashedDelta: ACQUIRED LOCK:',id);
+        //console.log('_addHashedDelta: ACQUIRED LOCK:',id);
         var stdOnErr = function(err) {
-            setTimeout(unlock, 0);
+            setTimeout(function(){unlock(true)}, 0);
             if(onError) return onError(err);
             else throw err;
         };
@@ -315,14 +342,30 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, 
                 parentHash = lastDelta.curHash;
             if(delta.seq !== parentSeq + 1) return stdOnErr(new Error('invalid sequence! '+delta.seq+' != '+(parentSeq+1)));
             if(delta.parentHash !== parentHash) {
-                // This is occuring rarely, and intermittetently.  Occurred on 2012-08-14 suring an edit of the joinDB (which should never have errors because only the server edits it).
+                // NOTE:  Here is how to compare the in-memory data (that the server crashed with) against the on-disk data:
+                //     # (Get the tampered state path from the error message (c11f/%2F in this case).)
+                //     cd ~/whiteboard_site
+                //     node
+                //         var JDelta = require('JDelta/JDelta.js').JDelta;
+                //         var fs = require('fs');
+                //         var str = JDelta.stringify(JDelta.render(null, JSON.parse(fs.readFileSync('/home/whiteboard322/whiteboard_site/db/joins/c11f/%2F'))));
+                //         str;   // Copy-paste the result into VIM and compare to the error message data.
+                //         JDelta._dsHash(str);
+                //         
+                // This is occuring rarely, and intermittetently.  Occurred on 2012-08-14 during an edit of the joinDB (which should never have errors because only the server edits it).
                 // I have a theory that the state is getting modified/tampered somehow.  I verified that 'parentHash' (derived from lastDelta) is valid, while the 'delta.parentHash' seems invalid.  Hence, my theory about tampered state.
                 // 2012-08-15.  This occurred again.  I was able to determine that the join subscription mode was not matching as expected.   On top of that, the subscription mode of one of the items was Silent, but the state was not the global state.  AS far as I know, the Silent state should only really occur in the global state.
                 // 2012-08-15.  Occurred when I opened more tabs to the same whiteboard, then closed them, and did a refresh on the final (original) one.  This time, the file had an extra state that the memory did not have.  The delta that triggered the problem was adding a new (different) join connection for the browser that we refreshed.
                 // 2012-08-16.  A connection in Memory had a subscription of "sJ+rS" while the disk was "".  Error occurred while creating a different connection.
+                // 2012-08-16.  Same as above, except the error occurred while DELETING a different connection.
+                // 2012-08-16.  Same as above.
+                // 2012-08-17.  Same as above.  (Disk: "", Mem: "sJ+rS", Deleting different connection)
+                // ---  Here, I adjusted the logic so that blank subscriptions no longer get placed into non-root join states.
+                // 2012-08-21.  The Mem object had an entry that the disk did not.  The operation that triggered this was unrelated.
+                // 2012-10-18.  There is a Silent Join in memory that is not on disk, state=join-/.  I have added some logging messages to let me see when files are read and written... to see if the old file is being re-read before new data is written.  ALSO, I moved the location of the 'statesToSave' delete point.  I found a race condition in the save code that could have been causing all this (search for 2012-10-18).  Ya, i think i solved this bug... finally!  :P
                 console.log('Tampered state???  (You can compare to the file data of %s)',id);
                 console.log(JDelta.stringify(state.state));
-                console.log(JDelta._hash(JDelta.stringify(state.state)));
+                console.log(JDelta._dsHash(JDelta.stringify(state.state)));
                 console.log(delta);
                 return stdOnErr(new Error('invalid parentHash: '+delta.parentHash+' != '+parentHash));
             }
@@ -332,19 +375,19 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, 
                     delta.meta.date = new Date(new Date().getTime() + serverTimeOffset).toUTCString();
                 try {
                     JDelta.patch(id, state.state, delta, state.dispatcher);
-                    if(JDelta._hash(JDelta.stringify(state.state)) !== delta.curHash)
+                    if(JDelta._dsHash(JDelta.stringify(state.state)) !== delta.curHash)
                         throw new Error('invalid curHash!');  // Rollback in the catch.
                 } catch(e) {
-                    var delayedUnlock = function() { setTimeout(unlock, 0); };
+                    var delayedUnlock = function() { setTimeout(function(){unlock(true)}, 0); };
                     self.rollback(id, parentSeq, delayedUnlock, delayedUnlock, true);  // true = alreadyLocked.
                     if(onError) return onError(e);
                     else throw e;
                 }
                 self._storage.addDelta(id, delta, function() {
                     self._trigger('!', id, {op:'deltaApplied', delta:delta});
-                    console.log('_addHashedDelta: RELEASING LOCK:',id);
-                    unlock();  // unlock will never throw an exception.
-                    if(onSuccess) return onSuccess();
+                    onSuccess && onSuccess();
+                    //console.log('_addHashedDelta: RELEASING LOCK:',id);
+                    return unlock();
                 }, stdOnErr);
             });
         }, stdOnErr);
@@ -352,27 +395,34 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, 
 };
 JDeltaDB.DB.prototype._addDelta = function(id, delta, onSuccess, onError, _alreadyLocked) {
     var self = this;
-    var state = this._getRawState(id);
-    var oldHash = JDelta._hash(JDelta.stringify(state.state));
-    var newStateCopy = JDelta.patch(id, JDelta._deepCopy(state.state), delta);
-    var newHash = JDelta._hash(JDelta.stringify(newStateCopy));
-    if(newHash === oldHash) {
-        // No change.  Let's just pretend this never happend...
-        if(onSuccess) return onSuccess();
-        return;
+    if(this._requireMetaFrom  &&  (!delta.meta  ||  !delta.meta.from)) {
+        var err = new Error('You must define meta.from={userID:..., browserID:..., connectionID:...}');
+        if(onError) return onError(err);
+        throw err;
     }
     this._storage.acquireLock(_alreadyLocked, function(unlock) {
         var stdOnErr = function(err) {
-            setTimeout(unlock, 0);
+            setTimeout(function() {unlock(true)}, 0);
             if(onError) return onError(err);
             else throw err;
         };
+
+        var state = self._getRawState(id);
+        var oldHash = JDelta._dsHash(JDelta.stringify(state.state));
+        var newStateCopy = JDelta.patch(id, JDelta._deepCopy(state.state), delta);
+        var newHash = JDelta._dsHash(JDelta.stringify(newStateCopy));
+        if(newHash === oldHash) {
+            // No change.  Let's just pretend this never happend...
+            onSuccess && onSuccess();
+            return unlock();
+        }
+
         self._storage.getLastDelta(id, function(id, lastDelta) {
             var newSeq = lastDelta.seq + 1;
             var hashedDelta = { steps:delta.steps, meta:delta.meta || {}, parentHash:oldHash, curHash:newHash, seq:newSeq, undoSeq:-newSeq, redoSeq:null };
             self._addHashedDelta(id, hashedDelta, function() {
-                unlock();
-                if(onSuccess) return onSuccess();
+                onSuccess && onSuccess();
+                return unlock();
             }, stdOnErr, true);  // true = alreadyLocked.
         }, stdOnErr);
     });
@@ -381,15 +431,20 @@ JDeltaDB.DB.prototype.edit = function(id, operations, meta, onSuccess, onError) 
     // Called by the end user with an 'operations' arg like JDelta.create.
     // Can also include an optional 'meta' object to include info about the change, such as date, user, etc.
     var self = this;
+    if(this._requireMetaFrom  &&  (!meta  ||  !meta.from)) {
+        var err = new Error('You must define meta.from={userID:..., browserID:..., connectionID:...}');
+        if(onError) return onError(err);
+        throw err;
+    }
     this._storage.acquireLock(false, function(unlock) {
         var state = self._getRawState(id);
         var delta = JDelta.create(state.state, operations);
         delta.meta = meta;
         self._addDelta(id, delta, function() {
-            unlock();
-            if(onSuccess) return onSuccess();
+            onSuccess && onSuccess();
+            return unlock();
         }, function(err) {
-            setTimeout(unlock, 0);
+            setTimeout(function() {unlock(true)}, 0);
             if(onError) return onError(err);
             else throw err;
         }, true);  // true = alreadyLocked.
@@ -400,11 +455,11 @@ JDeltaDB.DB.prototype.canUndo = function(id, onSuccess, onError) {
         return onSuccess(lastDelta.undoSeq !== null);
     }, onError);
 };
-JDeltaDB.DB.prototype.undo = function(id, onSuccess, onError) {
+JDeltaDB.DB.prototype.undo = function(id, meta, onSuccess, onError) {
     var self = this;
     this._storage.acquireLock(false, function(unlock) {
         var stdOnErr = function(err) {
-            setTimeout(unlock, 0);
+            setTimeout(function() {unlock(true)}, 0);
             if(onError) return onError(err);
             else throw err;
         };
@@ -420,11 +475,11 @@ JDeltaDB.DB.prototype.undo = function(id, onSuccess, onError) {
                 var finishProcessWithPostUndoDelta = function(id, postUndoDelta) {
                     var postUndoUndoSeq = postUndoDelta.undoSeq;
                     var postUndoHash = postUndoDelta.curHash;
-                    var newMeta = _.extend(JDelta._deepCopy(postUndoDelta.meta), {operation:'undo'});
+                    var newMeta = _.extend(JDelta._deepCopy(postUndoDelta.meta), {operation:'undo'}, meta);
                     var hashedDelta = { steps:undoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postUndoHash, seq:newSeq, undoSeq:postUndoUndoSeq, redoSeq:newRedoSeq };
                     self._addHashedDelta(id, hashedDelta, function() {
-                        unlock();
-                        if(onSuccess) return onSuccess();
+                        onSuccess && onSuccess();
+                        return unlock();
                     }, stdOnErr, true);  // true = alreadyLocked.
                 };
 
@@ -442,11 +497,11 @@ JDeltaDB.DB.prototype.canRedo = function(id, onSuccess, onError) {
         return onSuccess(lastDelta.redoSeq !== null);
     }, onError);
 };
-JDeltaDB.DB.prototype.redo = function(id, onSuccess, onError) {
+JDeltaDB.DB.prototype.redo = function(id, meta, onSuccess, onError) {
     var self = this;
     this._storage.acquireLock(false, function(unlock) {
         var stdOnErr = function(err) {
-            setTimeout(unlock, 0);
+            setTimeout(function() {unlock(true)}, 0);
             if(onError) return onError(err);
             else throw err;
         };
@@ -461,11 +516,11 @@ JDeltaDB.DB.prototype.redo = function(id, onSuccess, onError) {
                 self._storage.getDelta(id, postRedoSeq, function(id, postRedoDelta) {
                     var postRedoRedoSeq = postRedoDelta.redoSeq;
                     var postRedoHash = postRedoDelta.curHash;
-                    var newMeta = _.extend(JDelta._deepCopy(postRedoDelta.meta), {operation:'redo'});
+                    var newMeta = _.extend(JDelta._deepCopy(postRedoDelta.meta), {operation:'redo'}, meta);
                     var hashedDelta = { steps:redoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postRedoHash, seq:newSeq, undoSeq:newUndoSeq, redoSeq:postRedoRedoSeq };
                     self._addHashedDelta(id, hashedDelta, function() {
-                        unlock();
-                        if(onSuccess) return onSuccess();
+                        onSuccess && onSuccess();
+                        return unlock();
                     }, stdOnErr, true); // true = alreadyLocked
                 }, stdOnErr);
             }, stdOnErr);
@@ -481,6 +536,72 @@ JDeltaDB.DB.prototype.redo = function(id, onSuccess, onError) {
 ////      // ...but VIEWS are usually a better solution.
 ////      throw new Error('not implemented yet because Views will probably be way better.');
 ////  };
+
+JDeltaDB.DB.prototype.getEditHistory = function(id, onSuccess, onError) {
+    var self = this;
+    this._storage.getDeltas(id, undefined, undefined, function(id, deltas) {
+        var history = {},
+            i, ii, steps, j, jj, totalPath;
+        for(i=0, ii=deltas.length; i<ii; i++) {
+            steps = deltas[i].steps;
+            for(j=0, jj=steps.length; j<jj; j++) {
+                totalPath = steps[j].path +'.'+ steps[j].key;
+                if(steps[j].op === 'arrayInsert') {
+                    var curKey = steps[j].key,
+                        curValue = [deltas[i]],
+                        nextKey, nextValue, curTotalPath, nextTotalPath;
+                    while(true) {
+                        nextKey = curKey + 1;
+                        curTotalPath = steps[j].path +'.'+ curKey;
+                        nextTotalPath = steps[j].path +'.'+ nextKey;
+                        nextValue = history[nextTotalPath];
+                        history[curTotalPath] = curValue;
+                        if(!history.hasOwnProperty(nextTotalPath)) break;
+                        curKey = nextKey;
+                        curValue = nextValue;
+                    }
+                } else if(steps[j].op === 'arrayRemove') {
+                    if(!history.hasOwnProperty(totalPath)) {
+                        if(typeof console !== 'undefined') console.log('Delta for upcoming error:', deltas[i]);
+                        var err = new Error('getEditHistory: Invalid arrayRemove');
+                        if(onError) return onError(err);
+                        else throw err;
+                    }
+                    var prevKey = steps[j].key,
+                        curKey, prevTotalPath, curTotalPath;
+                    while(true) {
+                        curKey = prevKey + 1,
+                        prevTotalPath = steps[j].path +'.'+ prevKey;
+                        curTotalPath = steps[j].path +'.'+ curKey;
+                        if(!history.hasOwnProperty(curTotalPath)) break;
+                        history[prevTotalPath] = history[curTotalPath];
+                        prevKey = curKey;
+                    }
+                    delete history[prevTotalPath];
+                } else if(steps[j].after) {
+                    if(history.hasOwnProperty(totalPath)) {
+                        history[totalPath].push(deltas[i]);
+                    } else {
+                        history[totalPath] = [deltas[i]];
+                    }
+                } else {
+                    if(!history.hasOwnProperty(totalPath)) {
+                        if(typeof console !== 'undefined') console.log(deltas[i]);
+                        var err = new Error('getEditHistory: Invalid delete');
+                        if(onError) return onError(err);
+                        else throw err;
+                    }
+                    delete history[totalPath]
+                }
+            }
+        }
+        return onSuccess(history);
+    }, onError);
+};
+
+
+
+
 
 
 
@@ -528,8 +649,11 @@ JDeltaDB.RamStorage.prototype._nextLockCB = function() {
     var lockKey = this.lockKey = {};  // Create a unique object.
     //console.log('Lock Acquired.');
     //console.trace();
-    var unlock = function() {
-        //console.log('Unlock Called.');
+    var unlock = function(possibleDoubleUnlock) {
+        if(possibleDoubleUnlock) {
+            // Double-unlocks can occur in siutaions where we have encountered an error, so we are going to schedule an unlock, and then throw and exception.  In this case, the exception handler may auto-unlock... and then when the delayed unlock gets run, it causes a double-unlock.  This 'possibleDoubleUnlock' parameter allows us to gracefully handle this situation by using it when we schedule the delayed unlock.
+            if(self.lockKey !== lockKey) return;
+        }
         return self._releaseLock(lockKey);
     };
     try {
@@ -550,7 +674,7 @@ JDeltaDB.RamStorage.prototype._nextLockCB = function() {
 };
 JDeltaDB.RamStorage.prototype._releaseLock = function(key) {
     //console.log('releaseLock...');
-    if(key !== this.lockKey) throw new Error('Incorrect LockKey!');
+    if(key !== this.lockKey) throw new Error('Incorrect LockKey! '+key+' != '+this.lockKey);
     this.lockKey = null;
     return this._nextLockCB(); // I was thinking of using setTimeout or postMessage to delay this (and allow the caller stack to run as expected), but it creates some corner cases (like double-calls of nextLockCB) and performance issues on IE6 (because setTimeout is always a minimum of 10ms ??? need to verify).  So i'll just chain the calls for now and change it if it's a problem.
 };
@@ -575,7 +699,7 @@ JDeltaDB.RamStorage.prototype._existsSync = function(id) {
 JDeltaDB.RamStorage.prototype._getRawDeltas = function(id, onSuccess, onError) {
     if(!onSuccess) throw new Error('You need to provide a callback.');
     if(!this.__data.hasOwnProperty(id)) {
-        var err = new Error("'id' not found: "+id);
+        var err = new Error("id not found in storage: "+id);
         if(onError) return onError(err);
         else throw err;
     }
@@ -675,7 +799,7 @@ JDeltaDB.DirStorage = function(dirpath) {
     this.__statesCurrentlyInRam = {};
     this.__statesToSave = {};
     this.__stateAccessTimes = {};
-    this.__stateIdleTime = 60000;
+    this.__stateIdleTime = 6000;//60000;
     this.save = _.debounce(_.bind(this._rawSave, this), 1000);
     this.removeStatesInterval = setInterval(_.bind(this.__removeInactiveStatesFromRam, this), 10000);
 };
@@ -687,7 +811,7 @@ JDeltaDB.DirStorage.prototype.__idToFilepath = function(id) {
     if(!id.length) throw new Error('Blank id!');
     var encodedID = encodeURIComponent(id);
     encodedID = encodedID.replace(/\./g, '%2E');  // Also encode '.' to avoid the '.' and '..' filenames.
-    var hash = JDelta._hash(encodedID);
+    var hash = JDelta._dsHash(encodedID);
     if(hash.length !== 10) throw new Error('Unexpected hash length!' + hash);
     var hashPiece = hash.substring(10-this.__hashPieceLen,10);
     return this.__dirpath + '/' + hashPiece + '/' + encodedID;
@@ -698,7 +822,7 @@ JDeltaDB.DirStorage.prototype.__filepathToID = function(filepath) {
     var hashPiece = filepath.substr(this.__dirpath.length+1, this.__hashPieceLen);
     if(filepath.charAt(this.__dirpath.length+1+this.__hashPieceLen) !== '/') throw new Error("Expected '/'.");
     var encodedID = filepath.substring(this.__dirpath.length+2+this.__hashPieceLen);
-    var hash = JDelta._hash(encodedID);
+    var hash = JDelta._dsHash(encodedID);
     if(hash.substring(10-this.__hashPieceLen,10) !== hashPiece) throw new Error('hashPiece did not match!');
     return decodeURIComponent(encodedID);
 };
@@ -723,6 +847,7 @@ JDeltaDB.DirStorage.prototype.__rawSaveState = function(id, onSuccess, onError) 
             if(err) return onError(err);
             fs.rename(newFilepath, filepath, function(err) {
                 if(err) return onError(err);
+                console.log('Wrote:', filepath);
                 onSuccess();
             });
         });
@@ -737,10 +862,13 @@ JDeltaDB.DirStorage.prototype._rawSave = function() {
             break;
         }
         if(id === null) return; // No more states to save.
+        console.log('Scheduled Save and Removal of:',id);
+        delete self.__statesToSave[id];  // 2012-10-18:  moved here so that if any edits are made during the save, they will get an additional save.
         self.__rawSaveState(id, function() {
-            delete self.__statesToSave[id];
+            // delete self.__statesToSave[id];  // 2012-10-18: commented this out and moved it up above.  My theory is that this is the cause of the tamper-data race condition.
             return saveNextState();
         }, function(err) {
+            self.__statesToSave[id] = true;  // Re-schedule.
             throw err;
         })
     };
@@ -785,9 +913,15 @@ JDeltaDB.DirStorage.prototype._getRawDeltas = function(id, onSuccess, onError) {
     if(!this.__statesCurrentlyInRam.hasOwnProperty(id)) {
         var filepath = this.__idToFilepath(id);
         fs.readFile(filepath, 'utf8', function(err, data) {
-            if(self.__statesCurrentlyInRam.hasOwnProperty(id)) return onSuccess(self.__statesCurrentlyInRam[id]);  // It got added by someone else while we were reading the file.
             console.log('getRawDeltas: read done:',filepath);
-            if(err) return onError(err);
+            if(self.__statesCurrentlyInRam.hasOwnProperty(id)) {
+                console.log('Already read by something else!  Re-using that.');
+                return onSuccess(self.__statesCurrentlyInRam[id]);  // It got added by someone else while we were reading the file.
+            }
+            if(err) {
+                if(onError) return onError(err);
+                else throw err;
+            }
             var state = self.__statesCurrentlyInRam[id] = JSON.parse(data);
             return onSuccess(state);
         });
