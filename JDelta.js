@@ -27,7 +27,7 @@ if(typeof exports !== 'undefined') {
 } else throw new Error('This environment is not yet supported.');
     
 
-JDelta.VERSION = '0.20121020f';
+JDelta.VERSION = '0.20121020g';
 
 
 
@@ -315,6 +315,9 @@ JDelta._dsHash = function(s) {
     // We need to treat the upper-most 8 bits differently to avoid losing the sign bit (which, in our case, actually contains data, not a sign).
     return '0x' + JDelta._pad((hash >>> 24).toString(16), '0', 2) + JDelta._pad((hash & 0xffffff).toString(16), '0', 6);
 };
+
+// Stolen from XRegExp to avoid a dependency:
+JDelta._regexEscape = function(str) { return str.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&"); };
 
 
 JDelta._getTarget = function(o, path) {
