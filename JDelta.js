@@ -316,6 +316,9 @@ JDelta._dsHash = function(s) {
     return '0x' + JDelta._pad((hash >>> 24).toString(16), '0', 2) + JDelta._pad((hash & 0xffffff).toString(16), '0', 6);
 };
 
+// Stolen from XRegExp to avoid a dependency:
+JDelta._regexEscape = function(str) { return str.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&"); };
+
 
 JDelta._getTarget = function(o, path) {
     if(!o)

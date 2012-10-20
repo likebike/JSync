@@ -121,7 +121,7 @@ JDeltaDB.DB.prototype.waitForData = function(id, callback) {
     var afterData = function() { return callback(id, self); };
     if(this.contains(id)) return afterData();
     else {
-        var idRegex = RegExp('^'+XRegExp.escape(id)+'$');
+        var idRegex = RegExp('^'+JDelta._regexEscape(id)+'$');
         var event = 'all';
         var cb = function(_path, _id, _data) {
             if(_path==='!'  &&  _data.op==='createState') return;  // There will be no data at this point.

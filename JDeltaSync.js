@@ -181,7 +181,7 @@ JDeltaSync.Client.prototype.login = function(callback) {
             url:self._url+'/clientLogin',
             type:'POST',
             data:{op:'login'},
-            dataType:'json',
+            dataType:'json',   // For some reason, FireFox ignores the server's content-type for CORS requests.  >:(
             cache:false,
             success:function(data, retCodeStr, jqXHR) {
                 if(!_.isObject(data)) throw new Error('Expected object from server!');
