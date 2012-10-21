@@ -173,6 +173,12 @@ JDeltaSync.Client.prototype.connectionInfo = function() {
     }
     return null;
 };
+JDeltaSync.Client.prototype.edit = function(id, operations, meta, onSuccess, onError) {
+    // A convenience function for a common operation.  Makes it easier for new JDelta users to learn the API because they don't need to be aware of the internal handling of the 'from' info.
+    meta = meta || {};
+    meta.from = this.connectionInfo();
+    return this.stateDB.edit(id, operations, meta, onSuccess, onError);
+};
 JDeltaSync.Client.prototype.login = function(callback) {
     var self = this;
     var errRetryMS = 1000;
@@ -1733,7 +1739,11 @@ JDeltaSync.Server.prototype.fetchDeltas = function(items, onSuccess, onError) {
                 db = self._getDB(type);
                 id = items[i].id;
                 if(!_.isString(id)) return onError(new Error('non-string id'));
-                if(!db.contains(id)) return next();
+                if(!db.contains(id)) {
+                    // If it's a join state, return the pseudo-delta.  This seems to be the easiest solution to requesting of new join states that don't exist yet.  This allows the client to get some kind of data and then perform the join operation (which then creates the join state on the server).
+                    if(type==='join') results[results.length] = {type:type, id:id, delta:JDeltaDB._PSEUDO_DELTA_0};
+                    return next();
+                }
                 seq = items[i].seq;
                 if(seq) {
                     db._storage.getDelta(id, seq, function(id, delta) {
