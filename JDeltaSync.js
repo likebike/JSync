@@ -260,6 +260,11 @@ JDeltaSync.Client.prototype.installAutoUnloader = function() {
                          async:false});
         } else {
             self.logout(null, true);  // Use a synchronous request.
+            // IE likes to fire this event A LOT!!!  Every time you click a link that does not start with '#', this gets
+            // triggered, even if you have overridden the click() event, or specified a 'javascript:' href.
+            // The best solution to this problem is the set your hrefs to "#" and then return false from your click handler.
+            // Here is a console message to help me to understand this issue when it occurs:
+            setTimeout(function() {console.log('Note: window.onbeforeunload has been triggered.  This occurs in IE when you click a link that does not have a # href.')}, 5000);
         }
     };
 };
