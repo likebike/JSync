@@ -475,7 +475,7 @@ JDeltaDB.DB.prototype.undo = function(id, meta, onSuccess, onError) {
                 var finishProcessWithPostUndoDelta = function(id, postUndoDelta) {
                     var postUndoUndoSeq = postUndoDelta.undoSeq;
                     var postUndoHash = postUndoDelta.curHash;
-                    var newMeta = _.extend(JDelta._deepCopy(postUndoDelta.meta), {operation:'undo'}, meta);
+                    var newMeta = _.extend(JDelta._deepCopy(postUndoDelta.meta), meta, {operation:'undo', realDate:new Date(new Date().getTime() + serverTimeOffset).toUTCString()});  // 2012-10-23:  I reversed the order of 'meta' and the new data object... I think the user should not normally override those values.
                     var hashedDelta = { steps:undoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postUndoHash, seq:newSeq, undoSeq:postUndoUndoSeq, redoSeq:newRedoSeq };
                     self._addHashedDelta(id, hashedDelta, function() {
                         onSuccess && onSuccess();
@@ -516,7 +516,7 @@ JDeltaDB.DB.prototype.redo = function(id, meta, onSuccess, onError) {
                 self._storage.getDelta(id, postRedoSeq, function(id, postRedoDelta) {
                     var postRedoRedoSeq = postRedoDelta.redoSeq;
                     var postRedoHash = postRedoDelta.curHash;
-                    var newMeta = _.extend(JDelta._deepCopy(postRedoDelta.meta), {operation:'redo'}, meta);
+                    var newMeta = _.extend(JDelta._deepCopy(postRedoDelta.meta), meta, {operation:'redo', realDate:new Date(new Date().getTime() + serverTimeOffset).toUTCString()});  // 2012-10-23:  I reversed the order of 'meta' and the new data object... I think the user should not normally override those values.
                     var hashedDelta = { steps:redoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postRedoHash, seq:newSeq, undoSeq:newUndoSeq, redoSeq:postRedoRedoSeq };
                     self._addHashedDelta(id, hashedDelta, function() {
                         onSuccess && onSuccess();
