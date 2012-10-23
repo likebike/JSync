@@ -1683,24 +1683,25 @@ JDeltaSync.Server.prototype.listStates = function(type, ids, onSuccess, onError)
         if(onError) return onError(err);
         else throw err;
     }
-    var tracker = JDeltaDB._AsyncTracker(onSuccess),
-        db = this._getDB(type);
-    var i, ii;
-    for(i=0, ii=ids.length; i<ii; i++) {
-        if(tracker.thereWasAnError) break;
-        if(!db.contains(ids[i])) continue;
-        tracker.numOfPendingCallbacks++;
-        db._storage.getLastDelta(ids[i], function(id, delta) {
-            tracker.out[tracker.out.length] = {type:type, id:id, lastDeltaSeq:delta.seq, lastDeltaHash:delta.curHash};
-            tracker.checkForEnd();
-        }, function(err) {
-            tracker.thereWasAnError = true;
-            if(onError) return onError(err);
-            else throw err;
-            tracker.checkForEnd();
-        });
-    }
-    tracker.checkForEnd();
+    var db = this._getDB(type);
+    var results = [];
+    JDeltaDB._asyncMap(ids,
+                       function(id, next) {
+                           if(!db.contains(id)) return next();
+                           db._storage.getLastDelta(id, function(id, delta) {
+                               results[results.length] = {type:type, id:id, lastDeltaSeq:delta.seq, lastDeltaHash:delta.curHash};
+                               return next();
+                           }, function(err) {
+                               if(!err) err = new Error();
+                               return next(err);
+                           });
+                       }, function(err, _junk) {
+                           if(err) {
+                               if(onError) return onError(err);
+                               throw err;
+                           }
+                           return onSuccess(results);
+                       });
 };
 JDeltaSync.Server.prototype.listStatesRegex = function(type, idRegex, onSuccess, onError) {
     if(!_.isRegExp(idRegex)) {

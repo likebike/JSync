@@ -91,23 +91,26 @@ JDeltaDB.DB.prototype._load = function() {
         }
     };
     this._storage.listIDs(function(ids) {
-        var tracker = JDeltaDB._AsyncTracker(notifyLoadListeners);
-        var id, i, ii;
-        for(i=0, ii=ids.length; i<ii; i++) {
-            tracker.numOfPendingCallbacks++;
-            id = ids[i];
-            if(!self._states.hasOwnProperty(id))
-                self.createState(id, true);
-            self.rollback(id, undefined, function(id) {
-                tracker.checkForEnd();
-            }, function(err) {
-                tracker.thereWasAnError = true;
-                setTimeout(notifyLoadListeners, 0);  // Keep going, even though we are going to throw an exception.
-                throw err;
-                tracker.checkForEnd();
-            });
-        }
-        tracker.checkForEnd();
+        JDeltaDB._asyncMap(ids,
+                           function(id, next) {
+                               if(!self._states.hasOwnProperty(id)) self.createState(id, true);
+                               self.rollback(id, undefined, function(id) {
+                                   next();
+                               }, function(err) {
+                                   if(!err) err = new Error();
+                                   next(err);
+                                   setTimeout(notifyLoadListeners, 0);  // Keep going, even though we are going to throw an exception.
+                                   throw err;
+                                   tracker.checkForEnd();
+                               });
+                           }, function(err, _junk) {
+                               if(err) {
+                                   // Throw an exception to let us know that something went wrong, but also keep going.
+                                   setTimeout(notifyLoadListeners, 0);
+                                   throw err;
+                               }
+                               return notifyLoadListeners();
+                           });
     }, function(err) {
         setTimeout(notifyLoadListeners, 0);
         throw err;
@@ -941,31 +944,30 @@ JDeltaDB.DirStorage.prototype.listIDs = function(onSuccess, onError) {
                 hashDirs[hashDirs.length] = files[i];
         }
         var ids = [];
-        var tracker = new JDeltaDB._AsyncTracker(function() {
-            ids.sort();
-            onSuccess(ids);
-        });
-        _.each(hashDirs, function(hashDir) {
-            tracker.numOfPendingCallbacks++;
-            fs.readdir(self.__dirpath+'/'+hashDir, function(err, files) {
-                if(tracker.thereWasAnError) return;
-                if(err) {
-                    tracker.thereWasAnError = true;
-                    return onError(err);
-                }
-                var ignoreSuffix = '.WRITING',
-                    filename, j, jj;
-                for(j=0, jj=files.length; j<jj; j++) {
-                    filename = files[j];
-                    // endswith:
-                    if(!filename.indexOf(ignoreSuffix, filename.length - ignoreSuffix.length) !== -1) {
-                        ids[ids.length] = decodeURIComponent(filename);
-                    }
-                }
-                tracker.checkForEnd();
-            });
-        });
-        tracker.checkForEnd();
+        JDeltaDB._asyncMap(hashDirs,
+                           function(hashDir, next) {
+                               fs.readdir(self.__dirpath+'/'+hashDir, function(err, files) {
+                                   if(err) return next(err);
+                                   var ignoreSuffix = '.WRITING',
+                                       filename, j, jj;
+                                   for(j=0, jj=files.length; j<jj; j++) {
+                                       filename = files[j];
+                                       // endswith:
+                                       if(!filename.indexOf(ignoreSuffix, filename.length - ignoreSuffix.length) !== -1) {
+                                           ids[ids.length] = decodeURIComponent(filename);
+                                       }
+                                   }
+                                   return next();
+                               });
+                           },
+                           function(err, _junk) {
+                               if(err) {
+                                   if(onError) return onError(err);
+                                   throw err;
+                               }
+                               ids.sort();
+                               return onSuccess(ids);
+                           });
     });
 };
 JDeltaDB.DirStorage.prototype.createStateSync = function(id) {
@@ -1096,12 +1098,12 @@ JDeltaDB._chain = function(things, cb) {
   var res = [];
   (function LOOP(i, len) {
     if(i >= len) return cb(null,res);
-    if(_.isArray(things[i])) things[i] = JDeltaDB._bindActor.apply(null, things[i].map(function(i){
-                                                                                      return (i===JDeltaDB._first)  ? res[0] :
-                                                                                             (i===JDeltaDB._first0) ? res[0][0] :
-                                                                                             (i===JDeltaDB._last)   ? res[res.length - 1] :
-                                                                                             (i===JDeltaDB._last0)  ? res[res.length - 1][0] :
-                                                                                             i; }));
+    if(_.isArray(things[i])) things[i] = JDeltaDB._bindActor.apply(null, _.map(things[i], function(i){
+                                                                                          return (i===JDeltaDB._first)  ? res[0] :
+                                                                                                 (i===JDeltaDB._first0) ? res[0][0] :
+                                                                                                 (i===JDeltaDB._last)   ? res[res.length - 1] :
+                                                                                                 (i===JDeltaDB._last0)  ? res[res.length - 1][0] :
+                                                                                                 i; }));
     if(!things[i]) return LOOP(i + 1, len);
     things[i](function (er, data) {
       if(er) return cb(er, res);
