@@ -485,7 +485,7 @@ JDeltaSync.Client.prototype._rawDoSend = function() {
                 }
                 self._sending = false;
                 if(self._sendQueue.length) {
-                    setTimeout(_.bind(self._rawDoSend, self), 1);
+                    setTimeout(_.bind(self._rawDoSend, self), 0);  // 2012-10-23: changed '1' to '0'.
                 }
             }
         }, JDeltaSync.extraAjaxOptions));
@@ -557,74 +557,64 @@ JDeltaSync.Client.prototype._rawDoReset = function() {
                 if(!db.contains(item.id)) db.createState(item.id);
             }
             // Reset items I got data for:
-            var tracker = JDeltaDB._AsyncTracker(function(out) {
-                // At this point, we have deleted all the Storage states that we are going to reset.
-                // First, re-create the storage states:
-                var itemStr2, item2, db2;
-                for(itemStr2 in itemsIReceived) if(itemsIReceived.hasOwnProperty(itemStr2)) {
-                    item2 = itemsIReceived[itemStr2];
-                    db2 = self._getDB(item2.type);
-                    db2._storage.createStateSync(item2.id);
-                }
-                var tracker2 = JDeltaDB._AsyncTracker(function(out2) {
-                    // At this point, we have added all the deltas to the Storage.  Now trigger rollbacks:
-                    var itemStr3, item3, db3;
-                    for(itemStr3 in itemsIReceived) if(itemsIReceived.hasOwnProperty(itemStr3)) {
-                        item3 = itemsIReceived[itemStr3];
-                        db3 = self._getDB(item3.type);
-                        db3.rollback(item3.id);
-                        delete self._resetQueue[item3.type+'::'+item3.id];
-                    }
-                    // Finally, remove the item from the resetQueue:
-                    var i, ii;
-                    for(i=0, ii=itemsToReset.length; i<ii; i++) {
-                        item3 = itemsToReset[i];
-                        //console.log('Reset Complete:', item3.type, item3.id);
-                        delete self._resetQueue[item3.type+'::'+item3.id];
-                    }
-                    self._resetting = false;
-                    setTimeout(_.bind(self._rawDoReset, self), 1);
-                });
-                // Add the deltas we received to the Storage:
-                var i, ii;
-                for(i=0, ii=data.length; i<ii; i++) {
-                    if(data[i].delta.seq === 0) {
-                        // Skip the pseudo-delta:
-                        continue;
-                    }
-                    tracker2.numOfPendingCallbacks++;
-                    item2 = data[i];
-                    db2 = self._getDB(item2.type);
-                    db2._storage.addDelta(item2.id, item2.delta, function() {  // We make the assumption that Storage operations will be executed in the order they are submitted.
-                        tracker2.checkForEnd();
-                    },
-                    function(err) {
-                        if(typeof console !== 'undefined') console.log('RESET-ERROR2:', err);
-                        tracker2.checkForEnd();
-                    });
-                }
-                tracker2.checkForEnd();
-            });
-            // Delete Storage states so I can re-create them from scratch:
+            var itemsIReceivedArray = [];
             for(itemStr in itemsIReceived) if(itemsIReceived.hasOwnProperty(itemStr)) {
-                tracker.numOfPendingCallbacks++;
-                item = itemsIReceived[itemStr];
-                db = self._getDB(item.type);
-                db._storage.deleteState(item.id, function(id) {
-                    return tracker.checkForEnd();
-                },
-                (function(type, id) {
-                    return function(err) {
-                        if(typeof console !== 'undefined') console.log('RESET-ERROR:', type, id, err);
-                        return tracker.checkForEnd();
-                    };
-                 })(item.type, item.id));
+                itemsIReceivedArray[itemsIReceivedArray.length] = itemsIReceived[itemStr];
             }
-            tracker.checkForEnd();
+            JDeltaDB._asyncMap(itemsIReceivedArray,
+                               function(item, next) {
+                                   // Delete Storage states so I can re-create them from scratch:
+                                   var db = self._getDB(item.type);
+                                   db._storage.deleteState(item.id,
+                                                           function(id) { return next(); },
+                                                           function(err) {
+                                                               if(typeof console !== 'undefined') console.log('RESET-ERROR2:', item.type, item.id, err);
+                                                               return next();  // Keep on going.
+                                                           });
+                               }, function(err, _junk) {
+                                   if(err) throw new Error('This should never happen.');
+                                   // At this point, we have deleted all the Storage states that we are going to reset.
+                                   // First, re-create the storage states:
+                                   var itemStr2, item2, db2;
+                                   for(itemStr2 in itemsIReceived) if(itemsIReceived.hasOwnProperty(itemStr2)) {
+                                       item2 = itemsIReceived[itemStr2];
+                                       db2 = self._getDB(item2.type);
+                                       db2._storage.createStateSync(item2.id);
+                                   }
+                                   JDeltaDB._asyncMap(data,
+                                                      function(item3, next) {
+                                                          if(item3.delta.seq === 0) { return next(); } // Skip the pseudo-delta.
+                                                          var db3 = self._getDB(item3.type);
+                                                          db3._storage.addDelta(item3.id, item3.delta,
+                                                                                function() { return next(); },  // We make the assumption that Storage operations will be executed in the order they are submitted.
+                                                                                function(err) {
+                                                                                    if(typeof console !== 'undefined') console.log('RESET-ERROR1:', type, id, err);
+                                                                                    return next();  // Just keep going.
+                                                                                });
+                                                      }, function(err, _junk) {
+                                                          if(err) throw new Error('This should never happen.');
+                                                          // At this point, we have added all the deltas to the Storage.  Now trigger rollbacks:
+                                                          var itemStr3, item3, db3;
+                                                          for(itemStr3 in itemsIReceived) if(itemsIReceived.hasOwnProperty(itemStr3)) {
+                                                              item3 = itemsIReceived[itemStr3];
+                                                              db3 = self._getDB(item3.type);
+                                                              db3.rollback(item3.id);
+                                                              delete self._resetQueue[item3.type+'::'+item3.id];
+                                                          }
+                                                          // Finally, remove the item from the resetQueue:
+                                                          var i, ii;
+                                                          for(i=0, ii=itemsToReset.length; i<ii; i++) {
+                                                              item3 = itemsToReset[i];
+                                                              //console.log('Reset Complete:', item3.type, item3.id);
+                                                              delete self._resetQueue[item3.type+'::'+item3.id];
+                                                          }
+                                                          self._resetting = false;
+                                                          setTimeout(_.bind(self._rawDoReset, self), 0);   // 2012-10-23:  Changed '1' to '0'.
+                                                      });
+                               });
         }, function(err) {
             // For example, this occurs when we try to reset something, but the server is down.
             self._resetting = false;
-
             setTimeout(DOIT, errRetryMS);
             errRetryMS *= 1.62; if(errRetryMS > 120000) errRetryMS = 120000;
             throw err;
@@ -1710,22 +1700,24 @@ JDeltaSync.Server.prototype.listStatesRegex = function(type, idRegex, onSuccess,
         else throw err;
     }
     var self = this;
-    var tracker = JDeltaDB._AsyncTracker(onSuccess),
-        db = this._getDB(type);
-    db.iterStates(idRegex, function(id, state) {
-        if(tracker.thereWasAnError) return;
-        tracker.numOfPendingCallbacks++;
-        db._storage.getLastDelta(id, function(id, delta) {
-            tracker.out[tracker.out.length] = {type:type, id:id, lastDeltaSeq:delta.seq, lastDeltaHash:delta.curHash};
-            tracker.checkForEnd();
-        }, function(err) {
-            tracker.thereWasAnError = true;
-            if(onError) return onError(err);
-            else throw err;
-            tracker.checkForEnd();
-        });
-    });
-    tracker.checkForEnd();
+    var db = this._getDB(type);
+    var ids = [];
+    db.iterStates(idRegex, function(id, state) { ids[ids.length] = id; });
+    JDelta._asyncMap(ids,
+                     function(id, next) {
+                         db._storage.getLastDelta(id, function(id, delta) {
+                             return next(null, {type:type, id:id, lastDeltaSeq:delta.seq, lastDeltaHash:delta.curHash});
+                         }, function(err) {
+                             if(!err) err = new Error();
+                             return next(err);
+                         });
+                     }, function(err, result) {
+                         if(err) {
+                             if(onError) return onError(err);
+                             throw err;
+                         }
+                         return onSuccess(result);
+                     });
 };
 JDeltaSync.Server.prototype.fetchDeltas = function(items, onSuccess, onError) {
     // 'items' is something like this:
