@@ -650,80 +650,81 @@ JDeltaSync.Client.prototype._rawDoReceive = function() {
                     if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
                 }
                 if(!_.isArray(data)) throw new Error('Expected array from server!');
-                var chain = [],
-                    i, ii, db;
-                for(i=0, ii=data.length; i<ii; i++) {
-                    chain[chain.length] = (function(item) {
-                        return function(next, onError) {
-                            switch(item.data.op) {
 
-                                case 'createState':
-                                    db = self._getDB(item.data.type);
-                                    if(db.contains(item.data.id)) {
-                                        self.reset(item.data.type, item.data.id);
-                                    } else {
-                                        if(item.data.type === 'state')  // Join state deltas do not get pushed to the server, so no need to track them in the receivedFromServer list.
-                                            self._receivedFromServer[self._receivedFromServer.length] = {type:item.data.type, id:item.data.id, dataStr:JDelta.stringify({op:'createState', type:'state', id:item.data.id})};
-                                        db.createState(item.data.id);
-                                    }
-                                    return next();
-                                    break;
+                var handler = function(item, next) {
+                    var db;
+                    switch(item.data.op) {
 
-                                case 'deltaApplied':
-                                    try {
-                                        //console.log('Received deltaApplied message:',item);
-                                        db = self._getDB(item.data.type);
-                                        if(item.data.type === 'state') {
-                                            self._receivedFromServer[self._receivedFromServer.length] = {type:item.data.type, id:item.data.id, dataStr:JDelta.stringify({op:'deltaApplied', delta:item.data.delta, type:'state', id:item.data.id})};
-                                        }
-                                        db._addHashedDelta(item.data.id, item.data.delta, next, function(err) {
-                                            if(typeof console !== 'undefined') console.log('Error Applying Delta.  Resetting: ', item.data.type, item.data.id, item.data.delta, err, err.stack);
-                                            self.reset(item.data.type, item.data.id);
-                                            return next();
-                                        });
-                                    } catch(e) {
-                                        self.reset(item.data.type, item.data.id);
-                                        return next();
-                                    }
-                                    break;
-                                    
-                                case 'deleteState':
-                                    db = self._getDB(item.data.type);
-                                    if(item.data.type === 'state')
-                                        self._receivedFromServer[self._receivedFromServer.length] = {type:item.data.type, id:item.data.id, dataStr:JDelta.stringify({op:'deleteState', type:'state', id:item.data.id})};
-                                    db.deleteState(item.data.id, next, function(err) {
-                                        self.reset(item.data.type, item.data.id);
-                                        return next();
-                                    });
-                                    break;
-
-                                case 'message':
-                                    self._triggerMessage(item.data.id, item.data.data, item.data.from);
-                                    if(item.importance === 'needConfirmation')
-                                        self.sendMessage(item.data.id, {confirm:item.msgID}, {to:{connectionIDs:[item.data.from.connectionID]}});
-                                    return next();
-                                    break;
-
-                                case 'logout':   // The server has forced us to log out.
-                                    self.connectionID = null;
-                                    return next();
-                                    break;
-
-                                default:
-                                    if(typeof console !== 'undefined') console.log('Unknown clientReceive op:',item.data.op);
-                                    return next();
+                        case 'createState':
+                            db = self._getDB(item.data.type);
+                            if(db.contains(item.data.id)) {
+                                self.reset(item.data.type, item.data.id);
+                            } else {
+                                if(item.data.type === 'state')  // Join state deltas do not get pushed to the server, so no need to track them in the receivedFromServer list.
+                                    self._receivedFromServer[self._receivedFromServer.length] = {type:item.data.type, id:item.data.id, dataStr:JDelta.stringify({op:'createState', type:'state', id:item.data.id})};
+                                db.createState(item.data.id);
                             }
-                        };
-                    })(data[i]);
-                }
-                JDeltaDB._runAsyncChain(chain, function() {
+                            return next();
+                            break;
+
+                        case 'deltaApplied':
+                            try {
+                                //console.log('Received deltaApplied message:',item);
+                                db = self._getDB(item.data.type);
+                                if(item.data.type === 'state') {
+                                    self._receivedFromServer[self._receivedFromServer.length] = {type:item.data.type, id:item.data.id, dataStr:JDelta.stringify({op:'deltaApplied', delta:item.data.delta, type:'state', id:item.data.id})};
+                                }
+                                db._addHashedDelta(item.data.id, item.data.delta, next, function(err) {
+                                    if(typeof console !== 'undefined') console.log('Error Applying Delta.  Resetting: ', item.data.type, item.data.id, item.data.delta, err, err.stack);
+                                    self.reset(item.data.type, item.data.id);
+                                    return next();
+                                });
+                            } catch(e) {
+                                self.reset(item.data.type, item.data.id);
+                                return next();
+                            }
+                            break;
+                            
+                        case 'deleteState':
+                            db = self._getDB(item.data.type);
+                            if(item.data.type === 'state')
+                                self._receivedFromServer[self._receivedFromServer.length] = {type:item.data.type, id:item.data.id, dataStr:JDelta.stringify({op:'deleteState', type:'state', id:item.data.id})};
+                            db.deleteState(item.data.id, next, function(err) {
+                                self.reset(item.data.type, item.data.id);
+                                return next();
+                            });
+                            break;
+
+                        case 'message':
+                            self._triggerMessage(item.data.id, item.data.data, item.data.from);
+                            if(item.importance === 'needConfirmation')
+                                self.sendMessage(item.data.id, {confirm:item.msgID}, {to:{connectionIDs:[item.data.from.connectionID]}});
+                            return next();
+                            break;
+
+                        case 'logout':   // The server has forced us to log out.
+                            self.connectionID = null;
+                            return next();
+                            break;
+
+                        default:
+                            if(typeof console !== 'undefined') console.log('Unknown clientReceive op:',item.data.op);
+                            return next();
+                    }
+                };
+
+                var chain = [],
+                    i, ii;
+                for(i=0, ii=data.length; i<ii; i++) { chain[chain.length] = [handler, data[i]]; }
+                JDeltaDB._chain(chain, function(err, results) {
+                    if(err) {
+                        throw new Error('I have never seen this.');
+                        self._receiving = false;
+                        setTimeout(_.bind(self._rawDoReceive, self), self.successReceiveReconnectMS);
+                        throw err;
+                    }
                     self._receiving = false;
                     setTimeout(_.bind(self._rawDoReceive, self), self.successReceiveReconnectMS);
-                }, function(err) {
-                    throw new Error('I have never seen this.');
-                    self._receiving = false;
-                    setTimeout(_.bind(self._rawDoReceive, self), self.successReceiveReconnectMS);
-                    throw err;
                 });
             },
             error:function(jqXHR, retCodeStr, exceptionObj) {
@@ -1536,104 +1537,107 @@ JDeltaSync.Server.prototype.clientReceive = function(connectionID, req, onSucces
     }
 };
 JDeltaSync.Server.prototype.clientSend = function(req, connectionID, bundle, onSuccess, onError) {
-    var self = this,
-        chain = [],
-        result = [],
-        i, ii, db;
+    var self = this;
+
     this._getActiveClientConnection(connectionID);  // Trigger the lastActivityTime update that occurs in the _getActiveClientConnection function.
-    for(i=0, ii=bundle.length; i<ii; i++) {
-        chain[chain.length] = (function(bundleItem) {
-            return function(next, onError) {
-                var OK = function() {
-                        result[result.length] = {msgID:bundleItem.msgID, result:'ok'};
-                        return next();
-                    },
-                    FAIL = function(err) {
-                        result[result.length] = {msgID:bundleItem.msgID, result:'fail', details:err};
-                        console.log('clientSend FAIL:',result[result.length-1]);
-                        return next();
-                    },
-                    excludes = {};
-                excludes[connectionID] = true;  // I need to use this two-step process because javascript does not work right if I just say {connectionID:true} because it uses 'connectionID' as the key.
-                switch(bundleItem.data.op) {
 
-                    case 'createState':
-                        if(bundleItem.data.type !== 'state') return FAIL('type!=state'); // Client modification of Join states not allowed.
-                        if(!self._accessPolicy.canCreate(self, req, connectionID, bundleItem.data.id)) return FAIL('Access Denied');
-                        db = self._getDB(bundleItem.data.type);
-                        if(db.contains(bundleItem.data.id)) {
-                            console.log('State already exists: '+bundleItem.data.id);
-                            return FAIL('exists');
-                        } else {
-                            db.createState(bundleItem.data.id);
-                            self._broadcast(bundleItem, null, excludes);
-                            return OK();
-                        }
-                        break;
+    var handler = function(bundleItem, next) {
+        var db;
+        var OK = function() {
+                return next(null, {msgID:bundleItem.msgID, result:'ok'});
+            },
+            FAIL = function(err) {
+                var result = {msgID:bundleItem.msgID, result:'fail', details:err};
+                console.log('clientSend FAIL:',result);
+                return next(null, result);
+            },
+            excludes = {};
+        excludes[connectionID] = true;  // I need to use this two-step process because javascript does not work right if I just say {connectionID:true} because it uses 'connectionID' as the key.
+        switch(bundleItem.data.op) {
 
-                    case 'deltaApplied':
-                        if(bundleItem.data.type !== 'state') return FAIL('type!=state'); // Client modification of Join states not allowed.
-                        if(!self._accessPolicy.canUpdate(self, req, connectionID, bundleItem.data.id)) return FAIL('Access Denied');
-
-                        if(!bundleItem.data.delta) return FAIL("No 'delta'");
-                        if(!bundleItem.data.delta.meta) return FAIL("No 'meta'");
-                        var from = bundleItem.data.delta.meta.from;
-                        if(!from) return FAIL("No 'from'");
-                        if(!from.userID) return FAIL("No 'userID'");
-                        if(!from.browserID) return FAIL("No 'browserID'");
-                        if(!from.connectionID) return FAIL("No 'connectionID'");
-                        var cInfo = JDeltaSync.connectionInfo(self.joinDB.getState('/'), connectionID);
-                        if(!cInfo) return FAIL("connectionID not found!");
-                        if(from.userID!==cInfo.userID  ||  from.browserID!==cInfo.browserID  ||  from.connectionID!==cInfo.connectionID)
-                            return FAIL("'from' does not match!");
-
-                        db = self._getDB(bundleItem.data.type);
-                        try {
-                            db._addHashedDelta(bundleItem.data.id, bundleItem.data.delta, function() {
-                                self._broadcast(bundleItem, null, excludes);
-                                return OK();
-                            }, FAIL);
-                        } catch(e) {
-                            return FAIL(e);
-                        }
-                        break;
-
-                    case 'deleteState':
-                        if(bundleItem.data.type !== 'state') return FAIL('type!=state'); // Client modification of Join states not allowed.
-                        if(!self._accessPolicy.canDelete(self, req, connectionID, bundleItem.data.id)) return FAIL('Access Denied');
-                        db = self._getDB(bundleItem.data.type);
-                        db.deleteState(bundleItem.data.id, function() {
-                            self._broadcast(bundleItem, null, excludes);
-                            return OK();
-                        }, FAIL);
-                        break;
-
-                    case 'join':
-                        if(!self._accessPolicy.canJoin(self, req, connectionID, bundleItem.data.id)) return FAIL('Access Denied');
-                        self.clientJoin(connectionID, bundleItem.data.id, bundleItem.data.subscribeMode, OK, FAIL);
-                        break;
-
-                    case 'leave':
-                        self.clientLeave(connectionID, bundleItem.data.id, OK, FAIL);
-                        break;
-
-                    case 'sendMessage':
-                        if(!self._accessPolicy.canMessage(self, req, connectionID, bundleItem.data.id)) return FAIL('Access Denied');
-                        var message = {msgID:bundleItem.msgID, importance:bundleItem.data.importance, data:{op:'message', id:bundleItem.data.id, data:bundleItem.data.data, from:JDeltaSync.connectionInfo(self.joinDB.getState('/'), connectionID)}};
-                        self._broadcast(message, bundleItem.data.to, excludes);
-                        return OK();
-                        break;
-
-                    default:
-                        console.log('Unknown clientSend op: '+bundleItem.data.op);
-                        return FAIL('Unknown op');
+            case 'createState':
+                if(bundleItem.data.type !== 'state') return FAIL('type!=state'); // Client modification of Join states not allowed.
+                if(!self._accessPolicy.canCreate(self, req, connectionID, bundleItem.data.id)) return FAIL('Access Denied');
+                db = self._getDB(bundleItem.data.type);
+                if(db.contains(bundleItem.data.id)) {
+                    console.log('State already exists: '+bundleItem.data.id);
+                    return FAIL('exists');
+                } else {
+                    db.createState(bundleItem.data.id);
+                    self._broadcast(bundleItem, null, excludes);
+                    return OK();
                 }
-            };
-        })(bundle[i]);
-    }
-    JDeltaDB._runAsyncChain(chain, function() {
-        onSuccess(result);
-    }, onError);
+                break;
+
+            case 'deltaApplied':
+                if(bundleItem.data.type !== 'state') return FAIL('type!=state'); // Client modification of Join states not allowed.
+                if(!self._accessPolicy.canUpdate(self, req, connectionID, bundleItem.data.id)) return FAIL('Access Denied');
+
+                if(!bundleItem.data.delta) return FAIL("No 'delta'");
+                if(!bundleItem.data.delta.meta) return FAIL("No 'meta'");
+                var from = bundleItem.data.delta.meta.from;
+                if(!from) return FAIL("No 'from'");
+                if(!from.userID) return FAIL("No 'userID'");
+                if(!from.browserID) return FAIL("No 'browserID'");
+                if(!from.connectionID) return FAIL("No 'connectionID'");
+                var cInfo = JDeltaSync.connectionInfo(self.joinDB.getState('/'), connectionID);
+                if(!cInfo) return FAIL("connectionID not found!");
+                if(from.userID!==cInfo.userID  ||  from.browserID!==cInfo.browserID  ||  from.connectionID!==cInfo.connectionID)
+                    return FAIL("'from' does not match!");
+
+                db = self._getDB(bundleItem.data.type);
+                try {
+                    db._addHashedDelta(bundleItem.data.id, bundleItem.data.delta, function() {
+                        self._broadcast(bundleItem, null, excludes);
+                        return OK();
+                    }, FAIL);
+                } catch(e) {
+                    return FAIL(e);
+                }
+                break;
+
+            case 'deleteState':
+                if(bundleItem.data.type !== 'state') return FAIL('type!=state'); // Client modification of Join states not allowed.
+                if(!self._accessPolicy.canDelete(self, req, connectionID, bundleItem.data.id)) return FAIL('Access Denied');
+                db = self._getDB(bundleItem.data.type);
+                db.deleteState(bundleItem.data.id, function() {
+                    self._broadcast(bundleItem, null, excludes);
+                    return OK();
+                }, FAIL);
+                break;
+
+            case 'join':
+                if(!self._accessPolicy.canJoin(self, req, connectionID, bundleItem.data.id)) return FAIL('Access Denied');
+                self.clientJoin(connectionID, bundleItem.data.id, bundleItem.data.subscribeMode, OK, FAIL);
+                break;
+
+            case 'leave':
+                self.clientLeave(connectionID, bundleItem.data.id, OK, FAIL);
+                break;
+
+            case 'sendMessage':
+                if(!self._accessPolicy.canMessage(self, req, connectionID, bundleItem.data.id)) return FAIL('Access Denied');
+                var message = {msgID:bundleItem.msgID, importance:bundleItem.data.importance, data:{op:'message', id:bundleItem.data.id, data:bundleItem.data.data, from:JDeltaSync.connectionInfo(self.joinDB.getState('/'), connectionID)}};
+                self._broadcast(message, bundleItem.data.to, excludes);
+                return OK();
+                break;
+
+            default:
+                console.log('Unknown clientSend op: '+bundleItem.data.op);
+                return FAIL('Unknown op');
+        }
+    };
+
+    var chain = [],
+        i, ii;
+    for(i=0, ii=bundle.length; i<ii; i++) { chain[chain.length] = [handler, bundle[i]]; }
+    JDeltaDB._chain(chain, function(err, result) {
+        if(err) {
+            throw new Error('I have never seen this.');  // 2012-10-23: I added this line during a re-factoring (while introducing slide's _chain).  I think i have never receive this due to the code, but i am not 100% sure.
+            return onError(err);
+        }
+        return onSuccess(result);
+    });
 };
 JDeltaSync.Server.prototype.clientJoin = function(connectionID, stateID, subscribeMode, onSuccess, onError) {
     if(!this.joinDB.contains(stateID)) this.joinDB.createState(stateID);
@@ -1732,47 +1736,52 @@ JDeltaSync.Server.prototype.fetchDeltas = function(items, onSuccess, onError) {
         else throw err;
     }
     var self = this,
-        chain = [],
-        results = [],
+        results = [];
+
+    var handler = function(item, next) {
+        var FAIL = function(err) {
+            if(!err) err = new Error();
+            return next(err);
+        };
+        var type = item.type;
+        if(!_.isString(type)) return FAIL(new Error('non-string type'));
+        var db = self._getDB(type);
+        var id = item.id;
+        if(!_.isString(id)) return FAIL(new Error('non-string id'));
+        if(!db.contains(id)) {
+            // If it's a join state, return the pseudo-delta.  This seems to be the easiest solution to requesting of new join states that don't exist yet.  This allows the client to get some kind of data and then perform the join operation (which then creates the join state on the server).
+            if(type==='join') results[results.length] = {type:type, id:id, delta:JDeltaDB._PSEUDO_DELTA_0};
+            return next();
+        }
+        var seq = item.seq;
+        if(seq) {
+            db._storage.getDelta(id, seq, function(id, delta) {
+                results[results.length] = {type:type, id:id, delta:delta};
+                return next();
+            }, FAIL);
+        } else {
+            db._storage.getDeltas(id, item.startSeq, item.endSeq, function(id, deltas) {
+                if(!item.startSeq) {
+                    // The startSeq is undefined or 0.  Include the pseudo-delta.  Allows the requestor to know about empty states:
+                    results[results.length] = {type:type, id:id, delta:JDeltaDB._PSEUDO_DELTA_0};
+                }
+                var j, jj;
+                for(j=0, jj=deltas.length; j<jj; j++)
+                    results[results.length] = {type:type, id:id, delta:deltas[j]};
+                return next();
+            }, FAIL);
+        }
+    };
+
+    var chain = [],
         i, ii;
-    for(i=0, ii=items.length; i<ii; i++) {
-        chain[chain.length] = (function(i) {
-            return function(next, onError) {
-                var type, db, id, seq;
-                type = items[i].type;
-                if(!_.isString(type)) return onError(new Error('non-string type'));
-                db = self._getDB(type);
-                id = items[i].id;
-                if(!_.isString(id)) return onError(new Error('non-string id'));
-                if(!db.contains(id)) {
-                    // If it's a join state, return the pseudo-delta.  This seems to be the easiest solution to requesting of new join states that don't exist yet.  This allows the client to get some kind of data and then perform the join operation (which then creates the join state on the server).
-                    if(type==='join') results[results.length] = {type:type, id:id, delta:JDeltaDB._PSEUDO_DELTA_0};
-                    return next();
-                }
-                seq = items[i].seq;
-                if(seq) {
-                    db._storage.getDelta(id, seq, function(id, delta) {
-                        results[results.length] = {type:type, id:id, delta:delta};
-                        return next();
-                    }, onError);
-                } else {
-                    db._storage.getDeltas(id, items[i].startSeq, items[i].endSeq, function(id, deltas) {
-                        if(!items[i].startSeq) {
-                            // The startSeq is undefined or 0.  Include the pseudo-delta.  Allows the requestor to know about empty states:
-                            results[results.length] = {type:type, id:id, delta:JDeltaDB._PSEUDO_DELTA_0};
-                        }
-                        var j, jj;
-                        for(j=0, jj=deltas.length; j<jj; j++)
-                            results[results.length] = {type:type, id:id, delta:deltas[j]};
-                        return next();
-                    }, onError);
-                }
-            };
-        })(i);
-    }
-    JDeltaDB._runAsyncChain(chain, function() {
+    for(i=0, ii=items.length; i<ii; i++) { chain[chain.length] = [handler, items[i]]; }
+    JDeltaDB._chain(chain, function(err, _junk) {
+        if(err) {
+            return onError(err);
+        }
         return onSuccess(results);
-    }, onError);
+    });
 };
 
 

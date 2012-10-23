@@ -54,10 +54,11 @@ if(typeof exports !== 'undefined') {
     fs = null;
     PATH = null;
     jQuery = window.jQuery  ||  window.$;
+    // So slide's async-map can run efficiently on Node, but also function in the browser:
+    var process = {nextTick:function(fn){setTimeout(fn,0)}};
     getServerTimeOffset();
 } else throw new Error('This environment is not yet supported.');
 
-JDeltaDB.VERSION = '0.2.0';
 
 
 
@@ -1018,14 +1019,9 @@ JDeltaDB.DirStorage.prototype.addDelta = function(id, delta, onSuccess, onError)
 
 
 
-
-
 JDeltaDB._AsyncTracker = function(onSuccess) {  // Especially useful for tracking parallel async actions.
-    if(!(this instanceof JDeltaDB._AsyncTracker)) 
-        return new JDeltaDB._AsyncTracker(onSuccess);
-    if(!onSuccess)
-        throw new Error('You must provide an onSuccess function.');
-    this.out = [];
+    if(!(this instanceof JDeltaDB._AsyncTracker)) return new JDeltaDB._AsyncTracker(onSuccess);
+    if(!onSuccess) throw new Error('You must provide an onSuccess function.');
     this.thereWasAnError = false;
     this.numOfPendingCallbacks = 1;  // You need to make an additional call to checkForEnd() after the iteration.
     this._onSuccess = onSuccess;
@@ -1038,7 +1034,7 @@ JDeltaDB._AsyncTracker.prototype.checkForEnd = function() {
     if(!this.numOfPendingCallbacks) {
         if(this._onSuccessAlreadyCalled) throw new Error('This should never happen');
         this._onSuccessAlreadyCalled = true;
-        this._onSuccess(this.out);
+        this._onSuccess();
     }
 };
 JDeltaDB._runAsyncChain = function(chain, onSuccess, onError) {
@@ -1059,6 +1055,108 @@ JDeltaDB._runAsyncChain = function(chain, onSuccess, onError) {
 
 
 
+////////////////////////////////////////////////////
+////////////////////////////////////////////////////
+/////////////////  S L I D E  //////////////////////
+/////////////////             //////////////////////
+/// https://github.com/isaacs/slide-flow-control ///
+////////////////////////////////////////////////////
+
+// Used from chain and asyncMap like this:
+// var log = _.bind(console.log, console);
+// var add = function(a,b,next) {next(null, a+b)};
+// var obj = {add:add};
+// JDeltaDB._bindActor(add,1,2)(log);       //  null, 3
+// JDeltaDB._bindActor(obj,'add',1,2)(log); //  null, 3
+JDeltaDB._bindActor = function() {
+  var args = Array.prototype.slice.call(arguments) // jswtf.
+    , obj = null
+    , fn;
+  if(typeof args[0] === "object") {
+    obj = args.shift();
+    fn = args.shift();
+    if (typeof fn === "string") fn = obj[ fn ];
+  } else fn = args.shift();
+  return function (cb) { fn.apply(obj, args.concat(cb)); };
+};
+
+// Able to run async functions in series:
+// var mul = function(a,b,next) {next(null, a*b)};
+// var first = JDeltaDB._first;
+// var last = JDeltaDB._last;
+// JDeltaDB._chain( [ [mul, 2, 3],
+//                    [obj, 'add', 1, last],
+//                    [obj, 'add', first, last]
+//                  ], log);                     //  null [6, 7, 13]
+JDeltaDB._first = {};
+JDeltaDB._first0 = {};
+JDeltaDB._last = {};
+JDeltaDB._last0 = {};
+JDeltaDB._chain = function(things, cb) {
+  var res = [];
+  (function LOOP(i, len) {
+    if(i >= len) return cb(null,res);
+    if(_.isArray(things[i])) things[i] = JDeltaDB._bindActor.apply(null, things[i].map(function(i){
+                                                                                      return (i===JDeltaDB._first)  ? res[0] :
+                                                                                             (i===JDeltaDB._first0) ? res[0][0] :
+                                                                                             (i===JDeltaDB._last)   ? res[res.length - 1] :
+                                                                                             (i===JDeltaDB._last0)  ? res[res.length - 1][0] :
+                                                                                             i; }));
+    if(!things[i]) return LOOP(i + 1, len);
+    things[i](function (er, data) {
+      if(er) return cb(er, res);
+      //if(data !== undefined) res = res.concat(data);   /////////  Commented by Christopher Sebastian.  I disagree with the use of 'concat' to collect results.  I think it should be an append instead.
+      if(data !== undefined) res[res.length] = data;     /////////  Added by Christopher Sebastian.
+      LOOP(i + 1, len);
+    });
+  })(0, things.length);
+};
+
+// Runs tasks in parallel:
+// JDeltaDB._asyncMap(['/', '/ComingSoon'],
+//                    function(url,cb) {jQuery.ajax({url:url, success:function(data){cb(null,data)}})}, 
+//                    log);      //  null [...datas from the 2 pages (in whatever order they were received)...]
+JDeltaDB._asyncMap = function() {
+  var steps = Array.prototype.slice.call(arguments)
+    , list = steps.shift() || []
+    , cb_ = steps.pop();
+  if(typeof cb_ !== "function") throw new Error("No callback provided to asyncMap");
+  if(!list) return cb_(null, []);
+  if(!_.isArray(list)) list = [list];
+  var n = steps.length
+    , data = [] // 2d array
+    , errState = null
+    , l = list.length
+    , a = l * n;
+  if(!a) return cb_(null, []);
+  function cb(er) {
+    if(errState) return;
+    var argLen = arguments.length;
+    for(var i=1; i<argLen; i++) if(arguments[i] !== undefined) {
+      data[i-1] = (data[i-1] || []).concat(arguments[i]);
+    }
+    // see if any new things have been added.
+    if(list.length > l) {
+      var newList = list.slice(l);
+      a += (list.length - l) * n;
+      l = list.length;
+      process.nextTick(function() {
+        _.each(newList, function(ar) {
+          _.each(steps, function(fn) { fn(ar,cb); });
+        });
+      });
+    }
+    if(er || --a === 0) {
+      errState = er;
+      cb_.apply(null, [errState].concat(data));
+    }
+  };
+  // expect the supplied cb function to be called
+  // "n" times for each thing in the array.
+  _.each(list, function(ar) {
+    _.each(steps, function(fn) { fn(ar,cb); });
+  });
+};
 
 
 })();
