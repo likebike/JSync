@@ -1172,4 +1172,40 @@ JDeltaDB._asyncMap = function() {
 };
 
 
+
+
+
+JDeltaDB._asyncMemoize = function(func, hashFunc, hasOnError) {
+    hashFunc = hashFunc || function(x) { return x; };
+    var seen = {};
+    return function() {
+        var args = Array.prototype.slice.call(arguments);
+        var hash = hashFunc.apply(null, args);
+        var onSuccess, onError;
+        if(hasOnError) {
+            onError = args.pop();
+            onSuccess = args.pop();
+        } else onSuccess = args.pop();
+        var results = seen[hash];
+        if(results) {
+            //console.log('MEMOED!', hash);
+            return onSuccess.apply(null, results);
+        }
+        var totalArgs = args.concat([function() {
+            results = Array.prototype.slice.call(arguments);
+            seen[hash] = results;
+            //console.log('CALLED.', hash);
+            return onSuccess.apply(null, results);
+        }]);
+        if(hasOnError) totalArgs = totalArgs.concat([onError]);
+        func.apply(null, totalArgs);
+    };
+};
+
+
+
+
+
+
+
 })();
