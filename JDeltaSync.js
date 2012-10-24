@@ -358,6 +358,7 @@ JDeltaSync.Client.prototype._addToSendQueue = function(data, callback) {
         if(data.type  &&  data.id) {
             if(this._resetQueue.hasOwnProperty(data.type+'::'+data.id)) {
                 this._callSendQueueCallback(null, callback, 'dropped:reset');
+                //console.log('Dropping Data (about to reset):',data);
                 return;  // Drop the item cuz we're going to reset anyway.
             }
 
@@ -384,8 +385,7 @@ JDeltaSync.Client.prototype._addToSendQueue = function(data, callback) {
     return msgID;
 };
 JDeltaSync.Client.prototype._triggerSend = function() {
-    if(!this._sending)
-        this._doSend();
+    if(!this._sending) this._doSend();
 };
 JDeltaSync.Client.prototype._handleAjaxErrorCodes = function(jqXHR) {
     // If jqXHR.status is 0, it means there is a problem with cross-domain communication, and Javascript has been dis-allowed access to the XHR object.
