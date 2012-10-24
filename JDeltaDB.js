@@ -665,7 +665,7 @@ JDeltaDB.RamStorage.prototype._nextLockCB = function() {
         return callback(unlock);
     } catch(e) {
         if(typeof console !== 'undefined') {
-            console.log('Exception during Storage Lock callback:',e);
+            console.log('Exception during Storage Lock callback:', e, e.stack);
             if(e.stack) console.log(e.stack);
         }
         setTimeout(function() {
