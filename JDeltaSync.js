@@ -664,6 +664,12 @@ JDeltaSync.Client.prototype._rawDoReceive = function() {
                                 if(item.data.type === 'state') {
                                     self._receivedFromServer[self._receivedFromServer.length] = {type:item.data.type, id:item.data.id, dataStr:JDelta.stringify({op:'deltaApplied', delta:item.data.delta, type:'state', id:item.data.id})};
                                 }
+                                if(!db.contains(item.data.id)) {
+                                    // Use a less-verbose message for this common and typically-non-dangerous situation (normally caused by subscribing to broader regex matches than necessary):
+                                    if(typeof console !== 'undefined') console.log('Received Delta for item that is not in our DB.  Resetting:', item.data.type, item.data.id);
+                                    self.reset(item.data.type, item.data.id);
+                                    return next();
+                                }
                                 db._addHashedDelta(item.data.id, item.data.delta, next, function(err) {
                                     if(typeof console !== 'undefined') console.log('Error Applying Delta.  Resetting: ', item.data.type, item.data.id, item.data.delta, err, err.stack);
                                     self.reset(item.data.type, item.data.id);

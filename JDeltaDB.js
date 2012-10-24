@@ -1019,49 +1019,53 @@ JDeltaDB.DirStorage.prototype.addDelta = function(id, delta, onSuccess, onError)
 
 
 
-
-
-JDeltaDB._AsyncTracker = function(onSuccess) {  // Especially useful for tracking parallel async actions.
-    if(!(this instanceof JDeltaDB._AsyncTracker)) return new JDeltaDB._AsyncTracker(onSuccess);
-    if(!onSuccess) throw new Error('You must provide an onSuccess function.');
-    this.thereWasAnError = false;
-    this.numOfPendingCallbacks = 1;  // You need to make an additional call to checkForEnd() after the iteration.
-    this._onSuccess = onSuccess;
-    this._onSuccessAlreadyCalled = false;
-};
-JDeltaDB._AsyncTracker.prototype.checkForEnd = function() {
-    this.numOfPendingCallbacks--;
-    if(this.thereWasAnError) return;
-    if(this.numOfPendingCallbacks < 0) throw new Error('This should never happen');
-    if(!this.numOfPendingCallbacks) {
-        if(this._onSuccessAlreadyCalled) throw new Error('This should never happen');
-        this._onSuccessAlreadyCalled = true;
-        this._onSuccess();
-    }
-};
-JDeltaDB._runAsyncChain = function(chain, onSuccess, onError) {
-    var i=-1;
-    if(!_.isArray(chain)) throw new Error("Expected 'chain' to be an Array.");
-    onSuccess = onSuccess || function(){};
-    onError = onError || function(err) { throw err };
-    var next = function() {
-        i += 1;
-        if(i>chain.length) throw new Error('i>chain.length!'); // Should never happen.
-        if(i==chain.length) {
-            return onSuccess();
-        }
-        chain[i](next, onError);
-    };
-    return next();
-};
+///// 2012-10-23:  I decided to transition over to the SLIDE Async Flow Control lib:
+// 
+// JDeltaDB._AsyncTracker = function(onSuccess) {  // Especially useful for tracking parallel async actions.
+//     if(!(this instanceof JDeltaDB._AsyncTracker)) return new JDeltaDB._AsyncTracker(onSuccess);
+//     if(!onSuccess) throw new Error('You must provide an onSuccess function.');
+//     this.thereWasAnError = false;
+//     this.numOfPendingCallbacks = 1;  // You need to make an additional call to checkForEnd() after the iteration.
+//     this._onSuccess = onSuccess;
+//     this._onSuccessAlreadyCalled = false;
+// };
+// JDeltaDB._AsyncTracker.prototype.checkForEnd = function() {
+//     this.numOfPendingCallbacks--;
+//     if(this.thereWasAnError) return;
+//     if(this.numOfPendingCallbacks < 0) throw new Error('This should never happen');
+//     if(!this.numOfPendingCallbacks) {
+//         if(this._onSuccessAlreadyCalled) throw new Error('This should never happen');
+//         this._onSuccessAlreadyCalled = true;
+//         this._onSuccess();
+//     }
+// };
+// JDeltaDB._runAsyncChain = function(chain, onSuccess, onError) {
+//     var i=-1;
+//     if(!_.isArray(chain)) throw new Error("Expected 'chain' to be an Array.");
+//     onSuccess = onSuccess || function(){};
+//     onError = onError || function(err) { throw err };
+//     var next = function() {
+//         i += 1;
+//         if(i>chain.length) throw new Error('i>chain.length!'); // Should never happen.
+//         if(i==chain.length) {
+//             return onSuccess();
+//         }
+//         chain[i](next, onError);
+//     };
+//     return next();
+// };
 
 
 
 ////////////////////////////////////////////////////
-////////////////////////////////////////////////////
+/////////////////             //////////////////////
 /////////////////  S L I D E  //////////////////////
 /////////////////             //////////////////////
+///                                              ///
 /// https://github.com/isaacs/slide-flow-control ///
+///                                              ///
+/// Modified to run in web browsers back to IE6. ///
+///                                              ///
 ////////////////////////////////////////////////////
 
 // Used from chain and asyncMap like this:
@@ -1118,6 +1122,11 @@ JDeltaDB._chain = function(things, cb) {
 // JDeltaDB._asyncMap(['/', '/ComingSoon'],
 //                    function(url,cb) {jQuery.ajax({url:url, success:function(data){cb(null,data)}})}, 
 //                    log);      //  null [...datas from the 2 pages (in whatever order they were received)...]
+//
+// JDeltaDB._asyncMap([1,2,3],
+//                    function(x, next) {next(null, x*3,x*2,x*1)},
+//                    function(err, res1, res2, res3) {console.log(err, res1, res2, res3)});  //   null [3, 6, 9] [2, 4, 6] [1, 2, 3]
+//
 JDeltaDB._asyncMap = function() {
   var steps = Array.prototype.slice.call(arguments)
     , list = steps.shift() || []
