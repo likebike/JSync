@@ -358,7 +358,7 @@ JDeltaSync.Client.prototype._addToSendQueue = function(data, callback) {
         if(data.type  &&  data.id) {
             if(this._resetQueue.hasOwnProperty(data.type+'::'+data.id)) {
                 this._callSendQueueCallback(null, callback, 'dropped:reset');
-                //console.log('Dropping Data (about to reset):',data);
+                //if(typeof console !== 'undefined') console.log('Dropping Data (about to reset):',data);
                 return;  // Drop the item cuz we're going to reset anyway.
             }
 
@@ -377,7 +377,7 @@ JDeltaSync.Client.prototype._addToSendQueue = function(data, callback) {
             }
         }
     }
-
+    //if(typeof console !== 'undefined') console.log('Adding to SendQ:',data);
     var msgID = JDelta._generateID();
     this._sendQueue[this._sendQueue.length] = {msgID:msgID, data:data};
     if(callback) this._sendQueueCallbacks[msgID] = callback;
@@ -659,13 +659,13 @@ JDeltaSync.Client.prototype._rawDoReceive = function() {
 
                         case 'deltaApplied':
                             try {
-                                //console.log('Received deltaApplied message:',item);
+                                //if(typeof console !== 'undefined') console.log('Received deltaApplied message:',item);
                                 db = self._getDB(item.data.type);
                                 if(item.data.type === 'state') {
                                     self._receivedFromServer[self._receivedFromServer.length] = {type:item.data.type, id:item.data.id, dataStr:JDelta.stringify({op:'deltaApplied', delta:item.data.delta, type:'state', id:item.data.id})};
                                 }
                                 if(!db.contains(item.data.id)) {
-                                    // Use a less-verbose message for this common and typically-non-dangerous situation (normally caused by subscribing to broader regex matches than necessary):
+                                    // Use a less-verbose message for this common and typically-non-dangerous situation (normally caused by subscribing to a broader regex than necessary, or a recursive join):
                                     if(typeof console !== 'undefined') console.log('Received Delta for item that is not in our DB.  Resetting:', item.data.type, item.data.id);
                                     self.reset(item.data.type, item.data.id);
                                     return next();
@@ -1507,7 +1507,7 @@ JDeltaSync.Server.prototype.clientReceive = function(connectionID, req, onSucces
     } else {
         // long poll.
         clientConn.req = req;
-        clientConn.sendToLongPoll = function() {
+        clientConn.sendToLongPoll = _.debounce(function() {     ///  Debouncing really helps for the following situation:  ClientA submits a series of deltas for state X.  ClientB does not have X, so upon the first delta it requests a reset.  WITH debounching, ClientB will usually receive the entire series of deltas at once and therefore be able to discard the other deltas while waiting for the reset.  WITHOUT the debounce, ClientB would receive the first delta, request (and sometime receive) the reset, then receive the other deltas (which are out of sequence by that point), detect the sequence, and then request a reset AGAIN.
             clientConn.lastActivityTime = new Date().getTime();
             // Make sure this is only called once:
             clientConn.sendToLongPoll = null;
@@ -1520,7 +1520,7 @@ JDeltaSync.Server.prototype.clientReceive = function(connectionID, req, onSucces
             var result = clientConn.queue.splice(0, clientConn.queue.length);
             onSuccess(result);
             clientConn.lastActivityTime = new Date().getTime();
-        };
+        }, 10);
         var sendToLongPoll = clientConn.sendToLongPoll;
         setTimeout(function() {  // Force the long-poll to execute before the server or filewalls close our connection.  The reason we need to do this from the server is becasue Chrome does not support the ajax 'timeout' option.
             if(clientConn.sendToLongPoll === sendToLongPoll) {
