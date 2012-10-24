@@ -132,7 +132,8 @@ JDeltaDB.DB.prototype.waitForData = function(id, callback) {
             if(_path==='!'  &&  _data.op==='reset') {     // Don't log this cuz we know that it is a valid data signal.
             } else console.log('waitForData: received:',_path, _id, _data);  // Comment out this line when we are out of "super-alpha" phase for this function.
             self.off(idRegex, event, cb);
-            return callback(id, self);
+            // We delay the callback to make the internals of these events more transparent to our user.  If we call directly, the user needs to be aware that if they issue any 'edit' command, and we happen to have received a 'reset' event, their 'edit' commands will be dropped because at this point the ID is still in the reset queue.  By delaying the callback, we avoid this intricacy.
+            return setTimeout(function(){callback(id, self);}, 0);
         };
         this.on(idRegex, event, cb);
     }
@@ -665,7 +666,7 @@ JDeltaDB.RamStorage.prototype._nextLockCB = function() {
         return callback(unlock);
     } catch(e) {
         if(typeof console !== 'undefined') {
-            console.log('Exception during Storage Lock callback:', e, e.stack);
+            console.log('Exception during Storage Lock callback:', e);
             if(e.stack) console.log(e.stack);
         }
         setTimeout(function() {
@@ -1099,6 +1100,7 @@ JDeltaDB._first0 = {};
 JDeltaDB._last = {};
 JDeltaDB._last0 = {};
 JDeltaDB._chain = function(things, cb) {
+  cb = cb || function(){};                              ////////   Added by Christopher Sebastian.
   var res = [];
   (function LOOP(i, len) {
     if(i >= len) return cb(null,res);
