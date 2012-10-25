@@ -54,10 +54,11 @@ if(typeof exports !== 'undefined') {
     fs = null;
     PATH = null;
     jQuery = window.jQuery  ||  window.$;
+    // So slide's async-map can run efficiently on Node, but also function in the browser:
+    var process = {nextTick:function(fn){setTimeout(fn,0)}};
     getServerTimeOffset();
 } else throw new Error('This environment is not yet supported.');
 
-JDeltaDB.VERSION = '0.2.0';
 
 
 
@@ -90,23 +91,26 @@ JDeltaDB.DB.prototype._load = function() {
         }
     };
     this._storage.listIDs(function(ids) {
-        var tracker = JDeltaDB._AsyncTracker(notifyLoadListeners);
-        var id, i, ii;
-        for(i=0, ii=ids.length; i<ii; i++) {
-            tracker.numOfPendingCallbacks++;
-            id = ids[i];
-            if(!self._states.hasOwnProperty(id))
-                self.createState(id, true);
-            self.rollback(id, undefined, function(id) {
-                tracker.checkForEnd();
-            }, function(err) {
-                tracker.thereWasAnError = true;
-                setTimeout(notifyLoadListeners, 0);  // Keep going, even though we are going to throw an exception.
-                throw err;
-                tracker.checkForEnd();
-            });
-        }
-        tracker.checkForEnd();
+        JDeltaDB._asyncMap(ids,
+                           function(id, next) {
+                               if(!self._states.hasOwnProperty(id)) self.createState(id, true);
+                               self.rollback(id, undefined, function(id) {
+                                   next();
+                               }, function(err) {
+                                   if(!err) err = new Error();
+                                   next(err);
+                                   setTimeout(notifyLoadListeners, 0);  // Keep going, even though we are going to throw an exception.
+                                   throw err;
+                                   tracker.checkForEnd();
+                               });
+                           }, function(err, _junk) {
+                               if(err) {
+                                   // Throw an exception to let us know that something went wrong, but also keep going.
+                                   setTimeout(notifyLoadListeners, 0);
+                                   throw err;
+                               }
+                               return notifyLoadListeners();
+                           });
     }, function(err) {
         setTimeout(notifyLoadListeners, 0);
         throw err;
@@ -128,7 +132,8 @@ JDeltaDB.DB.prototype.waitForData = function(id, callback) {
             if(_path==='!'  &&  _data.op==='reset') {     // Don't log this cuz we know that it is a valid data signal.
             } else console.log('waitForData: received:',_path, _id, _data);  // Comment out this line when we are out of "super-alpha" phase for this function.
             self.off(idRegex, event, cb);
-            return callback(id, self);
+            // We delay the callback to make the internals of these events more transparent to our user.  If we call directly, the user needs to be aware that if they issue any 'edit' command, and we happen to have received a 'reset' event, their 'edit' commands will be dropped because at this point the ID is still in the reset queue.  By delaying the callback, we avoid this intricacy.
+            return setTimeout(function(){callback(id, self);}, 0);
         };
         this.on(idRegex, event, cb);
     }
@@ -372,7 +377,7 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, 
 
             waitForServerTime(function(serverTimeOffset) {
                 if(!delta.meta.hasOwnProperty('date'))
-                    delta.meta.date = new Date(new Date().getTime() + serverTimeOffset).toUTCString();
+                    delta.meta.date = new Date().getTime() + serverTimeOffset;
                 try {
                     JDelta.patch(id, state.state, delta, state.dispatcher);
                     if(JDelta._dsHash(JDelta.stringify(state.state)) !== delta.curHash)
@@ -475,7 +480,7 @@ JDeltaDB.DB.prototype.undo = function(id, meta, onSuccess, onError) {
                 var finishProcessWithPostUndoDelta = function(id, postUndoDelta) {
                     var postUndoUndoSeq = postUndoDelta.undoSeq;
                     var postUndoHash = postUndoDelta.curHash;
-                    var newMeta = _.extend(JDelta._deepCopy(postUndoDelta.meta), {operation:'undo'}, meta);
+                    var newMeta = _.extend(JDelta._deepCopy(postUndoDelta.meta), meta, {operation:'undo', realDate:new Date().getTime() + serverTimeOffset});  // 2012-10-23:  I reversed the order of 'meta' and the new data object... I think the user should not normally override those values.
                     var hashedDelta = { steps:undoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postUndoHash, seq:newSeq, undoSeq:postUndoUndoSeq, redoSeq:newRedoSeq };
                     self._addHashedDelta(id, hashedDelta, function() {
                         onSuccess && onSuccess();
@@ -516,7 +521,7 @@ JDeltaDB.DB.prototype.redo = function(id, meta, onSuccess, onError) {
                 self._storage.getDelta(id, postRedoSeq, function(id, postRedoDelta) {
                     var postRedoRedoSeq = postRedoDelta.redoSeq;
                     var postRedoHash = postRedoDelta.curHash;
-                    var newMeta = _.extend(JDelta._deepCopy(postRedoDelta.meta), {operation:'redo'}, meta);
+                    var newMeta = _.extend(JDelta._deepCopy(postRedoDelta.meta), meta, {operation:'redo', realDate:new Date().getTime() + serverTimeOffset});  // 2012-10-23:  I reversed the order of 'meta' and the new data object... I think the user should not normally override those values.
                     var hashedDelta = { steps:redoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postRedoHash, seq:newSeq, undoSeq:newUndoSeq, redoSeq:postRedoRedoSeq };
                     self._addHashedDelta(id, hashedDelta, function() {
                         onSuccess && onSuccess();
@@ -661,7 +666,7 @@ JDeltaDB.RamStorage.prototype._nextLockCB = function() {
         return callback(unlock);
     } catch(e) {
         if(typeof console !== 'undefined') {
-            console.log('Exception during Storage Lock callback:',e);
+            console.log('Exception during Storage Lock callback:', e);
             if(e.stack) console.log(e.stack);
         }
         setTimeout(function() {
@@ -940,31 +945,30 @@ JDeltaDB.DirStorage.prototype.listIDs = function(onSuccess, onError) {
                 hashDirs[hashDirs.length] = files[i];
         }
         var ids = [];
-        var tracker = new JDeltaDB._AsyncTracker(function() {
-            ids.sort();
-            onSuccess(ids);
-        });
-        _.each(hashDirs, function(hashDir) {
-            tracker.numOfPendingCallbacks++;
-            fs.readdir(self.__dirpath+'/'+hashDir, function(err, files) {
-                if(tracker.thereWasAnError) return;
-                if(err) {
-                    tracker.thereWasAnError = true;
-                    return onError(err);
-                }
-                var ignoreSuffix = '.WRITING',
-                    filename, j, jj;
-                for(j=0, jj=files.length; j<jj; j++) {
-                    filename = files[j];
-                    // endswith:
-                    if(!filename.indexOf(ignoreSuffix, filename.length - ignoreSuffix.length) !== -1) {
-                        ids[ids.length] = decodeURIComponent(filename);
-                    }
-                }
-                tracker.checkForEnd();
-            });
-        });
-        tracker.checkForEnd();
+        JDeltaDB._asyncMap(hashDirs,
+                           function(hashDir, next) {
+                               fs.readdir(self.__dirpath+'/'+hashDir, function(err, files) {
+                                   if(err) return next(err);
+                                   var ignoreSuffix = '.WRITING',
+                                       filename, j, jj;
+                                   for(j=0, jj=files.length; j<jj; j++) {
+                                       filename = files[j];
+                                       // endswith:
+                                       if(!filename.indexOf(ignoreSuffix, filename.length - ignoreSuffix.length) !== -1) {
+                                           ids[ids.length] = decodeURIComponent(filename);
+                                       }
+                                   }
+                                   return next();
+                               });
+                           },
+                           function(err, _junk) {
+                               if(err) {
+                                   if(onError) return onError(err);
+                                   throw err;
+                               }
+                               ids.sort();
+                               return onSuccess(ids);
+                           });
     });
 };
 JDeltaDB.DirStorage.prototype.createStateSync = function(id) {
@@ -1016,46 +1020,224 @@ JDeltaDB.DirStorage.prototype.addDelta = function(id, delta, onSuccess, onError)
 
 
 
+///// 2012-10-23:  I decided to transition over to the SLIDE Async Flow Control lib:
+// 
+// JDeltaDB._AsyncTracker = function(onSuccess) {  // Especially useful for tracking parallel async actions.
+//     if(!(this instanceof JDeltaDB._AsyncTracker)) return new JDeltaDB._AsyncTracker(onSuccess);
+//     if(!onSuccess) throw new Error('You must provide an onSuccess function.');
+//     this.thereWasAnError = false;
+//     this.numOfPendingCallbacks = 1;  // You need to make an additional call to checkForEnd() after the iteration.
+//     this._onSuccess = onSuccess;
+//     this._onSuccessAlreadyCalled = false;
+// };
+// JDeltaDB._AsyncTracker.prototype.checkForEnd = function() {
+//     this.numOfPendingCallbacks--;
+//     if(this.thereWasAnError) return;
+//     if(this.numOfPendingCallbacks < 0) throw new Error('This should never happen');
+//     if(!this.numOfPendingCallbacks) {
+//         if(this._onSuccessAlreadyCalled) throw new Error('This should never happen');
+//         this._onSuccessAlreadyCalled = true;
+//         this._onSuccess();
+//     }
+// };
+// JDeltaDB._runAsyncChain = function(chain, onSuccess, onError) {
+//     var i=-1;
+//     if(!_.isArray(chain)) throw new Error("Expected 'chain' to be an Array.");
+//     onSuccess = onSuccess || function(){};
+//     onError = onError || function(err) { throw err };
+//     var next = function() {
+//         i += 1;
+//         if(i>chain.length) throw new Error('i>chain.length!'); // Should never happen.
+//         if(i==chain.length) {
+//             return onSuccess();
+//         }
+//         chain[i](next, onError);
+//     };
+//     return next();
+// };
 
 
 
+////////////////////////////////////////////////////
+/////////////////             //////////////////////
+/////////////////  S L I D E  //////////////////////
+/////////////////             //////////////////////
+///                                              ///
+/// https://github.com/isaacs/slide-flow-control ///
+///                                              ///
+/// Modified to run in web browsers back to IE6. ///
+///                                              ///
+////////////////////////////////////////////////////
 
-JDeltaDB._AsyncTracker = function(onSuccess) {  // Especially useful for tracking parallel async actions.
-    if(!(this instanceof JDeltaDB._AsyncTracker)) 
-        return new JDeltaDB._AsyncTracker(onSuccess);
-    if(!onSuccess)
-        throw new Error('You must provide an onSuccess function.');
-    this.out = [];
-    this.thereWasAnError = false;
-    this.numOfPendingCallbacks = 1;  // You need to make an additional call to checkForEnd() after the iteration.
-    this._onSuccess = onSuccess;
-    this._onSuccessAlreadyCalled = false;
+// Used from chain and asyncMap like this:
+// var log = _.bind(console.log, console);
+// var add = function(a,b,next) {next(null, a+b)};
+// var obj = {add:add};
+// JDeltaDB._bindActor(add,1,2)(log);       //  null, 3
+// JDeltaDB._bindActor(obj,'add',1,2)(log); //  null, 3
+JDeltaDB._bindActor = function() {
+  var args = Array.prototype.slice.call(arguments) // jswtf.
+    , obj = null
+    , fn;
+  if(typeof args[0] === "object") {
+    obj = args.shift();
+    fn = args.shift();
+    if (typeof fn === "string") fn = obj[ fn ];
+  } else fn = args.shift();
+  return function (cb) { fn.apply(obj, args.concat(cb)); };
 };
-JDeltaDB._AsyncTracker.prototype.checkForEnd = function() {
-    this.numOfPendingCallbacks--;
-    if(this.thereWasAnError) return;
-    if(this.numOfPendingCallbacks < 0) throw new Error('This should never happen');
-    if(!this.numOfPendingCallbacks) {
-        if(this._onSuccessAlreadyCalled) throw new Error('This should never happen');
-        this._onSuccessAlreadyCalled = true;
-        this._onSuccess(this.out);
+
+// Able to run async functions in series:
+// var mul = function(a,b,next) {next(null, a*b)};
+// var first = JDeltaDB._first;
+// var last = JDeltaDB._last;
+// JDeltaDB._chain( [ [mul, 2, 3],
+//                    [obj, 'add', 1, last],
+//                    [obj, 'add', first, last]
+//                  ], log);                     //  null [6, 7, 13]
+JDeltaDB._first = {};
+JDeltaDB._first0 = {};
+JDeltaDB._last = {};
+JDeltaDB._last0 = {};
+JDeltaDB._chain = function(things, cb) {
+  cb = cb || function(){};                              ////////   Added by Christopher Sebastian.
+  var res = [];
+  (function LOOP(i, len) {
+    if(i >= len) return cb(null,res);
+    if(_.isArray(things[i])) things[i] = JDeltaDB._bindActor.apply(null, _.map(things[i], function(i){
+                                                                                          return (i===JDeltaDB._first)  ? res[0] :
+                                                                                                 (i===JDeltaDB._first0) ? res[0][0] :
+                                                                                                 (i===JDeltaDB._last)   ? res[res.length - 1] :
+                                                                                                 (i===JDeltaDB._last0)  ? res[res.length - 1][0] :
+                                                                                                 i; }));
+    if(!things[i]) return LOOP(i + 1, len);
+    things[i](function (er, data) {
+      if(er) return cb(er, res);
+      //if(data !== undefined) res = res.concat(data);   /////////  Commented by Christopher Sebastian.  I disagree with the use of 'concat' to collect results.  I think it should be an append instead.
+      if(data !== undefined) res[res.length] = data;     /////////  Added by Christopher Sebastian.
+      LOOP(i + 1, len);
+    });
+  })(0, things.length);
+};
+
+// Runs tasks in parallel:
+// JDeltaDB._asyncMap(['/', '/ComingSoon'],
+//                    function(url,cb) {jQuery.ajax({url:url, success:function(data){cb(null,data)}})}, 
+//                    log);      //  null [...datas from the 2 pages (in whatever order they were received)...]
+//
+// JDeltaDB._asyncMap([1,2,3],
+//                    function(x, next) {next(null, x*3,x*2,x*1)},
+//                    function(err, res1, res2, res3) {console.log(err, res1, res2, res3)});  //   null [3, 6, 9] [2, 4, 6] [1, 2, 3]
+//
+JDeltaDB._asyncMap = function() {
+  var steps = Array.prototype.slice.call(arguments)
+    , list = steps.shift() || []
+    , cb_ = steps.pop();
+  if(typeof cb_ !== "function") throw new Error("No callback provided to asyncMap");
+  if(!list) return cb_(null, []);
+  if(!_.isArray(list)) list = [list];
+  var n = steps.length
+    , data = [] // 2d array
+    , errState = null
+    , l = list.length
+    , a = l * n;
+  if(!a) return cb_(null, []);
+  function cb(er) {
+    if(errState) return;
+    var argLen = arguments.length;
+    for(var i=1; i<argLen; i++) if(arguments[i] !== undefined) {
+      data[i-1] = (data[i-1] || []).concat(arguments[i]);
     }
+    // see if any new things have been added.
+    if(list.length > l) {
+      var newList = list.slice(l);
+      a += (list.length - l) * n;
+      l = list.length;
+      process.nextTick(function() {
+        _.each(newList, function(ar) {
+          _.each(steps, function(fn) { fn(ar,cb); });
+        });
+      });
+    }
+    if(er || --a === 0) {
+      errState = er;
+      cb_.apply(null, [errState].concat(data));
+    }
+  };
+  // expect the supplied cb function to be called
+  // "n" times for each thing in the array.
+  _.each(list, function(ar) {
+    _.each(steps, function(fn) { fn(ar,cb); });
+  });
 };
-JDeltaDB._runAsyncChain = function(chain, onSuccess, onError) {
-    var i=-1;
-    if(!_.isArray(chain)) throw new Error("Expected 'chain' to be an Array.");
-    onSuccess = onSuccess || function(){};
-    onError = onError || function(err) { throw err };
-    var next = function() {
-        i += 1;
-        if(i>chain.length) throw new Error('i>chain.length!'); // Should never happen.
-        if(i==chain.length) {
-            return onSuccess();
+
+
+
+
+// Cache results so future requests can be de-duplicated.
+// var dedup = JDeltaDB._asyncMemoize(add, function(a,b){return ''+a+':'+b});
+// dedup(1, 2, log);  // First time, add gets called.
+// dedup(1, 2, log);  // Result comes from cache.
+JDeltaDB._asyncMemoize = function(func, hashFunc, hasOnError) {
+    hashFunc = hashFunc || function(x) { return x; };
+    var seen = {};
+    return function() {
+        var args = Array.prototype.slice.call(arguments);
+        var hash = hashFunc.apply(null, args);
+        var onSuccess, onError;
+        if(hasOnError) {
+            onError = args.pop();
+            onSuccess = args.pop();
+        } else onSuccess = args.pop();
+        var results = seen[hash];
+        if(results) {
+            //console.log('MEMOED!', hash);
+            return onSuccess.apply(null, results);
         }
-        chain[i](next, onError);
+        var totalArgs = args.concat([function() {
+            results = Array.prototype.slice.call(arguments);
+            seen[hash] = results;
+            //console.log('CALLED.', hash);
+            return onSuccess.apply(null, results);
+        }]);
+        if(hasOnError) totalArgs = totalArgs.concat([onError]);
+        func.apply(null, totalArgs);
     };
-    return next();
 };
+
+// Only allow one call to occur at a time.  Additional calls will be discarded.
+// Useful for expensive functions that you don't want to "stack" if called rapidly.
+// var single = JDeltaDB._asyncOneAtATime(function(a,b,next){ setTimeout(function(){next(a,b)}, 3000) });
+// single(1,2,log);  single(3,4,log);   // Only "1 2" will be printed.
+JDeltaDB._asyncOneAtATime = function(func, hasOnError) {
+    var running = false;
+    return function() {
+        var args = Array.prototype.slice.call(arguments);
+        if(running) {
+            //console.log('already running.');
+            return;
+        }
+        //console.log('RUNNING.');
+        running = true;
+        var onSuccess, onError;
+        if(hasOnError) {
+            onError = args.pop();
+            onSuccess = args.pop();
+        } else onSuccess = args.pop();
+        var totalArgs = args.concat([function() {
+            var results = Array.prototype.slice.call(arguments);
+            running = false;
+            onSuccess && onSuccess.apply(null, results);
+        }]);
+        if(hasOnError) totalArgs = totalArgs.concat([function() {
+            var results = Array.prototype.slice.call(arguments);
+            running = false;
+            onError && onError.apply(null, results);
+        }]);
+        func.apply(null, totalArgs);
+    };
+};
+
 
 
 
