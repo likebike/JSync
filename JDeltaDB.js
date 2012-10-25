@@ -1174,7 +1174,10 @@ JDeltaDB._asyncMap = function() {
 
 
 
-
+// Cache results so future requests can be de-duplicated.
+// var dedup = JDeltaDB._asyncMemoize(add, function(a,b){return ''+a+':'+b});
+// dedup(1, 2, log);  // First time, add gets called.
+// dedup(1, 2, log);  // Result comes from cache.
 JDeltaDB._asyncMemoize = function(func, hashFunc, hasOnError) {
     hashFunc = hashFunc || function(x) { return x; };
     var seen = {};
@@ -1202,6 +1205,38 @@ JDeltaDB._asyncMemoize = function(func, hashFunc, hasOnError) {
     };
 };
 
+// Only allow one call to occur at a time.  Additional calls will be discarded.
+// Useful for expensive functions that you don't want to "stack" if called rapidly.
+// var single = JDeltaDB._asyncOneAtATime(function(a,b,next){ setTimeout(function(){next(a,b)}, 3000) });
+// single(1,2,log);  single(3,4,log);   // Only "1 2" will be printed.
+JDeltaDB._asyncOneAtATime = function(func, hasOnError) {
+    var running = false;
+    return function() {
+        var args = Array.prototype.slice.call(arguments);
+        if(running) {
+            //console.log('already running.');
+            return;
+        }
+        //console.log('RUNNING.');
+        running = true;
+        var onSuccess, onError;
+        if(hasOnError) {
+            onError = args.pop();
+            onSuccess = args.pop();
+        } else onSuccess = args.pop();
+        var totalArgs = args.concat([function() {
+            var results = Array.prototype.slice.call(arguments);
+            running = false;
+            onSuccess && onSuccess.apply(null, results);
+        }]);
+        if(hasOnError) totalArgs = totalArgs.concat([function() {
+            var results = Array.prototype.slice.call(arguments);
+            running = false;
+            onError && onError.apply(null, results);
+        }]);
+        func.apply(null, totalArgs);
+    };
+};
 
 
 
