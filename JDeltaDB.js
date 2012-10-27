@@ -7,7 +7,7 @@
 // Many ideas inspired by CouchDB and GIT.
 
 
-(function() {
+(function(global) {
 
 // First, install ourselves and import our dependencies:
 var JDeltaDB = {},
@@ -44,6 +44,12 @@ if(typeof exports !== 'undefined') {
     _ = require('underscore');
     fs = require('fs');
     PATH = require('path');
+
+    // Bring the Node 0.6 API up to the 0.8 API for path.sep:
+    if(!PATH.sep) {
+        PATH.sep = global.process.platform === 'win32' ? '\\' : '/';
+    }
+
     // Assume that we are the time authority.
     gotServerTime = true;
 } else if(typeof window !== 'undefined') {
@@ -55,7 +61,7 @@ if(typeof exports !== 'undefined') {
     PATH = null;
     jQuery = window.jQuery  ||  window.$;
     // So slide's async-map can run efficiently on Node, but also function in the browser:
-    var process = {nextTick:function(fn){setTimeout(fn,0)}};
+    if(!global.process) global.process = {nextTick:function(fn){setTimeout(fn,0)}};    // Notice that we do not use "var process" because that would prevent Node from accessing the process global.
     getServerTimeOffset();
 } else throw new Error('This environment is not yet supported.');
 
@@ -91,6 +97,7 @@ JDeltaDB.DB.prototype._load = function() {
         }
     };
     this._storage.listIDs(function(ids) {
+console.log('LOAD IDS:',ids);
         JDeltaDB._asyncMap(ids,
                            function(id, next) {
                                if(!self._states.hasOwnProperty(id)) self.createState(id, true);
@@ -235,8 +242,8 @@ JDeltaDB.DB.prototype.getState = function(id) {
 JDeltaDB.DB.prototype.createState = function(id, doNotCreateInStorage) {
     if(this._states.hasOwnProperty(id))
         throw new Error('State already exists: '+id);
+    this._states[id] = {state:{}, dispatcher:null};   /// 2012-10-27: moved this line up by 1 line (before the storage create instead of after.  Because i added the 'autoCreate' option for getState, and i was getting 'alreadyExists' errors.
     if(!doNotCreateInStorage) this._storage.createStateSync(id);  // 'doNotCreateInStorage' is useful when loading a storage database and re-creating the equivalent states in the DB.  In this case, the data is already in the storage, so no need to add it again (plus, it would cause an error).
-    this._states[id] = {state:{}, dispatcher:null};
     var i, ii, l;
     for(i=0, ii=this._regexListeners.length; i<ii; i++) {
         l = this._regexListeners[i];
@@ -792,15 +799,112 @@ JDeltaDB.RamStorage.prototype.addDelta = function(id, delta, onSuccess, onError)
 
 
 
+JDeltaDB._mkdir_p = function(path, mode, callback) {
+    // Recursively create directories, like mkdir -p.
+    // The Node Standard Library does not contain this ability, as of 2012-10-27.
+    var args = Array.prototype.slice.call(arguments);
+    var path = args.shift();
+    var callback = args.pop();
+    if(!callback) callback = function(){};
+    var mode = args.shift();
+    var pathPieces = path.split(PATH.sep);
+    var totalPath = '';
+    var pieceI = 0;
+    var next = function(err) {
+        //if(err) return callback(err);  // Ignore the errors because we obviously won't be able to create parent directories that exist but we don't have access to.
+        if(!pathPieces.length) return callback();
+        if(pieceI++) totalPath += PATH.sep;
+        totalPath += pathPieces.shift();
+        if(totalPath === '') return next();  // If the input path begins with '/', this will occur for the first piece.
+        var mkdirArgs = [totalPath];
+        if(mode !== undefined) mkdirArgs = mkdirArgs.concat([mode]);
+        mkdirArgs = mkdirArgs.concat([next]);
+        fs.mkdir.apply(fs, mkdirArgs);
+    };
+    return next();
+};
+JDeltaDB._walk = function(path, visit, finish, options) {
+    // Walk a directory tree.  Implementation inspired by Python's os.walk and os.path.walk.
+    // The 'visit' callback can modify the list of files and directories to control traversal.  (Only makes sense in top-down traversal.)
+    options = options || {};
+    var bottomUp = options.bottomUp;
+    var followLinks = options.followLinks;
+    var onError = options.onError || function(operation, err) {};
+    var statFunc = followLinks ? fs.stat : fs.lstat;
+    var itemSort = function(a,b) {
+        if(a.item > b.item) return 1;
+        if(a.item < b.item) return -1;
+        return 0;
+    };
+    var next = function(path, finish) {
+        fs.readdir(path, function(err, list) {
+            if(err) {
+                err = onError(err);
+                if(err) return finish(err);  // onError told us to abort.
+                return finish();   // Keep going.
+            }
+            var dirs = [];
+            var files = [];
+            var links = [];  //  Items will only be put here if !options.followLinks.
+            var errs = [];
+            JDeltaDB._asyncMap(list,
+                               function(item, next) {
+                                   statFunc(path+PATH.sep+item, function(err, stats) {
+                                       if(err) errs[errs.length] = {item:item, stats:stats, err:err};  // Don't halt the whole process just because of one error.
+                                       else if(stats.isDirectory()) dirs[dirs.length] = {item:item, stats:stats};
+                                       else if(!followLinks  &&  stats.isSymbolicLink()) links[links.length] = {item:item, stats:stats};
+                                       else files[files.length] = {item:item, stats:stats};  // Consider devices, fifos, sockets, etc as files.
+                                       return next();
+                                   });
+                               }, function(err, _junk) {
+                                   if(err) {
+                                       err = onError(err);
+                                       if(err) return finish(err);
+                                   }
+                                   dirs.sort(itemSort);
+                                   files.sort(itemSort);
+                                   links.sort(itemSort);
+                                   errs.sort(itemSort);
+                                   var dirChain = function(finish) {
+                                           var chain = [],
+                                               i, ii;
+                                           for(i=0, ii=dirs.length; i<ii; i++) {
+                                               if(!dirs[i]) continue;      // The 'visit' func removed this item.
+                                               if(!dirs[i].item) continue; // ^^^
+                                               chain[chain.length] = [ next, path+PATH.sep+dirs[i].item ];
+                                           }
+                                           JDeltaDB._chain(chain, function(err, _junk) {
+                                               if(err) {
+                                                   err = onError(err);
+                                                   if(err) return finish(err);  // The onError handler told us to abort.
+                                               }
+                                               return finish();  // Keep going.
+                                           });
+                                   };
+                                   if(!bottomUp) {
+                                       // Use top-down traversal.
+                                       var afterVisit = function(err) {
+                                           if(err) return finish(err);
+                                           return dirChain(function(err, _junk) { return finish(err); });
+                                       };
+                                       return visit(afterVisit, path, files, dirs, links, errs, options);
+                                   } else {
+                                       // Use bottom-up traversal.
+                                       return dirChain(function(err, _junk) {
+                                           if(err) return finish(err);
+                                           visit(finish, path, files, dirs, links, errs, options);
+                                       });
+                                   }
+                               });
+        });
+    };
+    return next(path, finish || function(){});
+};
 
-
-
-
-JDeltaDB.DirStorage = function(dirpath) {
-    if(!(this instanceof JDeltaDB.DirStorage)) return new JDeltaDB.DirStorage(dirpath);
+JDeltaDB._DirStorage_Constructor = function(dirpath) {
     if(!PATH.existsSync(dirpath)) throw new Error('Dir does not exist: '+dirpath);
     this.__dirpath = PATH.resolve(dirpath);
-    this.__hashPieceLen = 4;
+    this.creationMode = '0750';   // Must use a string because literal ocals are forbidden in JS strict mode.
     this.__statesCurrentlyInRam = {};
     this.__statesToSave = {};
     this.__stateAccessTimes = {};
@@ -808,28 +912,47 @@ JDeltaDB.DirStorage = function(dirpath) {
     this.save = _.debounce(_.bind(this._rawSave, this), 1000);
     this.removeStatesInterval = setInterval(_.bind(this.__removeInactiveStatesFromRam, this), 10000);
 };
+JDeltaDB.DirStorage = function(dirpath) {
+    if(!(this instanceof JDeltaDB.DirStorage)) return new JDeltaDB.DirStorage(dirpath);
+    JDeltaDB._DirStorage_Constructor.call(this, dirpath);
+};
 JDeltaDB.DirStorage.prototype.acquireLock = JDeltaDB.RamStorage.prototype.acquireLock;
 JDeltaDB.DirStorage.prototype._nextLockCB = JDeltaDB.RamStorage.prototype._nextLockCB;
 JDeltaDB.DirStorage.prototype._releaseLock = JDeltaDB.RamStorage.prototype._releaseLock;
 JDeltaDB.DirStorage.prototype.__idToFilepath = function(id) {
+    if(id === '/') {
+        // Special handling for /.
+        return this.__dirpath + PATH.sep + encodeURIComponent('/') + '.json';  //  "/" --> "%2F"
+    }
     if(!_.isString(id)) throw new Error('Non-string id!');
     if(!id.length) throw new Error('Blank id!');
-    var encodedID = encodeURIComponent(id);
-    encodedID = encodedID.replace(/\./g, '%2E');  // Also encode '.' to avoid the '.' and '..' filenames.
-    var hash = JDelta._dsHash(encodedID);
-    if(hash.length !== 10) throw new Error('Unexpected hash length!' + hash);
-    var hashPiece = hash.substring(10-this.__hashPieceLen,10);
-    return this.__dirpath + '/' + hashPiece + '/' + encodedID;
+    if(id.charAt(0) !== '/') throw new Error('id must begin with /');
+    if(id.charAt(id.length-1) === '/') throw new Error('id may not end with /');
+    if(id.indexOf('//') !== -1) throw new Error('Found //');
+    var encodedPieces = _.map(id.split('/'), function(piece) {
+        return encodeURIComponent(piece).replace(/\./g, '%2E');    // Also encode '.' to avoid the '.' and '..' filenames.
+    });
+    var encodedPath = encodedPieces.join(PATH.sep);
+    if(encodedPath.charAt(0) !== PATH.sep) throw new Error('This should not happen.');
+    return this.__dirpath + encodedPath + '.json';
 };
 JDeltaDB.DirStorage.prototype.__filepathToID = function(filepath) {
+    if(filepath === this.__dirpath + PATH.sep + encodeURIComponent('/') + '.json') {
+        // Special handling for /.
+        return '/';
+    }
     if(filepath.lastIndexOf(this.__dirpath, 0) !== 0) throw new Error('filepath does not start with __dirpath!');
-    if(filepath.charAt(this.__dirpath.length) !== '/') throw new Error("Expected '/'.");
-    var hashPiece = filepath.substr(this.__dirpath.length+1, this.__hashPieceLen);
-    if(filepath.charAt(this.__dirpath.length+1+this.__hashPieceLen) !== '/') throw new Error("Expected '/'.");
-    var encodedID = filepath.substring(this.__dirpath.length+2+this.__hashPieceLen);
-    var hash = JDelta._dsHash(encodedID);
-    if(hash.substring(10-this.__hashPieceLen,10) !== hashPiece) throw new Error('hashPiece did not match!');
-    return decodeURIComponent(encodedID);
+    if(filepath.charAt(this.__dirpath.length) !== PATH.sep) throw new Error("Expected path separator.");
+    if(filepath.indexOf('.json', filepath.length-5) === -1) throw new Error('Expected .json extension.');
+    filepath = filepath.substring(0, filepath.length-5);  // Chop off the .json
+    var encodedPath = filepath.substr(this.__dirpath.length);
+    var decodedPieces = _.map(encodedPath.split(PATH.sep), function(piece) {
+        return decodeURIComponent(piece);
+    });
+    var id = decodedPieces.join('/');
+    if(id.charAt(0) !== '/') throw new Error('Expected /');
+    if(id.charAt(id.length-1) === '/') throw new Error('Illegal /');
+    return id;
 };
 JDeltaDB.DirStorage.prototype.__rawSaveState = function(id, onSuccess, onError) {
     if(!this.__statesCurrentlyInRam.hasOwnProperty(id)) {
@@ -846,7 +969,7 @@ JDeltaDB.DirStorage.prototype.__rawSaveState = function(id, onSuccess, onError) 
     var filepath = this.__idToFilepath(id);
     var newFilepath = filepath + '.WRITING';
     var dirpath = PATH.dirname(filepath);
-    fs.mkdir(dirpath, parseInt('0755', 8), function(err) {  // I need to use parseInt because literal octals are forbidden in JS strict mode.
+    JDeltaDB._mkdir_p(dirpath, parseInt(this.creationMode, 8), function(err) {  // I need to use parseInt because literal octals are forbidden in JS strict mode.
         if(err  &&  err.code !== 'EEXIST') return onError(err);
         fs.writeFile(newFilepath, dataStr, 'utf8', function(err) {
             if(err) return onError(err);
@@ -935,40 +1058,23 @@ JDeltaDB.DirStorage.prototype._getRawDeltas = function(id, onSuccess, onError) {
     }
 };
 JDeltaDB.DirStorage.prototype.listIDs = function(onSuccess, onError) {
-    var self = this;
-    fs.readdir(this.__dirpath, function(err, files) {
-        if(err) return onError(err);
-        var hashDirs = [],
-            i, ii;
+    var self = this,
+        ids = [];
+    JDeltaDB._walk(this.__dirpath, function(next, path, files, dires, links, errs, options) {
+        var i, ii, f;
         for(i=0, ii=files.length; i<ii; i++) {
-            if(files[i].length === self.__hashPieceLen)
-                hashDirs[hashDirs.length] = files[i];
+            f = files[i].item;
+            if(f.indexOf('.json', f.length-5) === -1) continue;
+            ids[ids.length] = self.__filepathToID(path+PATH.sep+f);
         }
-        var ids = [];
-        JDeltaDB._asyncMap(hashDirs,
-                           function(hashDir, next) {
-                               fs.readdir(self.__dirpath+'/'+hashDir, function(err, files) {
-                                   if(err) return next(err);
-                                   var ignoreSuffix = '.WRITING',
-                                       filename, j, jj;
-                                   for(j=0, jj=files.length; j<jj; j++) {
-                                       filename = files[j];
-                                       // endswith:
-                                       if(!filename.indexOf(ignoreSuffix, filename.length - ignoreSuffix.length) !== -1) {
-                                           ids[ids.length] = decodeURIComponent(filename);
-                                       }
-                                   }
-                                   return next();
-                               });
-                           },
-                           function(err, _junk) {
-                               if(err) {
-                                   if(onError) return onError(err);
-                                   throw err;
-                               }
-                               ids.sort();
-                               return onSuccess(ids);
-                           });
+        next();
+    }, function(err) {
+        if(err) {
+            if(onError) return onError();
+            throw err;
+        }
+        ids.sort();
+        return onSuccess(ids);
     });
 };
 JDeltaDB.DirStorage.prototype.createStateSync = function(id) {
@@ -1005,6 +1111,70 @@ JDeltaDB.DirStorage.prototype.addDelta = function(id, delta, onSuccess, onError)
 
 
 
+
+JDeltaDB.HashedDirStorage = function(dirpath) {
+    if(!(this instanceof JDeltaDB.HashedDirStorage)) return new JDeltaDB.HashedDirStorage(dirpath);
+    this.__hashPieceLen = 4;
+    JDeltaDB._DirStorage_Constructor.call(this, dirpath);
+};
+_.extend(JDeltaDB.HashedDirStorage.prototype, JDeltaDB.DirStorage.prototype);
+JDeltaDB.HashedDirStorage.prototype.__idToFilepath = function(id) {
+    if(!_.isString(id)) throw new Error('Non-string id!');
+    if(!id.length) throw new Error('Blank id!');
+    var encodedID = encodeURIComponent(id);
+    encodedID = encodedID.replace(/\./g, '%2E');  // Also encode '.' to avoid the '.' and '..' filenames.
+    var hash = JDelta._dsHash(encodedID);
+    if(hash.length !== 10) throw new Error('Unexpected hash length!' + hash);
+    var hashPiece = hash.substring(10-this.__hashPieceLen,10);
+    return this.__dirpath + PATH.sep + hashPiece + PATH.sep + encodedID + '.json';
+};
+JDeltaDB.HashedDirStorage.prototype.__filepathToID = function(filepath) {
+    if(filepath.lastIndexOf(this.__dirpath, 0) !== 0) throw new Error('filepath does not start with __dirpath!');
+    if(filepath.charAt(this.__dirpath.length) !== PATH.sep) throw new Error("Expected path separator.");
+    if(filepath.indexOf('.json', filepath.length-5) === -1) throw new Error('Expected .json extension.');
+    filepath = filepath.substring(0, filepath.length-5);  // Chop off the .json
+    var hashPiece = filepath.substr(this.__dirpath.length+1, this.__hashPieceLen);
+    if(filepath.charAt(this.__dirpath.length+1+this.__hashPieceLen) !== PATH.sep) throw new Error("Expected path separator.");
+    var encodedID = filepath.substring(this.__dirpath.length+2+this.__hashPieceLen);
+    var hash = JDelta._dsHash(encodedID);
+    if(hash.substring(10-this.__hashPieceLen,10) !== hashPiece) throw new Error('hashPiece did not match!');
+    return decodeURIComponent(encodedID);
+};
+JDeltaDB.HashedDirStorage.prototype.listIDs = function(onSuccess, onError) {
+    // Our hash-based dir names and 2-layer dir structure allows us to use an optimized listing algorithm:
+    var self = this;
+    fs.readdir(this.__dirpath, function(err, files) {
+        if(err) return onError(err);
+        var hashDirs = [],
+            i, ii;
+        for(i=0, ii=files.length; i<ii; i++) {
+            if(files[i].length === self.__hashPieceLen)
+                hashDirs[hashDirs.length] = files[i];
+        }
+        var ids = [];
+        JDeltaDB._asyncMap(hashDirs,
+                           function(hashDir, next) {
+                               fs.readdir(self.__dirpath+PATH.sep+hashDir, function(err, files) {
+                                   if(err) return next(err);
+                                   var f, j, jj;
+                                   for(j=0, jj=files.length; j<jj; j++) {
+                                       f = files[j];
+                                       if(f.indexOf('.json', f.length-5) === -1) continue;
+                                       ids[ids.length] = self.__filepathToID(self.__dirpath+PATH.sep+hashDir+PATH.sep+f);
+                                   }
+                                   return next();
+                               });
+                           },
+                           function(err, _junk) {
+                               if(err) {
+                                   if(onError) return onError(err);
+                                   throw err;
+                               }
+                               ids.sort();
+                               return onSuccess(ids);
+                           });
+    });
+};
 
 
 
@@ -1243,4 +1413,4 @@ JDeltaDB._asyncOneAtATime = function(func, hasOnError) {
 
 
 
-})();
+})( (typeof window !== 'undefined') ? window : global );
