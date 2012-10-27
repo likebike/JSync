@@ -97,7 +97,6 @@ JDeltaDB.DB.prototype._load = function() {
         }
     };
     this._storage.listIDs(function(ids) {
-console.log('LOAD IDS:',ids);
         JDeltaDB._asyncMap(ids,
                            function(id, next) {
                                if(!self._states.hasOwnProperty(id)) self.createState(id, true);
@@ -908,7 +907,7 @@ JDeltaDB._DirStorage_Constructor = function(dirpath) {
     this.__statesCurrentlyInRam = {};
     this.__statesToSave = {};
     this.__stateAccessTimes = {};
-    this.__stateIdleTime = 6000;//60000;
+    this.__stateIdleTime = 600000;
     this.save = _.debounce(_.bind(this._rawSave, this), 1000);
     this.removeStatesInterval = setInterval(_.bind(this.__removeInactiveStatesFromRam, this), 10000);
 };
