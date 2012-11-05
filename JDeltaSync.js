@@ -156,6 +156,7 @@ JDeltaSync.Client = function(url, stateDB, joinDB) {
 
     this._boundStateDbEventCallback = _.bind(this._stateDbEventCallback, this);
 
+    this.stateDBD = null;
     this._setStateDB(stateDB);
     this._setJoinDB(joinDB);
 
@@ -282,6 +283,10 @@ JDeltaSync.Client.prototype._setStateDB = function(stateDB) {
     }
     this.stateDB = stateDB || new JDeltaDB.DB();
     this.stateDB.on(JDeltaSync.MATCH_ALL_REGEX, '!', this._boundStateDbEventCallback);
+    if(this.stateDBD) this.stateDBD.setDB(this.stateDB);   // Not sure if this is the best thing to do, or whether we should create a new Double, or should we fire some kind of reset event???
+};
+JDeltaSync.Client.prototype.initStateDouble = function() {
+    this.stateDBD = JDeltaDB.DBDouble(this.stateDB);
 };
 JDeltaSync.Client.prototype._setJoinDB = function(joinDB) {
     if(this.joinDB) {
@@ -374,6 +379,11 @@ JDeltaSync.Client.prototype._addToSendQueue = function(data, callback) {
                         return;
                     }
                 }
+            }
+
+            // 2012-11-05: I have found that calling the 'rollback' method triggers a send, when it really shouldn't.  Ignore these reset events because it doesn't make sense to send them to the server anyway:
+            if(data.fromRollback) {
+                return;
             }
         }
     }

@@ -145,14 +145,10 @@ JDeltaDB.DB.prototype.waitForData = function(id, callback) {
     }
 };
 JDeltaDB.DB.prototype.on = function(id, event, callback) {
-    if(!id)
-        throw new Error('Invalid id!');
-    if(!event)
-        throw new Error('Invalid event!');
-    if(!callback)
-        throw new Error('Invalid callback!');
-    if(_.isRegExp(id))
-        return this._onRegex(id, event, callback);
+    if(!id) throw new Error('Invalid id!');
+    if(!event) throw new Error('Invalid event!');
+    if(!callback) throw new Error('Invalid callback!');
+    if(_.isRegExp(id)) return this._onRegex(id, event, callback);
     var state = this._getRawState(id);
     var d = state.dispatcher;
     if(!d) d = state.dispatcher = JDelta.createDispatcher();
@@ -275,7 +271,7 @@ JDeltaDB.DB.prototype.rollback = function(id, toSeq, onSuccess, onError, _alread
             self.render(id, toSeq,
                         function(o){
                             state.state = o;
-                            self._trigger('!', id, {op:'reset'});
+                            self._trigger('!', id, {op:'reset', fromRollback:true});
                             onSuccess && onSuccess(id);
                             return unlock();
                         },
@@ -1174,6 +1170,124 @@ JDeltaDB.HashedDirStorage.prototype.listIDs = function(onSuccess, onError) {
                            });
     });
 };
+
+
+
+
+
+
+
+
+
+
+// Like a "Stunt Double", but for database states:
+// Useful for pre-loading server-rendered data for super-fast page loads.
+// In other words, allows you to pre-load rendered states without the overhead of their deltas.
+// The deltas can then be fetched when they are really needed (for edit/delta operations) ... all transparently to your app code.
+var MATCH_ALL_REGEX = /.*/;
+var ALL = 'all';
+JDeltaDB.DBDouble = function(db) {
+    if(!(this instanceof JDeltaDB.DBDouble)) return new JDeltaDB.DBDouble(db);
+    this._states = {};
+    this._regexListeners = [];
+    this._boundEventHandler = _.bind(this._eventHandler, this);
+    this.setDB(db);
+};
+var FROM_DB = {};
+JDeltaDB.DBDouble.prototype._eventHandler = function(path, id, data) {
+    if(path==='!'  && data.op==='createState') {
+        if(this._states.hasOwnProperty(id)) {
+            this.setState(id, FROM_DB, true);   // Don't fire the event to prevent flicker, since a reset is likely to come right after this, and we already had data.
+        } else {
+            this.setState(id, FROM_DB, true);
+            this._trigger(path, id, data);  // There was no previous data, so fire away.
+        }
+    } else if(path==='!'  &&  data.op==='reset') {
+        this.setState(id, FROM_DB, true);
+        this._trigger(path, id, data);
+    } else if(path.charAt(0)==='$') {
+        this.setState(id, FROM_DB, true);
+        this._trigger(path, id, data);
+    } else if(path==='!'  &&  data.op==='deltaApplied') {
+        this.setState(id, FROM_DB, true);
+        this._trigger(path, id, data);
+    } else {
+        console.log('Unknown DBDouble Event:',path, id, data, this._db._states[id], this);  // I still need to implement deleteState, which should remove the state from this._states and pass the event on.  I just haven't come across that situation yet.
+    }
+};
+JDeltaDB.DBDouble.prototype.setDB = function(db) {
+    if(this._db) {
+        this._db.off(MATCH_ALL_REGEX, ALL, this._boundEventHandler);
+    }
+    this._db = db;
+    this._db.on(MATCH_ALL_REGEX, ALL, this._boundEventHandler);
+};
+JDeltaDB.DBDouble.prototype.setState = function(id, data, silent) {
+    var isCreate = true,
+        isReset = true;
+    if(data === FROM_DB) {
+        data = this._db.getState(id);
+    } else if(this._db.contains(id)) {
+        if(this._db.getState(id) !== data) throw new Error('Different item already exists in DB:', id);
+        isReset = false;
+    }
+    if(this._states.hasOwnProperty(id)) {
+        isCreate = false;
+        this._states[id].state = data;
+    } else {
+        this._states[id] = {state:data, dispatcher:null};
+        var i, ii, l;
+        for(i=0, ii=this._regexListeners.length; i<ii; i++) {
+            l = this._regexListeners[i];
+            if(l.idRegex.test(id)) {
+                this.on(id, l.event, l.callback);
+            }
+        }
+    }
+    if(!silent) {
+        if(isCreate) this._trigger('!', id, {op:'createState'});
+        if(isReset) this._trigger('!', id, {op:'reset'});
+    }
+};
+JDeltaDB.DBDouble.prototype._getRawState = function(id) {
+    if(!this._states.hasOwnProperty(id)) {
+        if(this._db.contains(id)) {
+            this.setState(id, FROM_DB, true);
+        } else {
+            throw new Error('No such state: '+id);
+        }
+    }
+    var s = this._states[id];
+    if(!s) throw new Error('This should never happen.');
+    return s;
+};
+JDeltaDB.DBDouble.prototype.getState = JDeltaDB.DB.prototype.getState;
+JDeltaDB.DBDouble.prototype.on = JDeltaDB.DB.prototype.on;
+JDeltaDB.DBDouble.prototype.off = JDeltaDB.DB.prototype.off;
+JDeltaDB.DBDouble.prototype._onRegex = JDeltaDB.DB.prototype._onRegex;
+JDeltaDB.DBDouble.prototype._offRegex = JDeltaDB.DB.prototype._offRegex;
+JDeltaDB.DBDouble.prototype._trigger = JDeltaDB.DB.prototype._trigger;
+JDeltaDB.DBDouble.prototype.listStates = function() {
+    var states = this._db.listStates();
+    var statesMap = {},
+        i, ii, id;
+    for(i=0, ii=states.length; i<ii; i++) statesMap[states[i]] = true;
+    for(id in this._states) if(this._states.hasOwnProperty(id)) {
+        if(!statesMap.hasOwnProperty(id)) {
+            states[states.length] = id;
+        }
+    }
+    states.sort();
+    return states;
+};
+JDeltaDB.DBDouble.prototype.iterStates = JDeltaDB.DB.prototype.iterStates;
+JDeltaDB.DBDouble.prototype.contains = function(id) {
+    return this._db.contains(id)  ||  this._states.hasOwnProperty(id);
+};
+
+
+
+
 
 
 
