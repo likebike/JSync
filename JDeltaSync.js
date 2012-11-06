@@ -286,7 +286,7 @@ JDeltaSync.Client.prototype._setStateDB = function(stateDB) {
     if(this.stateDBD) this.stateDBD.setDB(this.stateDB);   // Not sure if this is the best thing to do, or whether we should create a new Double, or should we fire some kind of reset event???
 };
 JDeltaSync.Client.prototype.initStateDouble = function() {
-    this.stateDBD = JDeltaDB.DBDouble(this.stateDB);
+    this.stateDBD = JDeltaDB.DBDouble(this.stateDB, this);
 };
 JDeltaSync.Client.prototype._setJoinDB = function(joinDB) {
     if(this.joinDB) {

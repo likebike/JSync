@@ -605,6 +605,9 @@ JDeltaDB.DB.prototype.getEditHistory = function(id, onSuccess, onError) {
         return onSuccess(history);
     }, onError);
 };
+JDeltaDB.DB.prototype.getDeltas = function(id, startSeq, endSeq, onSuccess, onError) {
+    return this._storage.getDeltas(id, startSeq, endSeq, onSuccess, onError);
+};
 
 
 
@@ -1186,12 +1189,13 @@ JDeltaDB.HashedDirStorage.prototype.listIDs = function(onSuccess, onError) {
 // The deltas can then be fetched when they are really needed (for edit/delta operations) ... all transparently to your app code.
 var MATCH_ALL_REGEX = /.*/;
 var ALL = 'all';
-JDeltaDB.DBDouble = function(db) {
-    if(!(this instanceof JDeltaDB.DBDouble)) return new JDeltaDB.DBDouble(db);
+JDeltaDB.DBDouble = function(db, syncClient) {
+    if(!(this instanceof JDeltaDB.DBDouble)) return new JDeltaDB.DBDouble(db, syncClient);
     this._states = {};
     this._regexListeners = [];
     this._boundEventHandler = _.bind(this._eventHandler, this);
     this.setDB(db);
+    this._syncClient = syncClient;  // The syncClient is only necessary for auto-fetch operations.
 };
 var FROM_DB = {};
 JDeltaDB.DBDouble.prototype._eventHandler = function(path, id, data) {
@@ -1223,6 +1227,8 @@ JDeltaDB.DBDouble.prototype.setDB = function(db) {
     this._db.on(MATCH_ALL_REGEX, ALL, this._boundEventHandler);
 };
 JDeltaDB.DBDouble.prototype.setState = function(id, data, silent) {
+    if(!id) throw new Error('!id');
+    if(!data) throw new Error('!data');
     var isCreate = true,
         isReset = true;
     if(data === FROM_DB) {
@@ -1283,6 +1289,20 @@ JDeltaDB.DBDouble.prototype.listStates = function() {
 JDeltaDB.DBDouble.prototype.iterStates = JDeltaDB.DB.prototype.iterStates;
 JDeltaDB.DBDouble.prototype.contains = function(id) {
     return this._db.contains(id)  ||  this._states.hasOwnProperty(id);
+};
+JDeltaDB.DBDouble.prototype.getDeltas = function(id, startSeq, endSeq, onSuccess, onError) {
+    var self = this;
+    var afterData = function() {
+        return self._db.getDeltas(id, startSeq, endSeq, onSuccess, onError);
+    };
+    if(this._db.contains(id)) return afterData();
+    var dbType = null;
+    if(this._db === this._syncClient.stateDB) dbType = 'state';
+    else if(this._db === this._syncClient.joinDB) dbType = 'join';
+    else throw new Error('Could not find dbType.');
+    if(typeof console !== 'undefined') console.log('Auto-Fetching:', id);
+    this._syncClient.reset(dbType, id);
+    this._db.waitForData(id, afterData);
 };
 
 
