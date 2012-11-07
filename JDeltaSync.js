@@ -321,6 +321,8 @@ JDeltaSync.Client.prototype._setJoinDB = function(joinDB) {
 };
 JDeltaSync.Client.prototype._getDB = function(type) {
     switch(type) {
+        case 'stateD?': return (this.stateDBD || this.stateDB);
+        case 'stateD': return this.stateDBD;
         case 'state': return this.stateDB;
         case 'join':  return this.joinDB;
         default: throw new Error('Invalid DB type: '+type);
