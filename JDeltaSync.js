@@ -166,6 +166,15 @@ JDeltaSync.Client = function(url, stateDB, joinDB) {
     this.login();
     this.installAutoUnloader();
 };
+JDeltaSync.Client.prototype.waitForConnection = function(callback) {
+    // This function was added 2012-11-07 to enable me to create more reliable communications.
+    var self = this;
+    var check = function() {
+        if(self.connectionID) return callback(self.connectionID);
+        setTimeout(check, 100);
+    };
+    return check();
+};
 JDeltaSync.Client.prototype.connectionInfo = function() {
     // A convenience function for a frequently-needed piece of functionality.
     for(var jID in this._joins) if(this._joins.hasOwnProperty(jID)) {
@@ -176,9 +185,23 @@ JDeltaSync.Client.prototype.connectionInfo = function() {
 };
 JDeltaSync.Client.prototype.edit = function(id, operations, meta, onSuccess, onError) {
     // A convenience function for a common operation.  Makes it easier for new JDelta users to learn the API because they don't need to be aware of the internal handling of the 'from' info.
+    var self = this;
     meta = meta || {};
-    meta.from = this.connectionInfo();
-    return this.stateDB.edit(id, operations, meta, onSuccess, onError);
+    this.waitForConnection(function(connectionID) {
+        meta.from = self.connectionInfo();
+        return self.stateDB.edit(id, operations, meta, onSuccess, onError);
+    });
+};
+JDeltaSync.Client.prototype.getState = function(type, id, callback) {
+    // This is a pattern that is emerging again and again!
+    var db = this._getDB(type);
+    var afterData = function() {
+        var state = db.getState(id);
+        return callback(type, id, state);
+    };
+    if(db.contains(id)) return afterData();
+    this.reset(type, id);
+    db.waitForData(id, afterData);
 };
 JDeltaSync.Client.prototype.login = function(callback) {
     var self = this;
