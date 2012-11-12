@@ -278,7 +278,8 @@ JDeltaSync.Client.prototype.installAutoUnloader = function() {
         if(jQuery.browser.mozilla) {
             // Firefox does not support "withCredentials" for cross-domain synchronous AJAX... and can therefore not pass the cookie unless we use async.   (This might just be the most arbitrary restriction of all time.)
             self.logout();
-            for(var i=0; i<5  &&  self.connectionID; i++) {  // We must loop a few times for older versions of FF because they first issue preflighted CORS requests, which take extra time.
+            var startTime = new Date().getTime();
+            while(self.connectionID  &&  (new Date().getTime()-startTime)<3000) {  // We must loop a few times for older versions of FF because they first issue preflighted CORS requests, which take extra time.
                 // Issue a synchronouse request to give the above async some time to get to the server.
                 jQuery.ajax({url:'/jdelta_gettime',
                              cache:false,

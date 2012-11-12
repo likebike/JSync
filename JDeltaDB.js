@@ -10,33 +10,35 @@
 (function(global) {
 
 // First, install ourselves and import our dependencies:
-var JDeltaDB = {},
-    JDelta,
+var JDeltaDB = {};
+JDeltaDB._gotServerTime = false;
+JDeltaDB.serverTimeOffset = 0;
+JDeltaDB.getServerTimeOffset = function() {
+    jQuery.ajax({
+        url:'/jdelta_gettime',
+        type:'GET',
+        complete:function(jqXHR, retCodeStr) {
+            // 'complete' is always called, whether the ajax is successful or not.
+            var serverDate = new Date(jqXHR.getResponseHeader('Date'));
+            JDeltaDB.serverTimeOffset = serverDate.getTime() - new Date().getTime();
+            JDeltaDB._gotServerTime = true;
+        }
+    });
+};
+JDeltaDB.waitForServerTime = function(callback) {
+    var doCheck = function() {
+        if(JDeltaDB._gotServerTime) return callback(JDeltaDB.serverTimeOffset);
+        else return setTimeout(doCheck, 100);
+    }
+    doCheck();
+};
+
+
+var JDelta,
     _,
     fs,
     PATH,
-    undefined,   //  So undefined really will be undefined.
-    gotServerTime = false,
-    serverTimeOffset = 0,
-    getServerTimeOffset = function() {
-        jQuery.ajax({
-            url:'/jdelta_gettime',
-            type:'GET',
-            complete:function(jqXHR, retCodeStr) {
-                // 'complete' is always called, whether the ajax is successful or not.
-                var serverDate = new Date(jqXHR.getResponseHeader('Date'));
-                serverTimeOffset = serverDate.getTime() - new Date().getTime();
-                gotServerTime = true;
-            }
-        });
-    },
-    waitForServerTime = function(callback) {
-        var doCheck = function() {
-            if(gotServerTime) return callback(serverTimeOffset);
-            else return setTimeout(doCheck, 100);
-        }
-        doCheck();
-    };
+    undefined;   //  So undefined really will be undefined.
 if(typeof exports !== 'undefined') {
     // We are on Node.
     exports.JDeltaDB = JDeltaDB;
@@ -51,7 +53,7 @@ if(typeof exports !== 'undefined') {
     }
 
     // Assume that we are the time authority.
-    gotServerTime = true;
+    JDeltaDB._gotServerTime = true;
 } else if(typeof window !== 'undefined') {
     // We are in a browser.
     window.JDeltaDB = JDeltaDB;
@@ -62,7 +64,7 @@ if(typeof exports !== 'undefined') {
     jQuery = window.jQuery  ||  window.$;
     // So slide's async-map can run efficiently on Node, but also function in the browser:
     if(!global.process) global.process = {nextTick:function(fn){setTimeout(fn,0)}};    // Notice that we do not use "var process" because that would prevent Node from accessing the process global.
-    getServerTimeOffset();
+    JDeltaDB.getServerTimeOffset();
 } else throw new Error('This environment is not yet supported.');
 
 
@@ -377,7 +379,7 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, 
                 return stdOnErr(new Error('invalid parentHash: '+delta.parentHash+' != '+parentHash));
             }
 
-            waitForServerTime(function(serverTimeOffset) {
+            JDeltaDB.waitForServerTime(function(serverTimeOffset) {
                 if(!delta.meta.hasOwnProperty('date'))
                     delta.meta.date = new Date().getTime() + serverTimeOffset;
                 try {
@@ -482,7 +484,7 @@ JDeltaDB.DB.prototype.undo = function(id, meta, onSuccess, onError) {
                 var finishProcessWithPostUndoDelta = function(id, postUndoDelta) {
                     var postUndoUndoSeq = postUndoDelta.undoSeq;
                     var postUndoHash = postUndoDelta.curHash;
-                    var newMeta = _.extend(JDelta._deepCopy(postUndoDelta.meta), meta, {operation:'undo', realDate:new Date().getTime() + serverTimeOffset});  // 2012-10-23:  I reversed the order of 'meta' and the new data object... I think the user should not normally override those values.
+                    var newMeta = _.extend(JDelta._deepCopy(postUndoDelta.meta), meta, {operation:'undo', realDate:new Date().getTime() + JDeltaDB.serverTimeOffset});  // 2012-10-23:  I reversed the order of 'meta' and the new data object... I think the user should not normally override those values.
                     var hashedDelta = { steps:undoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postUndoHash, seq:newSeq, undoSeq:postUndoUndoSeq, redoSeq:newRedoSeq };
                     self._addHashedDelta(id, hashedDelta, function() {
                         onSuccess && onSuccess();
@@ -523,7 +525,7 @@ JDeltaDB.DB.prototype.redo = function(id, meta, onSuccess, onError) {
                 self._storage.getDelta(id, postRedoSeq, function(id, postRedoDelta) {
                     var postRedoRedoSeq = postRedoDelta.redoSeq;
                     var postRedoHash = postRedoDelta.curHash;
-                    var newMeta = _.extend(JDelta._deepCopy(postRedoDelta.meta), meta, {operation:'redo', realDate:new Date().getTime() + serverTimeOffset});  // 2012-10-23:  I reversed the order of 'meta' and the new data object... I think the user should not normally override those values.
+                    var newMeta = _.extend(JDelta._deepCopy(postRedoDelta.meta), meta, {operation:'redo', realDate:new Date().getTime() + JDeltaDB.serverTimeOffset});  // 2012-10-23:  I reversed the order of 'meta' and the new data object... I think the user should not normally override those values.
                     var hashedDelta = { steps:redoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postRedoHash, seq:newSeq, undoSeq:newUndoSeq, redoSeq:postRedoRedoSeq };
                     self._addHashedDelta(id, hashedDelta, function() {
                         onSuccess && onSuccess();
