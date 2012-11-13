@@ -197,7 +197,7 @@ JDeltaSync.Client.prototype.getState = function(type, id, callback) {
     var db = this._getDB(type);
     var afterData = function() {
         var state = db.getState(id);
-        return callback(type, id, state);
+        callback && callback(type, id, state);
     };
     if(db.contains(id)) return afterData();
     this.reset(type, id);
