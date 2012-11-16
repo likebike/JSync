@@ -188,8 +188,10 @@ JDeltaSync.Client.prototype.edit = function(id, operations, meta, onSuccess, onE
     var self = this;
     meta = meta || {};
     this.waitForConnection(function(connectionID) {
-        meta.from = self.connectionInfo();
-        return self.stateDB.edit(id, operations, meta, onSuccess, onError);
+        self.getState('state', id, function() {  // Auto-fetch.
+            meta.from = self.connectionInfo();
+            return self.stateDB.edit(id, operations, meta, onSuccess, onError);
+        });
     });
 };
 JDeltaSync.Client.prototype.getState = function(type, id, callback) {

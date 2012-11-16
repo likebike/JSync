@@ -320,6 +320,22 @@ JDelta._dsHash = function(s) {
 JDelta._regexEscape = function(str) { return str.replace(/[-[\]{}()*+?.,\\^$|#\s]/g, "\\$&"); };
 
 
+JDelta._join = function() {
+    var args = Array.prototype.slice.call(arguments);
+    return args.join('.');
+};
+JDelta._dirname = function(path) {
+    if(path.lastIndexOf('$.', 0) !== 0) throw new Error('Path does not start with "$."!');
+    var i = path.lastIndexOf('.');
+    return path.substring(0,i);
+};
+JDelta._basename = function(path) {
+    var i = path.lastIndexOf('.');
+    if(i === -1) throw new Error('No Period!');
+    var basename = path.substring(i+1);
+    if(!basename) throw new Error('Blank basename!');
+    return basename;
+};
 JDelta._getTarget = function(o, path) {
     if(!o)
         throw new Error('I need an Object or Array!');
