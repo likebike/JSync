@@ -136,8 +136,8 @@ JDeltaDB.DB.prototype.waitForData = function(id, callback) {
         var idRegex = RegExp('^'+JDelta._regexEscape(id)+'$');
         var event = 'all';
         var cb = function(_path, _id, _data) {
-            if(_path==='!'  &&  _data.op==='createState') return;  // There will be no data at this point.
-            if(_path==='!'  &&  _data.op==='reset') {     // Don't log this cuz we know that it is a valid data signal.
+            if(_path===null  &&  _data.op==='createState') return;  // There will be no data at this point.
+            if(_path===null  &&  _data.op==='reset') {     // Don't log this cuz we know that it is a valid data signal.
             } else console.log('waitForData: received:',_path, _id, _data);  // Comment out this line when we are out of "super-alpha" phase for this function.
             self.off(idRegex, event, cb);
             // We delay the callback to make the internals of these events more transparent to our user.  If we call directly, the user needs to be aware that if they issue any 'edit' command, and we happen to have received a 'reset' event, their 'edit' commands will be dropped because at this point the ID is still in the reset queue.  By delaying the callback, we avoid this intricacy.
@@ -148,12 +148,12 @@ JDeltaDB.DB.prototype.waitForData = function(id, callback) {
 };
 JDeltaDB.DB.prototype.on = function(id, event, callback) {
     if(!id) throw new Error('Invalid id!');
-    if(!event) throw new Error('Invalid event!');
+    if(event === undefined) throw new Error('Invalid event!');
     if(!callback) throw new Error('Invalid callback!');
     if(_.isRegExp(id)) return this._onRegex(id, event, callback);
     var state = this._getRawState(id);
     var d = state.dispatcher;
-    if(!d) d = state.dispatcher = JDelta.createDispatcher();
+    if(!d) d = state.dispatcher = JDelta.Dispatcher();
     d.on(event, callback, state);  // It is crucial that the callbacks do not modify the state!
 };
 JDeltaDB.DB.prototype.off = function(id, event, callback) {
@@ -248,7 +248,7 @@ JDeltaDB.DB.prototype.createState = function(id, doNotCreateInStorage) {
             this.on(id, l.event, l.callback);
         }
     }
-    this._trigger('!', id, {op:'createState'});
+    this._trigger(null, id, {op:'createState'});
 };
 JDeltaDB.DB.prototype.deleteState = function(id, onSuccess, onError) {
     if(!this._states.hasOwnProperty(id)) {
@@ -258,7 +258,7 @@ JDeltaDB.DB.prototype.deleteState = function(id, onSuccess, onError) {
     }
     var self = this;
     this._storage.deleteState(id, function(id) {
-        self._trigger('!', id, {op:'deleteState'});
+        self._trigger(null, id, {op:'deleteState'});
         delete self._states[id];
         if(onSuccess) return onSuccess();
     }, onError);
@@ -273,7 +273,7 @@ JDeltaDB.DB.prototype.rollback = function(id, toSeq, onSuccess, onError, _alread
             self.render(id, toSeq,
                         function(o){
                             state.state = o;
-                            self._trigger('!', id, {op:'reset', fromRollback:true});
+                            self._trigger(null, id, {op:'reset', fromRollback:true});
                             onSuccess && onSuccess(id);
                             return unlock();
                         },
@@ -393,7 +393,7 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, 
                     else throw e;
                 }
                 self._storage.addDelta(id, delta, function() {
-                    self._trigger('!', id, {op:'deltaApplied', delta:delta});
+                    self._trigger(null, id, {op:'deltaApplied', delta:delta});
                     onSuccess && onSuccess();
                     //console.log('_addHashedDelta: RELEASING LOCK:',id);
                     return unlock();
@@ -1201,20 +1201,20 @@ JDeltaDB.DBDouble = function(db, syncClient) {
 };
 var FROM_DB = {};
 JDeltaDB.DBDouble.prototype._eventHandler = function(path, id, data) {
-    if(path==='!'  && data.op==='createState') {
+    if(path===null  && data.op==='createState') {
         if(this._states.hasOwnProperty(id)) {
             this.setState(id, FROM_DB, true);   // Don't fire the event to prevent flicker, since a reset is likely to come right after this, and we already had data.
         } else {
             this.setState(id, FROM_DB, true);
             this._trigger(path, id, data);  // There was no previous data, so fire away.
         }
-    } else if(path==='!'  &&  data.op==='reset') {
+    } else if(path===null  &&  data.op==='reset') {
         this.setState(id, FROM_DB, true);
         this._trigger(path, id, data);
-    } else if(path.charAt(0)==='$') {
+    } else if(_.isArray(path)) {
         this.setState(id, FROM_DB, true);
         this._trigger(path, id, data);
-    } else if(path==='!'  &&  data.op==='deltaApplied') {
+    } else if(path===null  &&  data.op==='deltaApplied') {
         this.setState(id, FROM_DB, true);
         this._trigger(path, id, data);
     } else {
@@ -1253,8 +1253,8 @@ JDeltaDB.DBDouble.prototype.setState = function(id, data, silent) {
         }
     }
     if(!silent) {
-        if(isCreate) this._trigger('!', id, {op:'createState'});
-        if(isReset) this._trigger('!', id, {op:'reset'});
+        if(isCreate) this._trigger(null, id, {op:'createState'});
+        if(isReset) this._trigger(null, id, {op:'reset'});
     }
 };
 JDeltaDB.DBDouble.prototype._getRawState = function(id) {

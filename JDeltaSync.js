@@ -298,19 +298,19 @@ JDeltaSync.Client.prototype.installAutoUnloader = function() {
     };
 };
 
-JDeltaSync.Client.prototype._stateDbEventCallback = function(id, data) {
+JDeltaSync.Client.prototype._stateDbEventCallback = function(path, id, data) {
     data['id'] = id;
     data['type'] = 'state';
     this._addToSendQueue(data);
 };
 JDeltaSync.Client.prototype._setStateDB = function(stateDB) {
     if(this.stateDB) {
-        this.stateDB.off(JDeltaSync.MATCH_ALL_REGEX, '!', this._boundStateDbEventCallback);
+        this.stateDB.off(JDeltaSync.MATCH_ALL_REGEX, null, this._boundStateDbEventCallback);
         // Do i need to clear the send/reset queues?
         throw new Error('Unregistration of old stateDB is not implemented yet.');
     }
     this.stateDB = stateDB || new JDeltaDB.DB();
-    this.stateDB.on(JDeltaSync.MATCH_ALL_REGEX, '!', this._boundStateDbEventCallback);
+    this.stateDB.on(JDeltaSync.MATCH_ALL_REGEX, null, this._boundStateDbEventCallback);
     if(this.stateDBD) this.stateDBD.setDB(this.stateDB);   // Not sure if this is the best thing to do, or whether we should create a new Double, or should we fire some kind of reset event???
 };
 JDeltaSync.Client.prototype.initStateDouble = function() {
@@ -362,14 +362,14 @@ JDeltaSync.Client.prototype.join = function(stateID, subscribeMode) {
     return afterData();
 };
 JDeltaSync.Client.prototype.leave = function(stateID) {
-    // If you want to receive notification when the full leave is done, you can register a listener to the '!'/'deleteState' event on the stateID in the joinDB.
+    // If you want to receive notification when the full leave is done, you can register a listener to the null/'deleteState' event on the stateID in the joinDB.
     var self = this;
 
     delete this._joins[stateID];
 
     return this._addToSendQueue({op:'leave', id:stateID}, function(result) {
         if(result === 'ok') {
-            // It is OK to use the joinDB.deleteState because we don't track the '!' event, and therefore we never try to sync local modifications to the server.
+            // It is OK to use the joinDB.deleteState because we don't track the null event, and therefore we never try to sync local modifications to the server.
             self.joinDB.deleteState(stateID);  // Does not delete recursive states that got auto-pulled.  You can do that manually with joinDB.iterStates() and joinDB.deleteState().
         } else {
             if(typeof console !== 'undefined') console.log('Unexpected result while trying to leave:', result);
@@ -1244,7 +1244,7 @@ JDeltaSync.Server = function(stateDB, joinDB, accessPolicy, options) {
     this.removeStaleConnectionsInterval = setInterval(_.bind(this._removeStaleConnections, this), 10000);
     //setTimeout(_.bind(this._removeStaleConnectionsFromJoins, this), this.clientConnectionIdleTime+30000);  // An extra 30 seconds padding so we don't conflict with the above interval.
 };
-JDeltaSync.Server.prototype._joinDbEventCallback = function(id, data) {
+JDeltaSync.Server.prototype._joinDbEventCallback = function(path, id, data) {
     data['id'] = id;
     data['type'] = 'join';
     this._broadcast({data:data});
@@ -1274,7 +1274,7 @@ JDeltaSync.Server.prototype._setJoinDB = function(joinDB) {
         }
     });
 
-    this.joinDB.on(JDeltaSync.MATCH_ALL_REGEX, '!', this._boundJoinDbEventCallback);
+    this.joinDB.on(JDeltaSync.MATCH_ALL_REGEX, null, this._boundJoinDbEventCallback);
 };
 JDeltaSync.Server.prototype._getDB = JDeltaSync.Client.prototype._getDB;
 JDeltaSync.Server.prototype._removeStaleConnections = function() {
@@ -1442,18 +1442,7 @@ JDeltaSync.Server.prototype._join_addConnection = function(userID, browserID, co
     var browserInfo = JDeltaSync.browserInfo(alluserState, browserID);
     if(!browserInfo) throw new Error('browserID does not exist!');
     if(browserInfo.userID !== userID) throw new Error('userID does not match!');
-    this.joinDB.edit('/', [{op:'create', path:'$.'+userID+'.'+browserID, key:connectionID, value:JDeltaSync.Silent}]);
-
-    //// 2012-08-17: I believe it was a mistake to add the connection to all states because the behavior is not consistent.  If i really want to do this, then I need to copy all connections whenever a user joins a state... otherwise you only end up with a partial list of connections.  So rather than partial, i'd prefer to have nothing.
-    //var states = this.joinDB.listStates(),
-    //    i, ii;
-    //for(i=0, ii=states.length; i<ii; i++) {
-    //    if(states[i] === '/') continue;  // Already done above.
-    //    if(JDeltaSync.browserInfo(this.joinDB.getState(states[i]), browserID)) {
-    //        // This state has info about the affected browserID.  Edit.
-    //        this.joinDB.edit(states[i], [{op:'create', path:'$.'+userID+'.'+browserID, key:connectionID, value:JDeltaSync.Silent}]);
-    //    }
-    //}
+    this.joinDB.edit('/', [{op:'create', path:[userID, browserID], key:connectionID, value:JDeltaSync.Silent}]);
 };
 JDeltaSync.Server.prototype._join_removeConnection = function(userID, browserID, connectionID) {
     var alluserState = this.joinDB.getState('/');
@@ -1461,7 +1450,7 @@ JDeltaSync.Server.prototype._join_removeConnection = function(userID, browserID,
     if(!connectionInfo) throw new Error('connectionID not found!');
     if(connectionInfo.browserID !== browserID) throw new Error('browserID does not match!');
     if(connectionInfo.userID !== userID) throw new Error('userID does not match!');
-    this.joinDB.edit('/', [{op:'delete', path:'$.'+userID+'.'+browserID, key:connectionID}]);
+    this.joinDB.edit('/', [{op:'delete', path:[userID, browserID], key:connectionID}]);
     var states = this.joinDB.listStates(),
         state, i, ii;
     for(i=0, ii=states.length; i<ii; i++) {
@@ -1469,14 +1458,14 @@ JDeltaSync.Server.prototype._join_removeConnection = function(userID, browserID,
         state = this.joinDB.getState(states[i]);
         connectionInfo = JDeltaSync.connectionInfo(state, connectionID);
         if(connectionInfo) {
-            this.joinDB.edit(states[i], [{op:'delete', path:'$.'+userID+'.'+browserID, key:connectionID}]);
+            this.joinDB.edit(states[i], [{op:'delete', path:[userID, browserID], key:connectionID}]);
         }
     }
 };
 JDeltaSync.Server.prototype._join_addBrowser = function(browserID, onSuccess, onError) {
     var alluserState = this.joinDB.getState('/');
     if(JDeltaSync.browserInfo(alluserState, browserID)) throw new Error('browserID already exists!');
-    this.joinDB.edit('/', [{op:'create', path:'$.__NOUSER__', key:browserID, value:{}}], null, onSuccess, onError);
+    this.joinDB.edit('/', [{op:'create', path:['__NOUSER__'], key:browserID, value:{}}], null, onSuccess, onError);
 };
 JDeltaSync.Server.prototype._join_changeUserID = function(browserID, oldUserID, newUserID) {
     if(!_.isString(newUserID)) throw new Error('Invalid newUserID');
@@ -1488,8 +1477,8 @@ JDeltaSync.Server.prototype._join_changeUserID = function(browserID, oldUserID, 
     if(!browserEntry) throw new Error('No browserEntry!');  // Should never happen.
     var ops = [];
     if(!(newUserID in alluserState)) ops[ops.length] = {op:'create', key:newUserID, value:{}};
-    ops[ops.length] = {op:'create', path:'$.'+newUserID, key:browserID, value:browserEntry};
-    ops[ops.length] = {op:'delete', path:'$.'+oldUserID, key:browserID};
+    ops[ops.length] = {op:'create', path:[newUserID], key:browserID, value:browserEntry};
+    ops[ops.length] = {op:'delete', path:[oldUserID], key:browserID};
     this.joinDB.edit('/', ops);
     var states = this.joinDB.listStates(),
         state, i, ii;
@@ -1501,8 +1490,8 @@ JDeltaSync.Server.prototype._join_changeUserID = function(browserID, oldUserID, 
             browserEntry = state[oldUserID][browserID];
             ops = [];
             if(!(newUserID in state)) ops[ops.length] = {op:'create', key:newUserID, value:{}};
-            ops[ops.length] = {op:'create', path:'$.'+newUserID, key:browserID, value:browserEntry};
-            ops[ops.length] = {op:'delete', path:'$.'+oldUserID, key:browserID};
+            ops[ops.length] = {op:'create', path:[newUserID], key:browserID, value:browserEntry};
+            ops[ops.length] = {op:'delete', path:[oldUserID], key:browserID};
             this.joinDB.edit(states[i], ops);
         }
     }
@@ -1693,9 +1682,9 @@ JDeltaSync.Server.prototype.clientJoin = function(connectionID, stateID, subscri
     } else if(!state[connectionInfo.userID].hasOwnProperty(connectionInfo.browserID)) {
         var entry = {};
         entry[connectionID] = subscribeMode;
-        ops[ops.length] = {op:'create', path:'$.'+connectionInfo.userID, key:connectionInfo.browserID, value:entry};
+        ops[ops.length] = {op:'create', path:[connectionInfo.userID], key:connectionInfo.browserID, value:entry};
     } else {
-        ops[ops.length] = {op:'update!', path:'$.'+connectionInfo.userID+'.'+connectionInfo.browserID, key:connectionID, value:subscribeMode};
+        ops[ops.length] = {op:'update!', path:[connectionInfo.userID, connectionInfo.browserID], key:connectionID, value:subscribeMode};
     }
     return this.joinDB.edit(stateID, ops, null, onSuccess, onError);
 };
@@ -1711,7 +1700,7 @@ JDeltaSync.Server.prototype.clientLeave = function(connectionID, stateID, onSucc
         if(onError) return onError(err);
         else throw err;
     }
-    this.joinDB.edit(stateID, [{op:'delete', path:'$.'+connectionInfo.userID+'.'+connectionInfo.browserID, key:connectionID}], null, onSuccess, onError);
+    this.joinDB.edit(stateID, [{op:'delete', path:[connectionInfo.userID, connectionInfo.browserID], key:connectionID}], null, onSuccess, onError);
 };
 JDeltaSync.Server.prototype.listStates = function(type, ids, onSuccess, onError) {
     if(!_.isArray(ids)) {

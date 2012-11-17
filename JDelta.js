@@ -12,18 +12,15 @@
 // First, install ourselves and import our dependencies:
 var JDelta = {},
     _,
-    Backbone,
     undefined;   //  So undefined really will be undefined.
 if(typeof exports !== 'undefined') {
     // We are on Node.
     exports.JDelta = JDelta;
-    _ = require('underscore'),
-    Backbone = require('backbone');
+    _ = require('underscore');
 } else if(typeof window !== 'undefined') {
     // We are in a browser.
     window.JDelta = JDelta;
-    _ = window._,
-    Backbone = window.Backbone;
+    _ = window._;
 } else throw new Error('This environment is not yet supported.');
     
 
@@ -321,34 +318,29 @@ JDelta._regexEscape = function(str) { return str.replace(/[-[\]{}()*+?.,\\^$|#\s
 
 
 JDelta._join = function() {
-    var args = Array.prototype.slice.call(arguments);
-    return args.join('.');
+    var basenames = Array.prototype.slice.call(arguments);
+    var path = basenames.shift();
+    if(!_.isArray(path)) throw new Error('Non-Array path!');
+    return path.concat(basenames);
 };
 JDelta._dirname = function(path) {
-    if(path.lastIndexOf('$.', 0) !== 0) throw new Error('Path does not start with "$."!');
-    var i = path.lastIndexOf('.');
-    return path.substring(0,i);
+    if(!_.isArray(path)) throw new Error('Non-Array path!');
+    if(!path.length) throw new Error('Empty path!');
+    return path.slice(0, path.length-1);
 };
 JDelta._basename = function(path) {
-    var i = path.lastIndexOf('.');
-    if(i === -1) throw new Error('No Period!');
-    var basename = path.substring(i+1);
-    if(!basename) throw new Error('Blank basename!');
-    return basename;
+    if(!_.isArray(path)) throw new Error('Non-Array path!');
+    if(!path.length) throw new Error('Empty path!');
+    return path[path.length-1];
 };
 JDelta._getTarget = function(o, path) {
-    if(!o)
-        throw new Error('I need an Object or Array!');
-    if(!path)
-        throw new Error('I need a path!');
-    var pieces = path.split('.');
-    if(pieces[0] !== '$')
-        throw new Error('The first path item must be $!');
+    if(!o) throw new Error('I need an Object or Array!');
+    if(!path) throw new Error('I need a path!');
+    if(!_.isArray(path)) throw new Error('path must be an Array: '+path);
     var i, ii;
-    for(i=1, ii=pieces.length; i<ii; i++) {
-        o = o[pieces[i]];
-        if(!o)
-            throw new Error('Path not found');
+    for(i=0, ii=path.length; i<ii; i++) {
+        o = o[path[i]];
+        if(!o) throw new Error('Path not found');
     }
     return o;
 }
@@ -376,7 +368,7 @@ JDelta.create = function(state, operations) {
             throw new Error('STEP IS UNDEFINED!  Occurs on Internet Explorer when you have a trailing comma in one of your data structures.');
         }
         op = step.op;
-        path = step.path  ||  '$';
+        path = step.path  ||  [];
         key = step.key;
         value = step.value;
         if(op === undefined)
@@ -451,7 +443,7 @@ JDelta.reverse = function(delta) {
     if(delta.steps === undefined)
         throw new Error("Not a Delta object!");
     var reversedSteps = [],
-        i, fstep, rstep, op;
+        i, fstep, rstep, op;  // 2012-11-16: I think 'fstep' means "forward step", and 'rstep' means "reverse step".
     for(i=delta.steps.length-1; i>=0; i--) {
         fstep = delta.steps[i];
         rstep = {path:fstep.path, key:fstep.key};
@@ -493,11 +485,9 @@ JDelta.patch = function(id, state, delta, dispatcher) {
         step = steps[i];
         op = step.op  ||  'obj';
         path = step.path;
-        if(path === undefined)
-            throw new Error('undefined path!');
+        if(!path) throw new Error('undefined path!');
         key = step.key;
-        if(key === undefined)
-            throw new Error('undefined key!');
+        if(!key) throw new Error('undefined key!');
         target = JDelta._getTarget(state, path);
 
         switch(op) {
@@ -573,9 +563,56 @@ JDelta.render = function(id, deltas) {
 };
 
 
-JDelta.createDispatcher = function() {
-    // This function is here mostly so that our end-users don't need to import Underscore and Backbone just to create a dispatcher.
-    return _.clone(Backbone.Events);
+// Inspired by Backbone.Events.
+// I was originally using Backbone.Events, but I decided to replace it
+// when moving from stings to array-based paths.
+JDelta.ALL_EVENTS = 'all'
+JDelta.Dispatcher = function() {
+    if(!(this instanceof JDelta.Dispatcher)) return new JDelta.Dispatcher();
+    this.listeners = [];
+};
+JDelta.Dispatcher.prototype.on = function(event, callback, context) {
+    if(event!==JDelta.ALL_EVENTS  &&  event!==null  &&  !_.isArray(event)) throw new Error('Illegal Event: '+JSON.stringify(event));
+    this.listeners[this.listeners.length] = {event:event, callback:callback, context:context};
+};
+JDelta.Dispatcher.prototype.off = function(event, callback, context) {
+    if(event!==JDelta.ALL_EVENTS  &&  event!==null  &&  !_.isArray(event)) throw new Error('Illegal Event: '+JSON.stringify(event));
+    var eventStr = JDelta.stringify(event),
+        i, l;
+    for(i=this.listeners.length-1; i>=0; i--) {
+        l = this.listeners[i];
+        if(_.isEqual(l.event, event)  &&  l.callback===callback  &&  l.context===context)
+            this.listeners.splice(i, 1);  // Remove.
+    }
+};
+JDelta._strArray_startsWith = function(arr, subArr) {
+    if(arr === subArr) return true;
+    if(!_.isArray(arr)) return false;
+    if(!_.isArray(subArr)) return false;
+    if(subArr.length > arr.length) return false;  // Can't start with something longer.
+    var i, ii;
+    for(i=0, ii=subArr.length; i<ii; i++) {
+        if(subArr[i] !== arr[i]) return false;
+    }
+    return true;
+};
+JDelta.Dispatcher.prototype.trigger = function() {
+    var args = Array.prototype.slice.call(arguments);
+    var event = args[0],
+        Ls = this.listeners,
+        ALL = JDelta.ALL_EVENTS,
+        startswith = JDelta._strArray_startsWith,
+        el, i, ii;
+    if(event!==ALL  &&  event!==null  &&  !_.isArray(event)) throw new Error('Illegal Event: '+JSON.stringify(event));
+    for(i=0, ii=Ls.length; i<ii; i++) {
+        el = Ls[i];
+        if(el.event===ALL
+        || el.event===event  // For null events.
+        || startswith(event, el.event)) {
+            // Fire!
+            el.callback.apply(el.context, args);
+        }
+    }
 };
 
 })();
