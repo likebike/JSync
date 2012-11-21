@@ -236,7 +236,7 @@ JDeltaDB.DB.prototype._getRawState = function(id) {
 JDeltaDB.DB.prototype.getState = function(id) {
     return this._getRawState(id).state;
 };
-JDeltaDB.DB.prototype.createState = function(id, doNotCreateInStorage) {
+JDeltaDB.DB.prototype.createState = function(id, doNotCreateInStorage, doNotFireEvent) {
     if(this._states.hasOwnProperty(id))
         throw new Error('State already exists: '+id);
     this._states[id] = {state:{}, dispatcher:null};   /// 2012-10-27: moved this line up by 1 line (before the storage create instead of after.  Because i added the 'autoCreate' option for getState, and i was getting 'alreadyExists' errors.
@@ -248,7 +248,10 @@ JDeltaDB.DB.prototype.createState = function(id, doNotCreateInStorage) {
             this.on(id, l.event, l.callback);
         }
     }
-    this._trigger(null, id, {op:'createState'});
+    // The doNotFireEvent flag is useful from the 'setDeltas' function because we need
+    // to be able to create states but not propagate the event to the server.  If I
+    // find that I need this event locally I will need to switch to an alternate solution:
+    if(!doNotFireEvent) this._trigger(null, id, {op:'createState'});
 };
 JDeltaDB.DB.prototype.deleteState = function(id, onSuccess, onError) {
     if(!this._states.hasOwnProperty(id)) {
@@ -609,6 +612,35 @@ JDeltaDB.DB.prototype.getEditHistory = function(id, onSuccess, onError) {
 };
 JDeltaDB.DB.prototype.getDeltas = function(id, startSeq, endSeq, onSuccess, onError) {
     return this._storage.getDeltas(id, startSeq, endSeq, onSuccess, onError);
+};
+JDeltaDB.DB.prototype.setDeltas = function(id, deltas, onSuccess, onError) {
+    // Added 2012-11-21 to enable server-side prepopulation of items.
+    // (We already had StateDBD's setState(), but that didn't help for items
+    // that would require editing.
+    var self = this,
+        i, ii;
+    // Create new states:
+    if(!this.contains(id)) { this.createState(id, undefined, true); }
+    // Delete old deltas so we can start fresh:
+    this._storage.deleteState(id, function() {
+        // Re-create the storage state:
+        self._storage.createStateSync(id);
+        // Now add the deltas:
+        JDeltaDB._asyncMap(deltas,
+                           function(delta, next) {
+                               if(delta.seq === 0) return next();  // Skip the pseudo-delta.
+                               self._storage.addDelta(id, delta, function() {
+                                                          return next();
+                                                      }, function(err) {
+                                                          if(typeof console !== 'undefined') console.log('setDeltas addDelta Error:', id, err);
+                                                          return next(); // Just keep going.
+                                                      });
+                           }, function(err, _junk) {
+                               if(err) throw new Error('This should never happen.');
+                               // At this point, we have added all the deltas.  Now trigger rollbacks:
+                               self.rollback(id);  // This will trigger the 'reset' event.
+                           });
+    });
 };
 
 

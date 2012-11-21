@@ -599,7 +599,7 @@ JDelta._strArray_startsWith = function(arr, subArr) {
 JDelta.Dispatcher.prototype.trigger = function() {
     var args = Array.prototype.slice.call(arguments);
     var event = args[0],
-        Ls = this.listeners,
+        Ls = this.listeners.slice(),  // Make a copy because listeners can be modified from the event handlers (like removing the handlers for one-shot handlers).
         ALL = JDelta.ALL_EVENTS,
         startswith = JDelta._strArray_startsWith,
         el, i, ii;
