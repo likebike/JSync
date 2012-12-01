@@ -387,7 +387,7 @@ JDelta.create = function(state, operations) {
                 break;
             case 'update':
                 if(value === undefined)
-                    throw new Error('undefined value!');
+                    throw new Error('undefined value!');  // If you want to set something to undefined, just delete instead.
                 if(!(key in target))
                     throw new Error('Not in target: '+key);
                 steps[steps.length] = {path:path, key:key, before:JDelta._deepCopy(target[key]), after:JDelta._deepCopy(value)};
@@ -395,7 +395,7 @@ JDelta.create = function(state, operations) {
                 break;
             case 'update!':
                 if(value === undefined)
-                    throw new Error('undefined value!');
+                    throw new Error('undefined value!');  // If you want to set something to undefined, just delete instead.
                 if(key in target) {
                     // Update.
                     steps[steps.length] = {path:path, key:key, before:JDelta._deepCopy(target[key]), after:JDelta._deepCopy(value)};
