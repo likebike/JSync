@@ -229,8 +229,7 @@ JDeltaDB.DB.prototype.contains = function(id) {
     return this._states.hasOwnProperty(id);
 };
 JDeltaDB.DB.prototype._getRawState = function(id) {
-    if(!this._states.hasOwnProperty(id))
-        throw new Error('No such state: '+id);
+    if(!this._states.hasOwnProperty(id)) throw new Error('No such state: "'+id+'"');
     return this._states[id];
 };
 JDeltaDB.DB.prototype.getState = function(id) {
@@ -1334,7 +1333,7 @@ JDeltaDB.DBDouble.prototype.getDeltas = function(id, startSeq, endSeq, onSuccess
     if(this._db === this._syncClient.stateDB) dbType = 'state';
     else if(this._db === this._syncClient.joinDB) dbType = 'join';
     else throw new Error('Could not find dbType.');
-    if(typeof console !== 'undefined') console.log('Auto-Fetching:', id);
+    //if(typeof console !== 'undefined') console.log('Auto-Fetching:', id);
     this._syncClient.reset(dbType, id);
     this._db.waitForData(id, afterData);
 };
