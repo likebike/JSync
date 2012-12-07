@@ -202,7 +202,7 @@ JDeltaSync.Client.prototype.getState = function(type, id, callback) {
         callback && callback(type, id, state);
     };
     if(db.contains(id)) return afterData();
-    console.log('syncClient getState auto-fetch:', id);
+    //if(typeof console !== 'undefined') console.log('syncClient getState auto-fetch:', type, id);
     this.reset(type, id);
     db.waitForData(id, afterData);
 };
