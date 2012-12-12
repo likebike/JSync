@@ -170,7 +170,19 @@ JDeltaSync.Client.prototype.waitForConnection = function(callback) {
     // This function was added 2012-11-07 to enable me to create more reliable communications.
     var self = this;
     var check = function() {
-        if(self.connectionID) return callback(self.connectionID);
+        if(self.connectionID) {
+            // We got a connection.  Now wait for the join:  (Added 2012-12-11)
+            try {
+                var cinfo = self.connectionInfo();
+                if(cinfo) return callback(cinfo);
+            } catch(err) {
+                if(err.message.lastIndexOf('No such state:', 0) === 0) {
+                    // Ignore.
+                } else {
+                    if(typeof console !== 'undefined') console.log('Error during waitForConnection:',err);
+                }
+            }
+        }
         setTimeout(check, 100);
     };
     return check();
@@ -187,9 +199,9 @@ JDeltaSync.Client.prototype.edit = function(id, operations, meta, onSuccess, onE
     // A convenience function for a common operation.  Makes it easier for new JDelta users to learn the API because they don't need to be aware of the internal handling of the 'from' info.
     var self = this;
     meta = meta || {};
-    this.waitForConnection(function(connectionID) {
+    this.waitForConnection(function(connectionInfo) {
         self.getState('state', id, function() {  // Auto-fetch.
-            meta.from = self.connectionInfo();
+            meta.from = connectionInfo;
             return self.stateDB.edit(id, operations, meta, onSuccess, onError);
         });
     });
