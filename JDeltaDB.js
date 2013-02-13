@@ -10,33 +10,35 @@
 (function(global) {
 
 // First, install ourselves and import our dependencies:
-var JDeltaDB = {},
-    JDelta,
+var JDeltaDB = {};
+JDeltaDB._gotServerTime = false;
+JDeltaDB.serverTimeOffset = 0;
+JDeltaDB.getServerTimeOffset = function() {
+    jQuery.ajax({
+        url:'/jdelta_gettime',
+        type:'GET',
+        complete:function(jqXHR, retCodeStr) {
+            // 'complete' is always called, whether the ajax is successful or not.
+            var serverDate = new Date(jqXHR.getResponseHeader('Date'));
+            JDeltaDB.serverTimeOffset = serverDate.getTime() - new Date().getTime();
+            JDeltaDB._gotServerTime = true;
+        }
+    });
+};
+JDeltaDB.waitForServerTime = function(callback) {
+    var doCheck = function() {
+        if(JDeltaDB._gotServerTime) return callback(JDeltaDB.serverTimeOffset);
+        else return setTimeout(doCheck, 100);
+    }
+    doCheck();
+};
+
+
+var JDelta,
     _,
     fs,
     PATH,
-    undefined,   //  So undefined really will be undefined.
-    gotServerTime = false,
-    serverTimeOffset = 0,
-    getServerTimeOffset = function() {
-        jQuery.ajax({
-            url:'/jdelta_gettime',
-            type:'GET',
-            complete:function(jqXHR, retCodeStr) {
-                // 'complete' is always called, whether the ajax is successful or not.
-                var serverDate = new Date(jqXHR.getResponseHeader('Date'));
-                serverTimeOffset = serverDate.getTime() - new Date().getTime();
-                gotServerTime = true;
-            }
-        });
-    },
-    waitForServerTime = function(callback) {
-        var doCheck = function() {
-            if(gotServerTime) return callback(serverTimeOffset);
-            else return setTimeout(doCheck, 100);
-        }
-        doCheck();
-    };
+    undefined;   //  So undefined really will be undefined.
 if(typeof exports !== 'undefined') {
     // We are on Node.
     exports.JDeltaDB = JDeltaDB;
@@ -51,7 +53,7 @@ if(typeof exports !== 'undefined') {
     }
 
     // Assume that we are the time authority.
-    gotServerTime = true;
+    JDeltaDB._gotServerTime = true;
 } else if(typeof window !== 'undefined') {
     // We are in a browser.
     window.JDeltaDB = JDeltaDB;
@@ -62,7 +64,7 @@ if(typeof exports !== 'undefined') {
     jQuery = window.jQuery  ||  window.$;
     // So slide's async-map can run efficiently on Node, but also function in the browser:
     if(!global.process) global.process = {nextTick:function(fn){setTimeout(fn,0)}};    // Notice that we do not use "var process" because that would prevent Node from accessing the process global.
-    getServerTimeOffset();
+    JDeltaDB.getServerTimeOffset();
 } else throw new Error('This environment is not yet supported.');
 
 
@@ -134,8 +136,8 @@ JDeltaDB.DB.prototype.waitForData = function(id, callback) {
         var idRegex = RegExp('^'+JDelta._regexEscape(id)+'$');
         var event = 'all';
         var cb = function(_path, _id, _data) {
-            if(_path==='!'  &&  _data.op==='createState') return;  // There will be no data at this point.
-            if(_path==='!'  &&  _data.op==='reset') {     // Don't log this cuz we know that it is a valid data signal.
+            if(_path===null  &&  _data.op==='createState') return;  // There will be no data at this point.
+            if(_path===null  &&  _data.op==='reset') {     // Don't log this cuz we know that it is a valid data signal.
             } else console.log('waitForData: received:',_path, _id, _data);  // Comment out this line when we are out of "super-alpha" phase for this function.
             self.off(idRegex, event, cb);
             // We delay the callback to make the internals of these events more transparent to our user.  If we call directly, the user needs to be aware that if they issue any 'edit' command, and we happen to have received a 'reset' event, their 'edit' commands will be dropped because at this point the ID is still in the reset queue.  By delaying the callback, we avoid this intricacy.
@@ -145,17 +147,13 @@ JDeltaDB.DB.prototype.waitForData = function(id, callback) {
     }
 };
 JDeltaDB.DB.prototype.on = function(id, event, callback) {
-    if(!id)
-        throw new Error('Invalid id!');
-    if(!event)
-        throw new Error('Invalid event!');
-    if(!callback)
-        throw new Error('Invalid callback!');
-    if(_.isRegExp(id))
-        return this._onRegex(id, event, callback);
+    if(!id) throw new Error('Invalid id!');
+    if(event === undefined) throw new Error('Invalid event!');
+    if(!callback) throw new Error('Invalid callback!');
+    if(_.isRegExp(id)) return this._onRegex(id, event, callback);
     var state = this._getRawState(id);
     var d = state.dispatcher;
-    if(!d) d = state.dispatcher = JDelta.createDispatcher();
+    if(!d) d = state.dispatcher = JDelta.Dispatcher();
     d.on(event, callback, state);  // It is crucial that the callbacks do not modify the state!
 };
 JDeltaDB.DB.prototype.off = function(id, event, callback) {
@@ -231,14 +229,13 @@ JDeltaDB.DB.prototype.contains = function(id) {
     return this._states.hasOwnProperty(id);
 };
 JDeltaDB.DB.prototype._getRawState = function(id) {
-    if(!this._states.hasOwnProperty(id))
-        throw new Error('No such state: '+id);
+    if(!this._states.hasOwnProperty(id)) throw new Error('No such state: "'+id+'"');
     return this._states[id];
 };
 JDeltaDB.DB.prototype.getState = function(id) {
     return this._getRawState(id).state;
 };
-JDeltaDB.DB.prototype.createState = function(id, doNotCreateInStorage) {
+JDeltaDB.DB.prototype.createState = function(id, doNotCreateInStorage, doNotFireEvent) {
     if(this._states.hasOwnProperty(id))
         throw new Error('State already exists: '+id);
     this._states[id] = {state:{}, dispatcher:null};   /// 2012-10-27: moved this line up by 1 line (before the storage create instead of after.  Because i added the 'autoCreate' option for getState, and i was getting 'alreadyExists' errors.
@@ -250,7 +247,10 @@ JDeltaDB.DB.prototype.createState = function(id, doNotCreateInStorage) {
             this.on(id, l.event, l.callback);
         }
     }
-    this._trigger('!', id, {op:'createState'});
+    // The doNotFireEvent flag is useful from the 'setDeltas' function because we need
+    // to be able to create states but not propagate the event to the server.  If I
+    // find that I need this event locally I will need to switch to an alternate solution:
+    if(!doNotFireEvent) this._trigger(null, id, {op:'createState'});
 };
 JDeltaDB.DB.prototype.deleteState = function(id, onSuccess, onError) {
     if(!this._states.hasOwnProperty(id)) {
@@ -260,7 +260,7 @@ JDeltaDB.DB.prototype.deleteState = function(id, onSuccess, onError) {
     }
     var self = this;
     this._storage.deleteState(id, function(id) {
-        self._trigger('!', id, {op:'deleteState'});
+        self._trigger(null, id, {op:'deleteState'});
         delete self._states[id];
         if(onSuccess) return onSuccess();
     }, onError);
@@ -275,7 +275,7 @@ JDeltaDB.DB.prototype.rollback = function(id, toSeq, onSuccess, onError, _alread
             self.render(id, toSeq,
                         function(o){
                             state.state = o;
-                            self._trigger('!', id, {op:'reset'});
+                            self._trigger(null, id, {op:'reset', fromRollback:true});
                             onSuccess && onSuccess(id);
                             return unlock();
                         },
@@ -381,7 +381,7 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, 
                 return stdOnErr(new Error('invalid parentHash: '+delta.parentHash+' != '+parentHash));
             }
 
-            waitForServerTime(function(serverTimeOffset) {
+            JDeltaDB.waitForServerTime(function(serverTimeOffset) {
                 if(!delta.meta.hasOwnProperty('date'))
                     delta.meta.date = new Date().getTime() + serverTimeOffset;
                 try {
@@ -395,7 +395,7 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, 
                     else throw e;
                 }
                 self._storage.addDelta(id, delta, function() {
-                    self._trigger('!', id, {op:'deltaApplied', delta:delta});
+                    self._trigger(null, id, {op:'deltaApplied', delta:delta});
                     onSuccess && onSuccess();
                     //console.log('_addHashedDelta: RELEASING LOCK:',id);
                     return unlock();
@@ -486,7 +486,7 @@ JDeltaDB.DB.prototype.undo = function(id, meta, onSuccess, onError) {
                 var finishProcessWithPostUndoDelta = function(id, postUndoDelta) {
                     var postUndoUndoSeq = postUndoDelta.undoSeq;
                     var postUndoHash = postUndoDelta.curHash;
-                    var newMeta = _.extend(JDelta._deepCopy(postUndoDelta.meta), meta, {operation:'undo', realDate:new Date().getTime() + serverTimeOffset});  // 2012-10-23:  I reversed the order of 'meta' and the new data object... I think the user should not normally override those values.
+                    var newMeta = _.extend(JDelta._deepCopy(postUndoDelta.meta), meta, {operation:'undo', realDate:new Date().getTime() + JDeltaDB.serverTimeOffset});  // 2012-10-23:  I reversed the order of 'meta' and the new data object... I think the user should not normally override those values.
                     var hashedDelta = { steps:undoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postUndoHash, seq:newSeq, undoSeq:postUndoUndoSeq, redoSeq:newRedoSeq };
                     self._addHashedDelta(id, hashedDelta, function() {
                         onSuccess && onSuccess();
@@ -527,7 +527,7 @@ JDeltaDB.DB.prototype.redo = function(id, meta, onSuccess, onError) {
                 self._storage.getDelta(id, postRedoSeq, function(id, postRedoDelta) {
                     var postRedoRedoSeq = postRedoDelta.redoSeq;
                     var postRedoHash = postRedoDelta.curHash;
-                    var newMeta = _.extend(JDelta._deepCopy(postRedoDelta.meta), meta, {operation:'redo', realDate:new Date().getTime() + serverTimeOffset});  // 2012-10-23:  I reversed the order of 'meta' and the new data object... I think the user should not normally override those values.
+                    var newMeta = _.extend(JDelta._deepCopy(postRedoDelta.meta), meta, {operation:'redo', realDate:new Date().getTime() + JDeltaDB.serverTimeOffset});  // 2012-10-23:  I reversed the order of 'meta' and the new data object... I think the user should not normally override those values.
                     var hashedDelta = { steps:redoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postRedoHash, seq:newSeq, undoSeq:newUndoSeq, redoSeq:postRedoRedoSeq };
                     self._addHashedDelta(id, hashedDelta, function() {
                         onSuccess && onSuccess();
@@ -608,6 +608,38 @@ JDeltaDB.DB.prototype.getEditHistory = function(id, onSuccess, onError) {
         }
         return onSuccess(history);
     }, onError);
+};
+JDeltaDB.DB.prototype.getDeltas = function(id, startSeq, endSeq, onSuccess, onError) {
+    return this._storage.getDeltas(id, startSeq, endSeq, onSuccess, onError);
+};
+JDeltaDB.DB.prototype.setDeltas = function(id, deltas, onSuccess, onError) {
+    // Added 2012-11-21 to enable server-side prepopulation of items.
+    // (We already had StateDBD's setState(), but that didn't help for items
+    // that would require editing.
+    var self = this,
+        i, ii;
+    // Create new states:
+    if(!this.contains(id)) { this.createState(id, undefined, true); }
+    // Delete old deltas so we can start fresh:
+    this._storage.deleteState(id, function() {
+        // Re-create the storage state:
+        self._storage.createStateSync(id);
+        // Now add the deltas:
+        JDeltaDB._asyncMap(deltas,
+                           function(delta, next) {
+                               if(delta.seq === 0) return next();  // Skip the pseudo-delta.
+                               self._storage.addDelta(id, delta, function() {
+                                                          return next();
+                                                      }, function(err) {
+                                                          if(typeof console !== 'undefined') console.log('setDeltas addDelta Error:', id, err);
+                                                          return next(); // Just keep going.
+                                                      });
+                           }, function(err, _junk) {
+                               if(err) throw new Error('This should never happen.');
+                               // At this point, we have added all the deltas.  Now trigger rollbacks:
+                               self.rollback(id);  // This will trigger the 'reset' event.
+                           });
+    });
 };
 
 
@@ -1174,6 +1206,141 @@ JDeltaDB.HashedDirStorage.prototype.listIDs = function(onSuccess, onError) {
                            });
     });
 };
+
+
+
+
+
+
+
+
+
+
+// Like a "Stunt Double", but for database states:
+// Useful for pre-loading server-rendered data for super-fast page loads.
+// In other words, allows you to pre-load rendered states without the overhead of their deltas.
+// The deltas can then be fetched when they are really needed (for edit/delta operations) ... all transparently to your app code.
+var MATCH_ALL_REGEX = /.*/;
+var ALL = 'all';
+JDeltaDB.DBDouble = function(db, syncClient) {
+    if(!(this instanceof JDeltaDB.DBDouble)) return new JDeltaDB.DBDouble(db, syncClient);
+    this._states = {};
+    this._regexListeners = [];
+    this._boundEventHandler = _.bind(this._eventHandler, this);
+    this.setDB(db);
+    this._syncClient = syncClient;  // The syncClient is only necessary for auto-fetch operations.
+};
+var FROM_DB = {};
+JDeltaDB.DBDouble.prototype._eventHandler = function(path, id, data) {
+    if(path===null  && data.op==='createState') {
+        if(this._states.hasOwnProperty(id)) {
+            this.setState(id, FROM_DB, true);   // Don't fire the event to prevent flicker, since a reset is likely to come right after this, and we already had data.
+        } else {
+            this.setState(id, FROM_DB, true);
+            this._trigger(path, id, data);  // There was no previous data, so fire away.
+        }
+    } else if(path===null  &&  data.op==='reset') {
+        this.setState(id, FROM_DB, true);
+        this._trigger(path, id, data);
+    } else if(_.isArray(path)) {
+        this.setState(id, FROM_DB, true);
+        this._trigger(path, id, data);
+    } else if(path===null  &&  data.op==='deltaApplied') {
+        this.setState(id, FROM_DB, true);
+        this._trigger(path, id, data);
+    } else {
+        console.log('Unknown DBDouble Event:',path, id, data, this._db._states[id], this);  // I still need to implement deleteState, which should remove the state from this._states and pass the event on.  I just haven't come across that situation yet.
+    }
+};
+JDeltaDB.DBDouble.prototype.setDB = function(db) {
+    if(this._db) {
+        this._db.off(MATCH_ALL_REGEX, ALL, this._boundEventHandler);
+    }
+    this._db = db;
+    this._db.on(MATCH_ALL_REGEX, ALL, this._boundEventHandler);
+};
+JDeltaDB.DBDouble.prototype.setState = function(id, data, silent) {
+    if(!id) throw new Error('!id');
+    if(!data) throw new Error('!data');
+    var isCreate = true,
+        isReset = true;
+    if(data === FROM_DB) {
+        data = this._db.getState(id);
+    } else if(this._db.contains(id)) {
+        if(this._db.getState(id) !== data) throw new Error('Different item already exists in DB:', id);
+        isReset = false;
+    }
+    if(this._states.hasOwnProperty(id)) {
+        isCreate = false;
+        this._states[id].state = data;
+    } else {
+        this._states[id] = {state:data, dispatcher:null};
+        var i, ii, l;
+        for(i=0, ii=this._regexListeners.length; i<ii; i++) {
+            l = this._regexListeners[i];
+            if(l.idRegex.test(id)) {
+                this.on(id, l.event, l.callback);
+            }
+        }
+    }
+    if(!silent) {
+        if(isCreate) this._trigger(null, id, {op:'createState'});
+        if(isReset) this._trigger(null, id, {op:'reset'});
+    }
+};
+JDeltaDB.DBDouble.prototype._getRawState = function(id) {
+    if(!this._states.hasOwnProperty(id)) {
+        if(this._db.contains(id)) {
+            this.setState(id, FROM_DB, true);
+        } else {
+            throw new Error('No such state: '+id);
+        }
+    }
+    var s = this._states[id];
+    if(!s) throw new Error('This should never happen.');
+    return s;
+};
+JDeltaDB.DBDouble.prototype.getState = JDeltaDB.DB.prototype.getState;
+JDeltaDB.DBDouble.prototype.on = JDeltaDB.DB.prototype.on;
+JDeltaDB.DBDouble.prototype.off = JDeltaDB.DB.prototype.off;
+JDeltaDB.DBDouble.prototype._onRegex = JDeltaDB.DB.prototype._onRegex;
+JDeltaDB.DBDouble.prototype._offRegex = JDeltaDB.DB.prototype._offRegex;
+JDeltaDB.DBDouble.prototype._trigger = JDeltaDB.DB.prototype._trigger;
+JDeltaDB.DBDouble.prototype.listStates = function() {
+    var states = this._db.listStates();
+    var statesMap = {},
+        i, ii, id;
+    for(i=0, ii=states.length; i<ii; i++) statesMap[states[i]] = true;
+    for(id in this._states) if(this._states.hasOwnProperty(id)) {
+        if(!statesMap.hasOwnProperty(id)) {
+            states[states.length] = id;
+        }
+    }
+    states.sort();
+    return states;
+};
+JDeltaDB.DBDouble.prototype.iterStates = JDeltaDB.DB.prototype.iterStates;
+JDeltaDB.DBDouble.prototype.contains = function(id) {
+    return this._db.contains(id)  ||  this._states.hasOwnProperty(id);
+};
+JDeltaDB.DBDouble.prototype.getDeltas = function(id, startSeq, endSeq, onSuccess, onError) {
+    var self = this;
+    var afterData = function() {
+        return self._db.getDeltas(id, startSeq, endSeq, onSuccess, onError);
+    };
+    if(this._db.contains(id)) return afterData();
+    var dbType = null;
+    if(this._db === this._syncClient.stateDB) dbType = 'state';
+    else if(this._db === this._syncClient.joinDB) dbType = 'join';
+    else throw new Error('Could not find dbType.');
+    //if(typeof console !== 'undefined') console.log('Auto-Fetching:', id);
+    this._syncClient.reset(dbType, id);
+    this._db.waitForData(id, afterData);
+};
+
+
+
+
 
 
 
