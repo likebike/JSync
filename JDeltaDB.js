@@ -1579,4 +1579,16 @@ JDeltaDB._asyncOneAtATime = function(func, hasOnError) {
 
 
 
+
+
+//// 2013-10-14: I find that I need these in all my webapps:
+var jdID_to_htmlID = function(jdID) { return jdID.replace(/\//g, "_"); };
+var htmlID_to_jdID = function(htmlID) { return htmlID.replace(/_/g, '/'); };
+
+
+
+
+
+
+
 })( (typeof window !== 'undefined') ? window : global );

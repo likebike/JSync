@@ -30,7 +30,6 @@ if(typeof exports !== 'undefined') {
     jQuery = window.jQuery  ||  window.$;
 } else throw new Error('This environment is not yet supported.');
 
-JDeltaSync.VERSION = '0.2.0';
 
 
 JDeltaSync.extraAjaxOptions = { xhrFields: {withCredentials:true} };    // Enable CORS cookies.
@@ -125,6 +124,26 @@ JDeltaSync.userInfo = function(joinState, userID) {
     return null;
 };
 
+
+
+
+JDeltaSync.FULL_RT_CLIENT = function(url) {
+    if(!(this instanceof JDeltSync.FULL_RT_CLIENT)) return new JDeltaSync.FULL_RT_CLIENT(url);
+    this._url = url;
+};
+JDeltaSync.FULL_RT_CLIENT.prototype.login = function(data, onSuccess, onError) {
+    jQuery.ajax(_.extend({
+        url:this._url+'/clientLogin',
+        data:{op:'login'},
+        dataType:'json',   // For some reason, FireFox ignores the server's content-type for CORS requests.  >:(
+        cache:false,
+        success:function(data, retCodeStr, jqXHR) {
+            if(!_.isObject(data)) throw new Error('Expected object from server!');
+            return onSuccess(data);
+        },
+        error:function(jqXHR, retCodeStr, exceptionObj) { return onError(); }
+    }, JDeltaSync.extraAjaxOptions))
+};
 
 
 
@@ -286,11 +305,30 @@ JDeltaSync.Client.prototype.relogin = function() {
     });
 };
 
+
+
+JDeltaSync.getBrowser = function() {   // I am adding this here because jQuery has removed 'browser' support.
+                                       // Mostly taken from: https://github.com/jquery/jquery-migrate/blob/master/src/core.js
+    var ua = navigator.userAgent.toLowerCase();
+
+    var match = /(chrome)[ \/]([\w.]+)/.exec( ua ) ||
+        /(webkit)[ \/]([\w.]+)/.exec( ua ) ||
+        /(opera)(?:.*version|)[ \/]([\w.]+)/.exec( ua ) ||
+        /(msie) ([\w.]+)/.exec( ua ) ||
+        ua.indexOf("compatible") < 0 && /(mozilla)(?:.*? rv:([\w.]+)|)/.exec( ua ) ||
+        [];
+
+    return {
+        browser: match[ 1 ] || "",
+        version: match[ 2 ] || "0"
+    };
+};
+
 JDeltaSync.Client.prototype.installAutoUnloader = function() {
     if(typeof window === 'undefined') return;
     var self = this;
     window.onbeforeunload = function(e) {
-        if(jQuery.browser.mozilla) {
+        if(JDeltaSync.getBrowser().browser == 'mozilla') {
             // Firefox does not support "withCredentials" for cross-domain synchronous AJAX... and can therefore not pass the cookie unless we use async.   (This might just be the most arbitrary restriction of all time.)
             self.logout();
             var startTime = new Date().getTime();
