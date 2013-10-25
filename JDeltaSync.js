@@ -127,6 +127,9 @@ JDeltaSync.userInfo = function(joinState, userID) {
 
 
 
+
+
+
 JDeltaSync.FULL_RT_CLIENT = function(url) {
     if(!(this instanceof JDeltSync.FULL_RT_CLIENT)) return new JDeltaSync.FULL_RT_CLIENT(url);
     this._url = url;
@@ -185,6 +188,76 @@ JDeltaSync.Client = function(url, stateDB, joinDB) {
     this.login();
     this.installAutoUnloader();
 };
+
+
+JDeltaSync.Client.prototype._handleAjaxErrorCodes = function(jqXHR) {
+    // If jqXHR.status is 0, it means there is a problem with cross-domain communication, and Javascript has been dis-allowed access to the XHR object.
+    if(jqXHR.status === 401) {
+        // Our connectionID has been deleted because it was idle.
+        // We need to login again.
+        if(typeof console !== 'undefined') console.log('connectionID Lost.  Reconnecting...');
+        this.login();
+        return true;
+    } else if(jqXHR.status === 403) {
+        // Our IP has changed, and our cookie has been changed.
+        // We need to login and re-join again.
+        if(typeof console !== 'undefined') console.log('browserID Lost.  Reconnecting...');
+        this.relogin();
+        return true;
+    }
+    return false;
+};
+JDeltaSync.Client._ajaxSingletons = {};
+JDeltaSync.Client.prototype.ajax = function(options) {
+    // A robust, commonly-used convenience function.
+    var self = this;
+    if(options.login) {  //  Auto-Login.
+        if(!this.connectionID) return setTimeout(function() {self.ajax(options)}, 1000);
+    }
+    var errRetryMS = 1000;
+    var DOIT = function() {
+        if(options.singleton) {
+            if(JDeltaSync.Client._ajaxSingletons[options.singleton]) return;
+            JDeltaSync.Client._ajaxSingletons[options.singleton] = true;
+        }
+        var myRequest = self._activeAJAX[self._activeAJAX.length] = jQuery.ajax(_.extend({
+            dataType:'json',
+            cache:false,
+            success:function(data, retCodeStr, jqXHR) {
+                console.log('SUCCESS:', data, retCodeStr, jqXHR);
+                for(var i=self._activeAJAX.length-1; i>=0; i--) {
+                    if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
+                }
+                if(options.singleton) JDeltaSync.Client._ajaxSingletons[options.singleton] = false;
+                return options.onSuccess.call(options, data, retCodeStr, jqXHR);
+            },
+            error:function(jqXHR, retCodeStr, exceptionObj) {
+                console.log('ERROR:', jqXHR, retCodeStr, exceptionObj);
+                for(var i=self._activeAJAX.length-1; i>=0; i--) {
+                    if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
+                }
+                if(options.singleton) JDeltaSync.Client._ajaxSingletons[options.singleton] = false;
+                if(options.login) self._handleAjaxErrorCodes(jqXHR);   //  Auto-login.
+                setTimeout(DOIT, errRetryMS);
+                errRetryMS *= 1.62; if(errRetryMS > 120000) errRetryMS = 120000;
+                throw exceptionObj;  // Occurs when there is a problem connecting to the server.
+            },
+            complete:function(jqXHR, retCodeStr) {
+                console.log('COMPLETE:', jqXHR, retCodeStr);
+                for(var i=self._activeAJAX.length-1; i>=0; i--) {
+                    if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
+                }
+                if(options.singleton) JDeltaSync.Client._ajaxSingletons[options.singleton] = false;
+            }
+        }, JDeltaSync.extraAjaxOptions, options.ajaxOpts));
+    };
+    DOIT();
+};
+
+
+
+
+
 JDeltaSync.Client.prototype.waitForConnection = function(callback) {
     // This function was added 2012-11-07 to enable me to create more reliable communications.
     var self = this;
@@ -477,23 +550,6 @@ JDeltaSync.Client.prototype._addToSendQueue = function(data, callback) {
 };
 JDeltaSync.Client.prototype._triggerSend = function() {
     if(!this._sending) this._doSend();
-};
-JDeltaSync.Client.prototype._handleAjaxErrorCodes = function(jqXHR) {
-    // If jqXHR.status is 0, it means there is a problem with cross-domain communication, and Javascript has been dis-allowed access to the XHR object.
-    if(jqXHR.status === 401) {
-        // Our connectionID has been deleted because it was idle.
-        // We need to login again.
-        if(typeof console !== 'undefined') console.log('connectionID Lost.  Reconnecting...');
-        this.login();
-        return true;
-    } else if(jqXHR.status === 403) {
-        // Our IP has changed, and our cookie has been changed.
-        // We need to login and re-join again.
-        if(typeof console !== 'undefined') console.log('browserID Lost.  Reconnecting...');
-        this.relogin();
-        return true;
-    }
-    return false;
 };
 JDeltaSync.Client.prototype._rawDoSend = function() {
     var self = this;
@@ -862,7 +918,7 @@ JDeltaSync.Client.prototype.listStates = function(type, ids, onSuccess, onError)
         //    console.log('SUCCESS:', data, retCodeStr, jqXHR);
         //},
         //error:function(jqXHR, retCodeStr, exceptionObj) {
-        //    console.log('ERROR:', jqXHR, errType, exceptionObj);
+        //    console.log('ERROR:', jqXHR, retCodeStr, exceptionObj);
         //},
         //complete:function(jqXHR, retCodeStr) {
         //    console.log('COMPLETE:', jqXHR, retCodeStr);

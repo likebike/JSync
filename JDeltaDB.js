@@ -260,7 +260,7 @@ JDeltaDB.DB.prototype.deleteState = function(id, onSuccess, onError) {
     }
     var self = this;
     this._storage.deleteState(id, function(id) {
-        self._trigger(null, id, {op:'deleteState'});
+        self._trigger(null, id, {op:'deleteState'});  // Must trigger before delete so state is still accessible in handlers.
         delete self._states[id];
         if(onSuccess) return onSuccess();
     }, onError);
@@ -1239,6 +1239,9 @@ JDeltaDB.DBDouble.prototype._eventHandler = function(path, id, data) {
             this.setState(id, FROM_DB, true);
             this._trigger(path, id, data);  // There was no previous data, so fire away.
         }
+    } else if(path===null  &&  data.op==='deleteState') {
+        this._trigger(path, id, data);  // Must trigger before delete!  (Otherwise getRawState will auto-create it again during the trigger.)
+        this.deleteState(id, true);
     } else if(path===null  &&  data.op==='reset') {
         this.setState(id, FROM_DB, true);
         this._trigger(path, id, data);
@@ -1249,7 +1252,7 @@ JDeltaDB.DBDouble.prototype._eventHandler = function(path, id, data) {
         this.setState(id, FROM_DB, true);
         this._trigger(path, id, data);
     } else {
-        console.log('Unknown DBDouble Event:',path, id, data, this._db._states[id], this);  // I still need to implement deleteState, which should remove the state from this._states and pass the event on.  I just haven't come across that situation yet.
+        console.log('Unknown DBDouble Event:',path, id, data, this._db._states[id], this);
     }
 };
 JDeltaDB.DBDouble.prototype.setDB = function(db) {
@@ -1287,6 +1290,17 @@ JDeltaDB.DBDouble.prototype.setState = function(id, data, silent) {
         if(isCreate) this._trigger(null, id, {op:'createState'});
         if(isReset) this._trigger(null, id, {op:'reset'});
     }
+};
+JDeltaDB.DBDouble.prototype.deleteState = function(id, silent) {
+    // 2013-10-24: I implemented this function after being away from JDelta for about a year, so there might be some problems with my logic.
+    if(!id) throw new Error('!id');
+    if(!this._states.hasOwnProperty(id)) throw new Error('Trying to delete non-existent DBDouble state:', id);
+    if(!silent) {
+        this._trigger(null, id, {op:'deleteState'});
+    }
+    // Need to delete the state AFTER triggering the event to be consisten with the DB behavior.
+    // Do I need to un-register listeners?  How can I even know which listeners to un-register?  (Regex matches are an unreliable test.)
+    delete this._states[id];
 };
 JDeltaDB.DBDouble.prototype._getRawState = function(id) {
     if(!this._states.hasOwnProperty(id)) {
@@ -1585,6 +1599,20 @@ JDeltaDB._asyncOneAtATime = function(func, hasOnError) {
 var jdID_to_htmlID = function(jdID) { return jdID.replace(/\//g, "_"); };
 var htmlID_to_jdID = function(htmlID) { return htmlID.replace(/_/g, '/'); };
 
+JDeltaDB.id_split = function(jdID) {
+    // '/a/b/c' --> ['a', 'b', 'c']
+    if(jdID.charAt(0) !== '/') throw new Error('Expected absolute path!');
+    return jdID.split('/').slice(1);  // the first element will be "".
+};
+JDeltaDB.id_join = function(pieces) {
+    // ['a', 'b', 'c'] ==> '/a/b/c'
+    return [''].concat(pieces).join('/');
+}
+JDeltaDB.id_basename = function(jdID) {
+    // Just a convenience function to help me remember how to do this.
+    // '/a/b/c' --> 'c'
+    return _.last(JDeltaDB.id_split(jdID));
+};
 
 
 
