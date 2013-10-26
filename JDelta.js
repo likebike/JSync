@@ -292,7 +292,7 @@ JDelta._generateID = function(len) {
 };
 
 JDelta._dsHash = function(s) {
-    // The Down Syndrome Hash algorithm, create by Christopher Sebastian.
+    // The Down Syndrome Hash algorithm, created by Christopher Sebastian.
     // A fast simple hash function for detecting errors, NOT for cryptography!
     // Currently, out of    10,000 hashes, there will be approximately   0 collisions.
     //            out of   100,000 hashes, there will be approximately   8 collisions.

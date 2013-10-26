@@ -221,6 +221,9 @@ JDeltaSync.Client.prototype.ajax = function(options) {
             JDeltaSync.Client._ajaxSingletons[options.singleton] = true;
         }
         var myRequest = self._activeAJAX[self._activeAJAX.length] = jQuery.ajax(_.extend({
+            url:options.url,
+            type:options.type,
+            data:options.data,
             dataType:'json',
             cache:false,
             success:function(data, retCodeStr, jqXHR) {
