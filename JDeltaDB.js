@@ -396,7 +396,7 @@ JDeltaDB.DB.prototype._addHashedDelta = function(id, delta, onSuccess, onError, 
                 }
                 self._storage.addDelta(id, delta, function() {
                     self._trigger(null, id, {op:'deltaApplied', delta:delta});
-                    onSuccess && onSuccess();
+                    onSuccess && onSuccess({id:id, delta:delta, applied:true});
                     //console.log('_addHashedDelta: RELEASING LOCK:',id);
                     return unlock();
                 }, stdOnErr);
@@ -422,19 +422,22 @@ JDeltaDB.DB.prototype._addDelta = function(id, delta, onSuccess, onError, _alrea
         var oldHash = JDelta._dsHash(JDelta.stringify(state.state));
         var newStateCopy = JDelta.patch(id, JDelta._deepCopy(state.state), delta);
         var newHash = JDelta._dsHash(JDelta.stringify(newStateCopy));
-        if(newHash === oldHash) {
-            // No change.  Let's just pretend this never happend...
-            onSuccess && onSuccess();
-            return unlock();
-        }
+        //// 2013-10-28: moved this logic below to make the onSuccess parameters the same in all situations:
+        // if(newHash === oldHash) {
+        //     // No change.  Let's just pretend this never happend...
+        //     onSuccess && onSuccess({id:id, ...});
+        //     return unlock();
+        // }
 
         self._storage.getLastDelta(id, function(id, lastDelta) {
             var newSeq = lastDelta.seq + 1;
             var hashedDelta = { steps:delta.steps, meta:delta.meta || {}, parentHash:oldHash, curHash:newHash, seq:newSeq, undoSeq:-newSeq, redoSeq:null };
-            self._addHashedDelta(id, hashedDelta, function() {
-                onSuccess && onSuccess();
+            var finish = function(result) {
+                onSuccess && onSuccess(result);
                 return unlock();
-            }, stdOnErr, true);  // true = alreadyLocked.
+            };
+            if(newHash === oldHash) return finish({id:id, delta:hashedDelta, applied:false}); // No change.  Let's just pretend this never happend...
+            self._addHashedDelta(id, hashedDelta, finish, stdOnErr, true);  // true = alreadyLocked.
         }, stdOnErr);
     });
 };
@@ -451,8 +454,8 @@ JDeltaDB.DB.prototype.edit = function(id, operations, meta, onSuccess, onError) 
         var state = self._getRawState(id);
         var delta = JDelta.create(state.state, operations);
         delta.meta = meta;
-        self._addDelta(id, delta, function() {
-            onSuccess && onSuccess();
+        self._addDelta(id, delta, function(result) {
+            onSuccess && onSuccess(result);
             return unlock();
         }, function(err) {
             setTimeout(function() {unlock(true)}, 0);
@@ -488,8 +491,8 @@ JDeltaDB.DB.prototype.undo = function(id, meta, onSuccess, onError) {
                     var postUndoHash = postUndoDelta.curHash;
                     var newMeta = _.extend(JDelta._deepCopy(postUndoDelta.meta), meta, {operation:'undo', realDate:new Date().getTime() + JDeltaDB.serverTimeOffset});  // 2012-10-23:  I reversed the order of 'meta' and the new data object... I think the user should not normally override those values.
                     var hashedDelta = { steps:undoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postUndoHash, seq:newSeq, undoSeq:postUndoUndoSeq, redoSeq:newRedoSeq };
-                    self._addHashedDelta(id, hashedDelta, function() {
-                        onSuccess && onSuccess();
+                    self._addHashedDelta(id, hashedDelta, function(result) {
+                        onSuccess && onSuccess(result);
                         return unlock();
                     }, stdOnErr, true);  // true = alreadyLocked.
                 };
@@ -529,8 +532,8 @@ JDeltaDB.DB.prototype.redo = function(id, meta, onSuccess, onError) {
                     var postRedoHash = postRedoDelta.curHash;
                     var newMeta = _.extend(JDelta._deepCopy(postRedoDelta.meta), meta, {operation:'redo', realDate:new Date().getTime() + JDeltaDB.serverTimeOffset});  // 2012-10-23:  I reversed the order of 'meta' and the new data object... I think the user should not normally override those values.
                     var hashedDelta = { steps:redoSteps.steps, meta:newMeta, parentHash:lastDelta.curHash, curHash:postRedoHash, seq:newSeq, undoSeq:newUndoSeq, redoSeq:postRedoRedoSeq };
-                    self._addHashedDelta(id, hashedDelta, function() {
-                        onSuccess && onSuccess();
+                    self._addHashedDelta(id, hashedDelta, function(result) {
+                        onSuccess && onSuccess(result);
                         return unlock();
                     }, stdOnErr, true); // true = alreadyLocked
                 }, stdOnErr);

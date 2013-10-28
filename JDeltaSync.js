@@ -12,6 +12,7 @@ var JDeltaSync = {},
     JDelta,
     jQuery,  // Browser only.
     URL,     // Server only.
+    util,    // Server only.
     _,
     undefined;   // So undefined really will be undefined.
 if(typeof exports !== 'undefined') {
@@ -21,6 +22,7 @@ if(typeof exports !== 'undefined') {
     JDelta = require('./JDelta.js').JDelta;
     _ = require('underscore');
     URL = require('url');
+    util = require('util');
 } else if(typeof window !== 'undefined') {
     // We are in a browser.
     window.JDeltaSync = JDeltaSync;
@@ -227,7 +229,7 @@ JDeltaSync.Client.prototype.ajax = function(options) {
             dataType:'json',
             cache:false,
             success:function(data, retCodeStr, jqXHR) {
-                console.log('SUCCESS:', data, retCodeStr, jqXHR);
+                console.log('SUCCESS: data:', data, 'retCodeStr:', retCodeStr, 'jqXHR:', jqXHR);
                 for(var i=self._activeAJAX.length-1; i>=0; i--) {
                     if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
                 }
@@ -240,8 +242,12 @@ JDeltaSync.Client.prototype.ajax = function(options) {
                     if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
                 }
                 if(options.singleton) JDeltaSync.Client._ajaxSingletons[options.singleton] = false;
-                if(options.login) self._handleAjaxErrorCodes(jqXHR);   //  Auto-login.
-                setTimeout(DOIT, errRetryMS);
+                var keepGoing = true;
+                if(options.onError) keepGoing = options.onError.call(options, jqXHR, retCodeStr, exceptionObj);
+                if(keepGoing) {
+                    if(options.login) self._handleAjaxErrorCodes(jqXHR);   //  Auto-login.
+                    setTimeout(DOIT, errRetryMS);
+                }
                 errRetryMS *= 1.62; if(errRetryMS > 120000) errRetryMS = 120000;
                 throw exceptionObj;  // Occurs when there is a problem connecting to the server.
             },
@@ -792,6 +798,7 @@ JDeltaSync.Client.prototype._rawDoReceive = function() {
                 if(!_.isArray(data)) throw new Error('Expected array from server!');
 
                 var handler = function(item, next) {
+                    //console.log('Client Received:', item);
                     var db;
                     switch(item.data.op) {
 
@@ -820,7 +827,7 @@ JDeltaSync.Client.prototype._rawDoReceive = function() {
                                     self.reset(item.data.type, item.data.id);
                                     return next();
                                 }
-                                db._addHashedDelta(item.data.id, item.data.delta, next, function(err) {
+                                db._addHashedDelta(item.data.id, item.data.delta, function(result) {next()}, function(err) {
                                     if(typeof console !== 'undefined') console.log('Error Applying Delta.  Resetting: ', item.data.type, item.data.id, item.data.delta, err, err.stack);
                                     self.reset(item.data.type, item.data.id);
                                     return next();
@@ -835,7 +842,7 @@ JDeltaSync.Client.prototype._rawDoReceive = function() {
                             db = self._getDB(item.data.type);
                             if(item.data.type === 'state')
                                 self._receivedFromServer[self._receivedFromServer.length] = {type:item.data.type, id:item.data.id, dataStr:JDelta.stringify({op:'deleteState', type:'state', id:item.data.id})};
-                            db.deleteState(item.data.id, next, function(err) {
+                            db.deleteState(item.data.id, function(result) {next()}, function(err) {
                                 self.reset(item.data.type, item.data.id);
                                 return next();
                             });
@@ -1459,6 +1466,7 @@ JDeltaSync.Server.prototype._listApplicableJoinStates = function(id) {
     return joinNames;
 };
 JDeltaSync.Server.prototype._broadcast = function(item, to, excludes) {
+    console.log('broadcast:', item, to, excludes);
     var targetConnections = {},
         i, ii;
     if(to) {
@@ -1512,6 +1520,7 @@ JDeltaSync.Server.prototype._broadcast = function(item, to, excludes) {
     // Do the broadcast:
     var clientConn, q;
     for(var cID in targetConnections) if(targetConnections.hasOwnProperty(cID)) {
+        console.log('Sending to:',cID);
         if(this._activeConnections.hasOwnProperty(cID)) {
             clientConn = this._activeConnections[cID];
             q = clientConn.queue;
@@ -1677,6 +1686,7 @@ JDeltaSync.Server.prototype.clientSend = function(req, connectionID, bundle, onS
     this._getActiveClientConnection(connectionID);  // Trigger the lastActivityTime update that occurs in the _getActiveClientConnection function.
 
     var handler = function(bundleItem, next) {
+        console.log('bundleItem:', util.inspect(bundleItem, true, null));
         var db;
         var OK = function() {
                 return next(null, {msgID:bundleItem.msgID, result:'ok'});
