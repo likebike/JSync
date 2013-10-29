@@ -229,7 +229,7 @@ JDeltaSync.Client.prototype.ajax = function(options) {
             dataType:'json',
             cache:false,
             success:function(data, retCodeStr, jqXHR) {
-                console.log('SUCCESS: data:', data, 'retCodeStr:', retCodeStr, 'jqXHR:', jqXHR);
+                //console.log('SUCCESS: data:', data, 'retCodeStr:', retCodeStr, 'jqXHR:', jqXHR);
                 for(var i=self._activeAJAX.length-1; i>=0; i--) {
                     if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
                 }
@@ -237,7 +237,7 @@ JDeltaSync.Client.prototype.ajax = function(options) {
                 return options.onSuccess.call(options, data, retCodeStr, jqXHR);
             },
             error:function(jqXHR, retCodeStr, exceptionObj) {
-                console.log('ERROR:', jqXHR, retCodeStr, exceptionObj);
+                //console.log('ERROR:', jqXHR, retCodeStr, exceptionObj);
                 for(var i=self._activeAJAX.length-1; i>=0; i--) {
                     if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
                 }
@@ -250,14 +250,15 @@ JDeltaSync.Client.prototype.ajax = function(options) {
                 }
                 errRetryMS *= 1.62; if(errRetryMS > 120000) errRetryMS = 120000;
                 throw exceptionObj;  // Occurs when there is a problem connecting to the server.
-            },
-            complete:function(jqXHR, retCodeStr) {
-                console.log('COMPLETE:', jqXHR, retCodeStr);
-                for(var i=self._activeAJAX.length-1; i>=0; i--) {
-                    if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
-                }
-                if(options.singleton) JDeltaSync.Client._ajaxSingletons[options.singleton] = false;
-            }
+            }//,
+            //// The COMPLETE function is always called after success and error, so for us it's redundant:
+            //complete:function(jqXHR, retCodeStr) {
+            //    console.log('COMPLETE:', jqXHR, retCodeStr);
+            //    for(var i=self._activeAJAX.length-1; i>=0; i--) {
+            //        if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
+            //    }
+            //    if(options.singleton) JDeltaSync.Client._ajaxSingletons[options.singleton] = false;
+            //}
         }, JDeltaSync.extraAjaxOptions, options.ajaxOpts));
     };
     DOIT();
@@ -798,7 +799,7 @@ JDeltaSync.Client.prototype._rawDoReceive = function() {
                 if(!_.isArray(data)) throw new Error('Expected array from server!');
 
                 var handler = function(item, next) {
-                    //console.log('Client Received:', item);
+                    console.log('Client Received:', item);
                     var db;
                     switch(item.data.op) {
 
