@@ -8,7 +8,7 @@ var JSync = {},
     jQuery,     // Browser only.
     undefined;  // So 'undefined' really is undefined.
 if(typeof exports !== 'undefined') {
-    // We are on Node.
+    // We are in Node.
     exports.JSync = JSync;
     _ = require('underscore');
 } else if(typeof window !== 'undefined') {
@@ -34,23 +34,30 @@ JSync._test = function() {
     eq(JSync.pad(' Eva','♥',10), '♥♥♥♥♥♥ Eva');
     eq(JSync.generateID(8).length, 8);
     eq(JSync.dsHash('Eva'), '0xe51a2ff8');
+    eq(JSync.dsHash('黄哲'), '0x8c4234fa');
     eq(JSync.getTarget({a:{b:'c'}},['a','b']), 'c');
     eq(JSync.stringify(JSync.deepCopy({a:[1,2,'3']})), '{"a":[1,2,"3"]}');
     eq(JSync._isInt(5), true);
     eq(JSync._isInt('5'), false);
-    var state = {a:1};
+    var obj = {a:1};
     var ops = [{op:'create', path:[], key:'b', value:{x:24}},
                {op:'update!', path:['b'], key:'c', value:3},
                {op:'update', path:['b'], key:'c', value:[30]},
                {op:'delete', path:[], key:'a'},
                {op:'arrayInsert', path:['b','c'], key:0, value:'item-0'},
                {op:'arrayRemove', path:['b','c'], key:1}];
-    var delta = JSync.createDelta(state, ops);
-    eq(JSync.stringify(delta), '{"steps":[{"after":{"x":24},"key":"b","path":[]},{"after":3,"key":"c","path":["b"]},{"after":[30],"before":3,"key":"c","path":["b"]},{"before":1,"key":"a","path":[]},{"key":0,"op":"arrayInsert","path":["b","c"],"value":"item-0"},{"key":1,"op":"arrayRemove","path":["b","c"],"value":30}]}');
-    eq(JSync.stringify(JSync.reverseDelta(delta)), '{"steps":[{"key":1,"op":"arrayInsert","path":["b","c"],"value":30},{"key":0,"op":"arrayRemove","path":["b","c"],"value":"item-0"},{"after":1,"key":"a","path":[]},{"after":3,"before":[30],"key":"c","path":["b"]},{"before":3,"key":"c","path":["b"]},{"before":{"x":24},"key":"b","path":[]}]}');
+    var delta = JSync.edit(JSync.deepCopy(obj), ops);
+    var badOps = JSync.deepCopy(ops); badOps[badOps.length] = {op:'delete', key:'nonthere'};
+    var o1 = JSync.deepCopy(obj);
+    try { JSync.edit(o1, badOps) } catch(err) {}
+    eq(JSync.stringify(o1), JSync.stringify(obj));
+    eq(JSync.stringify(delta), '{"steps":[{"after":{"x":24},"key":"b","op":"create","path":[]},{"after":3,"key":"c","op":"create","path":["b"]},{"after":[30],"before":3,"key":"c","op":"update","path":["b"]},{"before":1,"key":"a","op":"delete","path":[]},{"after":"item-0","key":0,"op":"arrayInsert","path":["b","c"]},{"before":30,"key":1,"op":"arrayRemove","path":["b","c"]}]}');
+    eq(JSync.stringify(JSync.reverseDelta(delta)), '{"steps":[{"after":30,"key":1,"op":"arrayInsert","path":["b","c"]},{"before":"item-0","key":0,"op":"arrayRemove","path":["b","c"]},{"after":1,"key":"a","op":"create","path":[]},{"after":3,"before":[30],"key":"c","op":"update","path":["b"]},{"before":3,"key":"c","op":"delete","path":["b"]},{"before":{"x":24},"key":"b","op":"delete","path":[]}]}');
     eq(JSync.stringify(delta), JSync.stringify(JSync.reverseDelta(JSync.reverseDelta(delta))));
-    eq(JSync.stringify(JSync.patch(JSync.deepCopy(state),delta)), '{"b":{"c":["item-0"],"x":24}}');
-    eq(JSync.stringify(JSync.render(JSync.deepCopy(state),[delta,JSync.reverseDelta(delta)])), '{"a":1}');
+    eq(JSync.stringify(JSync.applyDelta(JSync.deepCopy(obj),delta)), '{"b":{"c":["item-0"],"x":24}}');
+    var d1=JSync.deepCopy(delta); d1.steps[5].key = 5;  // Create a broken delta.
+    try { JSync.applyDelta(o1, d1) } catch(err) {}  // Expect failure
+    eq(JSync.stringify(o1), JSync.stringify(obj));
     var d = JSync.Dispatcher();
     var out1 = null,
         out2 = {};
@@ -59,7 +66,31 @@ JSync._test = function() {
     d.trigger(123);
     eq(out1, 123);
     eq(JSync.stringify(out2), '{"x":123}');
+    var s = JSync.State({a:111});
+    var cbCount = 0;
+    var cb = function(state, delta) { cbCount += 1 };
+    s.on(cb);
+    s.edit([{op:'create', key:'b', value:222}]);
+    eq(cbCount, 1);
+    s.off(cb);
+    s.edit([{op:'create', key:'c', value:333}]);
+    eq(cbCount, 1);
+    eq(JSync.stringify(s.data), '{"a":111,"b":222,"c":333}');
+    s.applyDelta( JSync.edit(JSync.deepCopy(s.data), [{op:'create', key:'d', value:444}, {op:'delete', key:'a'}]) );
+    eq(JSync.stringify(s.data), '{"b":222,"c":333,"d":444}');
 };
+
+
+
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//
+// This first section deals with the delta algorithm.  No async, no events, no network requirements.  Just Deltas.
+//
+
+
+
 
 
 ///////////////////////////////////////////////////////////////////////////////////
@@ -426,86 +457,99 @@ JSync._isInt = function(o) {
     return parseInt(o) === o;
 };
 
-JSync.createDelta = function(state, operations) {
-    if(!_.isObject(state))
-        throw new Error("Expected 'state' to be an Object or Array.");
+// The JSync.edit function is used to modify objects, and also
+// produce the equivalent delta that represents the same edit operation.
+// If you just need a delta, and don't want to actually modify your object,
+// then just make a copy first, like this:
+//     JSync.edit(JSync.deepCopy(myObj), myOps);
+JSync.edit = function(obj, operations) {
+    // Note: 'obj' is modified.
+    if(!_.isObject(obj))
+        throw new Error("Expected 'obj' to be an Object or Array.");
     if(!_.isArray(operations))
         throw new Error("Expected 'operations' to be an Array of OperationSpecs.");
-    var stateCopy = JSync.deepCopy(state),
+    var origObjStr = JSync.stringify(obj),
         steps = [],
-        i, ii, step, op, path, key, value, target, before;
+        i, ii, step, op, path, key, value, target;
+    var FAIL = function(msg) {
+        console.error('Edit Failed.  Rolling back...');
+        JSync.applyDelta(obj, JSync.reverseDelta({steps:steps}));
+        if(JSync.stringify(obj) === origObjStr) console.error('Rollback Successful.');
+        else console.error('Rollback Failed!');
+        throw new Error(msg);
+    };
     for(i=0, ii=operations.length; i<ii; i++) {
         step = operations[i];
         if(step === undefined) {
             console.log(operations);
-            throw new Error('STEP IS UNDEFINED!  Occurs on Internet Explorer when you have a trailing comma in one of your data structures.');
+            FAIL('STEP IS UNDEFINED!  Occurs on Internet Explorer when you have a trailing comma in one of your data structures.');
         }
         op = step.op;
         path = step.path  ||  [];
         key = step.key;
         value = step.value;
         if(op === undefined)
-            throw new Error('undefined op!');
+            FAIL('undefined op!');
         if(key === undefined)
-                throw new Error('undefined key!');
-        target = JSync.getTarget(stateCopy, path);
+                FAIL('undefined key!');
+        target = JSync.getTarget(obj, path);
         switch(op) {
             case 'create':
                 if(value === undefined)
-                    throw new Error('undefined value!');
+                    FAIL('undefined value!');
                 if(key in target)
-                    throw new Error('Already in target: '+key);
-                steps[steps.length] = {path:path, key:key, after:JSync.deepCopy(value)};  // We need to '_deepCopy' because if the object gets modified by future operations, it could affect a reference.
+                    FAIL('Already in target: '+key);
+                steps[steps.length] = {op:op, path:path, key:key, after:JSync.deepCopy(value)};  // We need to '_deepCopy' because if the object gets modified by future operations, it could affect a reference.
                 target[key] = value;
                 break;
             case 'update':
                 if(value === undefined)
-                    throw new Error('undefined value!');  // If you want to set something to undefined, just delete instead.
+                    FAIL('undefined value!');  // If you want to set something to undefined, just delete instead.
                 if(!(key in target))
-                    throw new Error('Not in target: '+key);
-                steps[steps.length] = {path:path, key:key, before:JSync.deepCopy(target[key]), after:JSync.deepCopy(value)};
+                    FAIL('Not in target: '+key);
+                steps[steps.length] = {op:op, path:path, key:key, before:JSync.deepCopy(target[key]), after:JSync.deepCopy(value)};
                 target[key] = value;
                 break;
             case 'update!':
                 if(value === undefined)
-                    throw new Error('undefined value!');  // If you want to set something to undefined, just delete instead.
+                    FAIL('undefined value!');  // If you want to set something to undefined, just delete instead.
                 if(key in target) {
                     // Update.
-                    steps[steps.length] = {path:path, key:key, before:JSync.deepCopy(target[key]), after:JSync.deepCopy(value)};
+                    steps[steps.length] = {op:'update', path:path, key:key, before:JSync.deepCopy(target[key]), after:JSync.deepCopy(value)};
                 } else {
                     // Create.
-                    steps[steps.length] = {path:path, key:key, after:JSync.deepCopy(value)};
+                    steps[steps.length] = {op:'create', path:path, key:key, after:JSync.deepCopy(value)};
                 }
                 target[key] = value;
                 break;
             case 'delete':
                 if(!(key in target))
-                    throw new Error('Not in target: '+key);
-                steps[steps.length] = {path:path, key:key, before:JSync.deepCopy(target[key])};
+                    FAIL('Not in target: '+key);
+                steps[steps.length] = {op:op, path:path, key:key, before:JSync.deepCopy(target[key])};
                 delete target[key];
                 break;
             case 'arrayInsert':
                 if(!JSync._isInt(key))
-                    throw new Error('Expected an integer key!');
+                    FAIL('Expected an integer key!');
                 if(!_.isArray(target))
-                    throw new Error('create:arrayInsert: Expected an Array target!');
+                    FAIL('create:arrayInsert: Expected an Array target!');
                 if(key<0  ||  key>target.length)
-                    throw new Error('IndexError');
-                steps[steps.length] = {op:'arrayInsert', path:path, key:key, value:JSync.deepCopy(value)};
+                    FAIL('IndexError');
+                steps[steps.length] = {op:op, path:path, key:key, after:JSync.deepCopy(value)};
                 target.splice(key, 0, value);
                 break;
             case 'arrayRemove':
                 if(!JSync._isInt(key))
-                    throw new Error('Expected an integer key!');
+                    FAIL('Expected an integer key!');
                 if(!_.isArray(target))
-                    throw new Error('create:arrayRemove: Expected an Array target!');
+                    FAIL('create:arrayRemove: Expected an Array target!');
                 if(key<0  ||  key>=target.length)
-                    throw new Error('IndexError');
-                steps[steps.length] = {op:'arrayRemove', path:path, key:key, value:JSync.deepCopy(target[key])};
+                    FAIL('IndexError');
+                steps[steps.length] = {op:op, path:path, key:key, before:JSync.deepCopy(target[key])};
                 target.splice(key, 1);
                 break;
             default:
-                throw new Error('Illegal operation: '+op);
+                FAIL('Illegal operation: '+op);
         }
     }
     return {steps:steps};
@@ -519,22 +563,40 @@ JSync.reverseDelta = function(delta) {
         i, fstep, rstep, op;  // 2012-11-16: I think 'fstep' means "forward step", and 'rstep' means "reverse step".
     for(i=delta.steps.length-1; i>=0; i--) {
         fstep = delta.steps[i];
+        if(!('path' in fstep)) throw new Error('Missing "path"');
+        if(!('key' in fstep)) throw new Error('Missing "key"');
         rstep = {path:fstep.path, key:fstep.key};
-        op = fstep.op  ||  'obj';
-        switch(op) {
-            case 'obj':
-                if('after' in fstep)
-                    rstep.before = fstep.after;
-                if('before' in fstep)
-                    rstep.after = fstep.before;
+        switch(fstep.op) {
+            case 'create':
+                if('before' in fstep) throw new Error('Unexpcted "before"');
+                if(!('after' in fstep)) throw new Error('Missing "after"');
+                rstep.op = 'delete';
+                rstep.before = fstep.after;
+                break;
+            case 'update':
+                if(!('before' in fstep)) throw new Error('Missing "before"');
+                if(!('after' in fstep)) throw new Error('Missing "after"');
+                rstep.op = 'update';
+                rstep.before = fstep.after;
+                rstep.after = fstep.before;
+                break;
+            case 'delete':
+                if('after' in fstep) throw new Error('Unexpected "after"');
+                if(!('before' in fstep)) throw new Error('Missing "before"');
+                rstep.op = 'create';
+                rstep.after = fstep.before;
                 break;
             case 'arrayInsert':
+                if('before' in fstep) throw new Error('Unexpected "before"');
+                if(!('after' in fstep)) throw new Error('Missing "after"');
                 rstep.op = 'arrayRemove';
-                rstep.value = fstep.value;
+                rstep.before = fstep.after;
                 break;
             case 'arrayRemove':
+                if(!('before' in fstep)) throw new Error('Missing "before"');
+                if('after' in fstep) throw new Error('Unexpected "after"');
                 rstep.op = 'arrayInsert';
-                rstep.value = fstep.value;
+                rstep.after = fstep.before;
                 break;
             default:
                 throw new Error('Illegal operation: '+op);
@@ -543,96 +605,113 @@ JSync.reverseDelta = function(delta) {
     }
     return {steps:reversedSteps};
 };
-JSync.patch = function(state, delta, dispatcher) {
-    // Note: 'state' is modified.
-    if(!_.isObject(state))
-        throw new Error("Expected 'state' to be an Object or Array.");
+JSync.applyDelta = function(obj, delta) {
+    // Note: 'obj' is modified.
+    if(!_.isObject(obj))
+        throw new Error("Expected 'obj' to be an Object or Array.");
     if(!_.isObject(delta))
         throw new Error("Expected 'delta' to be a Delta object.");
     if(!_.isArray(delta.steps))
         throw new Error('Invalid Delta object.');
-    var steps = delta.steps,
-        events = [],  //  Queue the events until the end in case we fail (and roll-back) half-way thru.
+    var origObjStr = JSync.stringify(obj),
+        steps = delta.steps,
         i, ii, step, op, path, key, target;
+    var FAIL = function(msg) {
+        console.error('Delta Application Failed.  Rolling back...');
+        JSync.applyDelta(obj, JSync.reverseDelta({steps:delta.steps.slice(0,i)}));
+        if(JSync.stringify(obj) === origObjStr) console.error('Rollback Successful.');
+        else console.error('Rollback Failed!');
+        throw new Error(msg);
+    };
     for(i=0, ii=steps.length; i<ii; i++) {
         step = steps[i];
-        op = step.op  ||  'obj';
         path = step.path;
-        if(!path) throw new Error('undefined path!');
+        if(!path) FAIL('undefined path!');
         key = step.key;
-        if(key===undefined || key===null) throw new Error('undefined key!');  // Cannot just say '!key' because key could be 0 for array ops.
-        target = JSync.getTarget(state, path);
+        if(key===undefined || key===null) FAIL('undefined key!');  // Cannot just say '!key' because key could be 0 for array ops.
+        target = JSync.getTarget(obj, path);
 
-        switch(op) {
-            case 'obj':
+        switch(step.op) {
+            case 'create':
+            case 'update':
+            case 'delete':
                 if('before' in step) {
                     if(!(key in target))
-                        throw new Error('Not in target: '+key);
+                        FAIL('Not in target: '+key);
                     if( JSync.stringify(target[key]) !== JSync.stringify(step.before) )
-                        throw new Error("'before' value did not match!");
+                        FAIL("'before' value did not match!");
                 } else {
                     if(key in target)
-                        throw new Error('Unexpectedly in target: '+key);
+                        FAIL('Unexpectedly in target: '+key);
                 }
 
                 if('after' in step) {
                     target[key] = JSync.deepCopy(step.after);  // We must '_deepCopy', otherwise the object that the delta references could be modified externally, resulting in totally unexpected mutation.
-                    events[events.length] = [{op:'set', path:path, key:key, value:JSync.deepCopy(target[key])}];
                 } else {
                     if(key in target) {
                         delete target[key];
-                        events[events.length] = [{op:'delete', path:path, key:key}];
                     }
                 }
                 break;
             case 'arrayInsert':
                 if(!JSync._isInt(key))
-                    throw new Error('Expected an integer key!');
+                    FAIL('Expected an integer key!');
                 if(!_.isArray(target))
-                    throw new Error('patch:arrayInsert: Expected an Array target!');
+                    FAIL('applyDelta:arrayInsert: Expected an Array target!');
                 if(key<0  ||  key>target.length)
-                    throw new Error('IndexError');
-                if(step.value === undefined)
-                    throw new Error('undefined value!');
-                target.splice(key, 0, JSync.deepCopy(step.value))
-                events[events.length] = [{op:'arrayInsert', path:path, key:key, value:JSync.deepCopy(target[key])}];
+                    FAIL('IndexError');
+                if(step.after === undefined)
+                    FAIL('undefined "after"!');
+                target.splice(key, 0, JSync.deepCopy(step.after))
                 break;
             case 'arrayRemove':
                 if(!JSync._isInt(key))
-                    throw new Error('Expected an integer key!');
+                    FAIL('Expected an integer key!');
                 if(!_.isArray(target))
-                    throw new Error('patch:arrayRemove: Expected an Array target!');
+                    FAIL('applyDelta:arrayRemove: Expected an Array target!');
                 if(key<0  ||  key>=target.length)
-                    throw new Error('IndexError');
-                if( JSync.stringify(target[key]) !== JSync.stringify(step.value) )
-                    throw new Error('Array value did not match!');
+                    FAIL('IndexError');
+                if( JSync.stringify(target[key]) !== JSync.stringify(step.before) )
+                    FAIL('Array value did not match!');
                 target.splice(key, 1);
-                events[events.length] = [{op:'arrayRemove', path:path, key:key}];
                 break;
             default:
-                throw new Error('Illegal operation: '+op);
+                FAIL('Illegal operation: '+step.op);
         }
     }
-
-    // TODO: Handle Roll-back on error.
-
-    // We made it thru all the steps.  Now send out the events.
-    // TODO: Maybe add event "compression" (for example, if step 1 sets 'a' to 1, then step 2 sets 'a' to 2, then maybe you only need to send out the second event.)   Not a high priority for now because i don't really expect this functionality to make much of a difference for normal situations.
-    if(dispatcher) {
-        for(i=0, ii=events.length; i<ii; i++) {
-            dispatcher.trigger.apply(dispatcher, events[i]);
-        }
-    }
-    return state; // For chaining...
-};
-
-JSync.render = function(state, deltas) {
-    var i, ii;
-    for(i=0, ii=deltas.length; i<ii; i++) JSync.patch(state, deltas[i]);
-    return state;
+    return obj; // For chaining...
 };
 
 
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//
+// This second section deals with higher-level "state" objects, which have Event capabilities.  Still no network requirements.
+// Useful for UI patterns, even without network.
+//
+
+JSync.State = function(initialData) {
+    if(!(this instanceof JSync.State)) return new JSync.State(initialData);
+    this._dispatcher = JSync.Dispatcher();
+    this.data = initialData || {};
+};
+JSync.State.prototype.on = function(callback, context) {
+    return this._dispatcher.on(callback, context);
+};
+JSync.State.prototype.off = function(callback, context) {
+    return this._dispatcher.off(callback, context);
+};
+JSync.State.prototype.edit = function(operations) {
+    var delta = JSync.edit(this.data, operations);
+    this._dispatcher.trigger(this, delta);
+};
+JSync.State.prototype.applyDelta = function(delta) {
+    JSync.applyDelta(this.data, delta);
+    this._dispatcher.trigger(this, delta);
+};
+
+JSync.ALL = {};
 JSync.Dispatcher = function() {
     if(!(this instanceof JSync.Dispatcher)) return new JSync.Dispatcher();
     this.listeners = [];
@@ -644,7 +723,7 @@ JSync.Dispatcher.prototype.off = function(callback, context) {
     var i, l;
     for(i=this.listeners.length-1; i>=0; i--) {
         l = this.listeners[i];
-        if(l.callback===callback && l.context===context)
+        if( (l.callback===callback && l.context===context) || (callback==JSync.ALL) )
             this.listeners.splice(i, 1);  // Remove.
     }
 };
@@ -661,6 +740,16 @@ JSync.Dispatcher.prototype.trigger = function() {
 
 
 
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//
+// This third section deals with network connectivity.
+//
+// Note that authentication and usernames have no place in this client framework.
+// All those access-control details are dealt with on the server-side.
+// "Logging in" and similar operations must be defined on a per-app basis.  They can't be defined in a
+// simple-enough-yet-general-enough way, so I'm just leaving it out of this framework.
+// At this level, we only care about the ConnectionID and BrowserID.
 
 
 JSync.extraAjaxOptions = { xhrFields: {withCredentials:true} };    // Enable CORS cookies.
@@ -670,9 +759,9 @@ JSync.getBrowser = function() {   // I am adding this here because jQuery has re
                                        // Mostly taken from: https://github.com/jquery/jquery-migrate/blob/master/src/core.js
     var ua = navigator.userAgent.toLowerCase();
 
-    var match = /(chrome)[ \/]([\w.]+)/.exec( ua ) ||
+    var match = /(chrome)[ \/]([\w.]+)/.exec( ua ) ||  // What about Chromium?  -- Ah, Chromium also includes 'Chrome' in the UserAgent.
         /(webkit)[ \/]([\w.]+)/.exec( ua ) ||
-        /(opera)(?:.*version|)[ \/]([\w.]+)/.exec( ua ) ||
+        /(opera)(?:.*version|)[ \/]([\w.]+)/.exec( ua ) ||  // I really need to separate Old Opera from New Opera (which is actually Chrome).
         /(msie) ([\w.]+)/.exec( ua ) ||
         ua.indexOf("compatible") < 0 && /(mozilla)(?:.*? rv:([\w.]+)|)/.exec( ua ) ||
         [];
@@ -689,107 +778,153 @@ JSync.Client = function(url) {
     var self = this;
 
     this.maxSendBundleBytes = 100*1024;
-    this.successReceiveReconnectMS = 10;
-    this.errorResetReconnectMS = 10000;
+    this.successReceiveReconnectMS = 1;
 
     if(!_.isString(url)) throw new Error('You must provide a base url.');
     this._url = url;
     this.connectionID = null;
-    // ...
-};
+    this.browserID = null;
+    this._ajaxSingletons = {};
+    this._activeAJAX = [];
 
-JSync.Client._ajaxSingletons = {};
+    console.log('Still need to installAutoUnloader()');
+};
+JSync.Client.prototype._handleAjaxErrorCodes = function(jqXHR) {
+    // If jqXHR.status is 0, it means there is a problem with cross-domain communication, and Javascript has been dis-allowed access to the XHR object.
+    if(jqXHR.status === 401) {
+        // Our connectionID has been deleted because it was idle.
+        // We need to login again.
+        if(typeof console !== 'undefined') console.log('connectionID Lost.  Reconnecting...');
+        this.connect();
+        return true;
+    } else if(jqXHR.status === 403) {
+        // Our IP has changed, and our cookie has been changed.
+        // We need to login and re-join again.
+        if(typeof console !== 'undefined') console.log('browserID Lost.  Reconnecting...');
+        this.reconnect();
+        return true;
+    }
+    return false;
+};
 JSync.Client.prototype.ajax = function(options) {
     // A robust, commonly-used convenience function.
-    var self = this;
-    if(options.login) {  //  Auto-Login.
-        if(!this.connectionID) return setTimeout(function() {self.ajax(options)}, 1000);
-    }
-    var errRetryMS = 1000;
+    var self = this,
+        errRetryMS = options.errRetryMS || 1000,
+        errRetryMaxMS = options.errRetryMaxMS || 120000;
     var DOIT = function() {
         if(options.singleton) {
-            if(JSync.Client._ajaxSingletons[options.singleton]) return;
-            JSync.Client._ajaxSingletons[options.singleton] = true;
+            if(self._ajaxSingletons[options.singleton]) return;
+            self._ajaxSingletons[options.singleton] = true;
         }
-        var myRequest = self._activeAJAX[self._activeAJAX.length] = jQuery.ajax(_.extend({
+        var myRequest = [null];
+        var cleanup = function() {
+            for(var i=self._activeAJAX.length-1; i>=0; i--) {
+                if(self._activeAJAX[i] === myRequest[0]) self._activeAJAX.splice(i,1);
+            }
+            if(options.singleton) self._ajaxSingletons[options.singleton] = false;
+        };
+        myRequest[0] = self._activeAJAX[self._activeAJAX.length] = jQuery.ajax(_.extend({
             url:options.url,
             type:options.type,
             data:options.data,
-            dataType:'json',
+            dataType:'json',      // For some reason, FireFox ignores the server's content-type for CORS requests.  >:(
+            jsonp:false,          // Prevent jQuery from auto-converting "dataType:json" to "dataType:jsonp" for cross-domain requests.
             cache:false,
             success:function(data, retCodeStr, jqXHR) {
                 //console.log('SUCCESS: data:', data, 'retCodeStr:', retCodeStr, 'jqXHR:', jqXHR);
-                for(var i=self._activeAJAX.length-1; i>=0; i--) {
-                    if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
-                }
-                if(options.singleton) JSync.Client._ajaxSingletons[options.singleton] = false;
+                cleanup();
                 return options.onSuccess.call(options, data, retCodeStr, jqXHR);
             },
             error:function(jqXHR, retCodeStr, exceptionObj) {
                 //console.log('ERROR:', jqXHR, retCodeStr, exceptionObj);
-                for(var i=self._activeAJAX.length-1; i>=0; i--) {
-                    if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
-                }
-                if(options.singleton) JSync.Client._ajaxSingletons[options.singleton] = false;
-                var keepGoing = true;
-                if(options.onError) keepGoing = options.onError.call(options, jqXHR, retCodeStr, exceptionObj);
-                if(keepGoing) {
-                    if(options.login) self._handleAjaxErrorCodes(jqXHR);   //  Auto-login.
+                cleanup();
+                if(!options.doNotRetry) {
+                    if(options.requireConnection) self._handleAjaxErrorCodes(jqXHR);   //  Auto-reconnect.
                     setTimeout(DOIT, errRetryMS);
                 }
-                errRetryMS *= 1.62; if(errRetryMS > 120000) errRetryMS = 120000;
-                throw exceptionObj;  // Occurs when there is a problem connecting to the server.
+                errRetryMS *= 1.62; if(errRetryMS > errRetryMaxMS) errRetryMS = errRetryMaxMS;
+                if(options.onError) options.onError.call(options, jqXHR, retCodeStr, exceptionObj);
+                else throw exceptionObj;  // Occurs when there is a problem connecting to the server.
             }//,
             //// The COMPLETE function is always called after success and error, so for us it's redundant:
             //complete:function(jqXHR, retCodeStr) {
             //    console.log('COMPLETE:', jqXHR, retCodeStr);
-            //    for(var i=self._activeAJAX.length-1; i>=0; i--) {
-            //        if(self._activeAJAX[i] === myRequest) self._activeAJAX.splice(i,1);
-            //    }
-            //    if(options.singleton) JSync.Client._ajaxSingletons[options.singleton] = false;
+            //    cleanup();
             //}
         }, JSync.extraAjaxOptions, options.ajaxOpts));
     };
-    DOIT();
+    if(options.requireConnection) return this.getConnectionInfo(DOIT);
+    else return DOIT();
 };
-
-JSync.Client.prototype.waitForConnection = function(callback) {
+JSync.Client.prototype.connect = function(callback) {
+    var self = this;
+    this.ajax({
+        errRetryMaxMS:30000,
+        url:self._url+'/connect',
+        type:'POST',
+        data:{op:'connect'},
+        onSuccess:function(data, retCodeStr, jqXHR) {
+            if(!_.isObject(data)) throw new Error('Expected object from server!');
+            self.connectionID = data.connectionID;
+            self.browserID = data.browserID;
+            console.log('Connected.  Do I need to re-fetch all states?');
+            if(callback) return callback(self);
+        },
+    });
+};
+JSync.Client.prototype.disconnect = function(callback, sync) {
+    if(!this.connectionID) { // Already logged out.
+        if(callback) return callback(this);
+        return
+    }
+    this.ajax({
+        doNotRetry:true,
+        ajaxOpts:{async:!sync},
+        url:self._url+'/disconnect',
+        type:'POST',
+        data:{op:'disconnect',
+              connectionID:self.connectionID},
+        onSuccess:function(data, retCodeStr, jqXHR) {
+            if(!_.isObject(data)) throw new Error('Expected object from server!');
+            self.connectionID = null;
+            for(var i=self._activeAJAX.length-1; i>=0; i--) {
+                try { self._activeAJAX[i].abort();  // This actually *runs* the error handlers and thrown exceptions will pop thru our stack if we don't try...catch this.
+                } catch(e) {}
+                self._activeAJAX.splice(i, 1);
+            }
+            if(callback) return callback(self);
+        },
+        onError:function(jqXHR, retCodeStr, exceptionObj) {
+            console.log('Error logging out:', exceptionObj);
+            if(callback) return callback(self);
+        }
+    });
+};
+JSync.Client.prototype.reconnect = function() {
+    var self = this;
+    this.disconnect(function() {
+        self.connect(function() {
+            console.log('Reconnected.  Do I need to re-fetch all states?');
+        });
+    });
+};
+JSync.Client.prototype.getConnectionInfo = function(callback) {  // You can use this like a 'waitForConnection()' function.
     // This function was added 2012-11-07 to enable me to create more reliable communications.
     var self = this;
     var check = function() {
-        if(self.connectionID) {
-            // We got a connection.  Now wait for the join:  (Added 2012-12-11)
-            try {
-                var cinfo = self.connectionInfo();
-                if(cinfo) return callback(cinfo);
-            } catch(err) {
-                if(err.message.lastIndexOf('No such state:', 0) === 0) {
-                    // Ignore.
-                } else {
-                    if(typeof console !== 'undefined') console.log('Error during waitForConnection:',err);
-                }
-            }
-        }
+        if(self.connectionID) return callback({connectionID:self.connectionID, browserID:self.browserID});
         setTimeout(check, 100);
     };
     return check();
 };
-
-JSync.Client.prototype.login = function(callback) {
+JSync.Client.prototype.onMessage = function(callback) {
 };
-JSync.Client.prototype.logout = function(callback, sync) {
+JSync.Client.prototype.offMessage = function(callback) {
 };
-JSync.Client.prototype.onMessage = function(nameRegex, callback) {
+JSync.Client.prototype.getState = function(stateID, onSuccess, onError) {
 };
-JSync.Client.prototype.offMessage = function(nameRegex, callback) {
+JSync.Client.prototype.fetchState = function(stateID, onSuccess, onError) {
 };
-JSync.Client.prototype.getState = function(path) {
-};
-JSync.Client.prototype.edit = function(path, operations, meta, onSuccess, onError) {
-};
-JSync.Client.prototype.reset = function(path) {
-};
-
 JSync.Client.prototype.installAutoUnloader = function() {
     if(typeof window === 'undefined') return;
     var self = this;
