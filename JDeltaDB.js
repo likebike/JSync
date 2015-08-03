@@ -47,6 +47,11 @@ if(typeof exports !== 'undefined') {
     fs = require('fs');
     PATH = require('path');
 
+    // Between NodeJS v0.10 and v0.12, path.exists/Sync moved to fs.exists/Sync .
+    // Apply a compatibility monkey patch:
+    fs.exists = fs.exists || PATH.exists;
+    fs.existsSync = fs.existsSync || PATH.existsSync;
+
     // Bring the Node 0.6 API up to the 0.8 API for path.sep:
     if(!PATH.sep) {
         PATH.sep = global.process.platform === 'win32' ? '\\' : '/';
@@ -726,7 +731,7 @@ JDeltaDB.RamStorage.prototype._releaseLock = function(key) {
 };
 JDeltaDB.RamStorage.prototype.__loadSync = function() {
     if(!this.__filepath) return;
-    if(PATH.existsSync(this.__filepath)) {
+    if(fs.existsSync(this.__filepath)) {
         this.__data = JSON.parse(fs.readFileSync(this.__filepath));
     }
 };
@@ -936,7 +941,7 @@ JDeltaDB._walk = function(path, visit, finish, options) {
 };
 
 JDeltaDB._DirStorage_Constructor = function(dirpath) {
-    if(!PATH.existsSync(dirpath)) throw new Error('Dir does not exist: '+dirpath);
+    if(!fs.existsSync(dirpath)) throw new Error('Dir does not exist: '+dirpath);
     this.__dirpath = PATH.resolve(dirpath);
     this.creationMode = '0750';   // Must use a string because literal ocals are forbidden in JS strict mode.
     this.__statesCurrentlyInRam = {};
@@ -1058,7 +1063,7 @@ JDeltaDB.DirStorage.prototype._exists = function(id, onSuccess, onError) {
     if(this.__statesCurrentlyInRam.hasOwnProperty(id))
         return onSuccess(true);
     var filepath = this.__idToFilepath(id);
-    PATH.exists(filepath, function(exists) {
+    fs.exists(filepath, function(exists) {
         return onSuccess(exists);
     });
 };
@@ -1067,7 +1072,7 @@ JDeltaDB.DirStorage.prototype._existsSync = function(id) {
     if(this.__statesCurrentlyInRam.hasOwnProperty(id))
         return true;
     var filepath = this.__idToFilepath(id);
-    return PATH.existsSync(filepath);
+    return fs.existsSync(filepath);
 };
 JDeltaDB.DirStorage.prototype._getRawDeltas = function(id, onSuccess, onError) {
     var self = this;
