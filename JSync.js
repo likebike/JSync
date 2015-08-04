@@ -6,6 +6,8 @@
 var JSync = {},
     _,
     jQuery,     // Browser only.
+    NOOP = function(){},  // Surprisingly useful.
+    FAIL = function(err){throw err},
     undefined;  // So 'undefined' really is undefined.
 if(typeof exports !== 'undefined') {
     // We are in Node.
@@ -19,7 +21,6 @@ if(typeof exports !== 'undefined') {
 } else throw new Error('This environment is not yet supported.');
 
 JSync.VERSION = '201508012330';
-
 
 JSync._test = function() {
     var testNum = 0;
@@ -78,6 +79,24 @@ JSync._test = function() {
     eq(JSync.stringify(s.data), '{"a":111,"b":222,"c":333}');
     s.applyDelta( JSync.edit(JSync.deepCopy(s.data), [{op:'create', key:'d', value:444}, {op:'delete', key:'a'}]) );
     eq(JSync.stringify(s.data), '{"b":222,"c":333,"d":444}');
+    eq(JSync.stringify([1,2,3].concat(4)), '[1,2,3,4]');
+    eq(JSync.stringify([1,2,3].concat([4])), '[1,2,3,4]');
+    var db = JSync.RamDB({a:{a:'a'}, b:{b:'b'}});
+    db._exportData(function(data) { eq(JSync.stringify(data), '{"a":{"a":"a"},"b":{"b":"b"}}') })
+    var stL = function(state, delta, x) {
+        eq(JSync.stringify([state.data,delta,x]), '[{"a":"a","c":3},{"steps":[{"after":3,"key":"c","op":"create","path":[]}]},null]');
+    };
+    var dbL1 = function(id, state, op, delta, x) {
+        eq(JSync.stringify([id,state.data,op,delta,x]), '["a",{"a":"a","c":3},"delta",{"steps":[{"after":3,"key":"c","op":"create","path":[]}]},null]');
+    };
+    db.getState('a', function(state, id) { state.on(stL) });
+    db.on(dbL1);
+    db.getState('a', function(state, id) { state.edit([{op:'update!', key:'c', value:3}]) });
+    db.off(dbL1);
+    var dbL2 = function(id, state, op, delta, x) {
+        eq(JSync.stringify([id,state.data,op,delta,x]), '["a",{"a":"a","c":3},"delete",null,null]');
+    };
+    db.deleteState('a');
 };
 
 
@@ -689,18 +708,47 @@ JSync.applyDelta = function(obj, delta) {
 //
 // This second section deals with higher-level "state" objects, which have Event capabilities.  Still no network requirements.
 // Useful for UI patterns, even without network.
+// Starting here, everything becomes asynchronous.
 //
+
+
+JSync.Dispatcher = function() {
+    if(!(this instanceof JSync.Dispatcher)) return new JSync.Dispatcher();
+    this.listeners = [];
+};
+JSync.Dispatcher.prototype.on = function(callback, context, data) {
+    this.listeners[this.listeners.length] = {callback:callback, context:context, data:data};
+};
+JSync.Dispatcher.prototype.off = function(callback, context, data) {
+    var i, l;
+    for(i=this.listeners.length-1; i>=0; i--) {
+        l = this.listeners[i];
+        if(l.callback===callback && l.context===context && l.data===data)
+            this.listeners.splice(i, 1);  // Remove.
+    }
+};
+JSync.Dispatcher.prototype.trigger = function() {
+    var args = Array.prototype.slice.call(arguments);
+    var Ls = this.listeners.slice(),  // Make a copy because listeners can be modified from the event handlers (like removing the handlers for one-shot handlers).
+        el, i, ii;
+    for(i=0, ii=Ls.length; i<ii; i++) {
+        el = Ls[i];
+        el.callback.apply(el.context, args.concat(el.data));
+    }
+};
+
+
 
 JSync.State = function(initialData) {
     if(!(this instanceof JSync.State)) return new JSync.State(initialData);
     this._dispatcher = JSync.Dispatcher();
     this.data = initialData || {};
 };
-JSync.State.prototype.on = function(callback, context) {
-    return this._dispatcher.on(callback, context);
+JSync.State.prototype.on = function(callback, context, data) {
+    return this._dispatcher.on(callback, context, data);
 };
-JSync.State.prototype.off = function(callback, context) {
-    return this._dispatcher.off(callback, context);
+JSync.State.prototype.off = function(callback, context, data) {
+    return this._dispatcher.off(callback, context, data);
 };
 JSync.State.prototype.edit = function(operations) {
     var delta = JSync.edit(this.data, operations);
@@ -711,39 +759,108 @@ JSync.State.prototype.applyDelta = function(delta) {
     this._dispatcher.trigger(this, delta);
 };
 
-JSync.ALL = {};
-JSync.Dispatcher = function() {
-    if(!(this instanceof JSync.Dispatcher)) return new JSync.Dispatcher();
-    this.listeners = [];
+
+
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+/////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
+//
+// Third Layer deals with groups of States.  This is where we begin to be aware of creation/deletion events and IDs.
+// 
+
+JSync.RamDB = function(initialData, callback) {
+    if(!(this instanceof JSync.RamDB)) return new JSync.RamDB(initialData, callback);
+    callback = callback || NOOP;
+    var self = this;
+    this._states = {};
+    this._dispatcher = JSync.Dispatcher();
+    this._doneLoading = false;
+    this._importData(initialData, function() {
+        self._doneLoading = true;
+        return callback();
+    });
 };
-JSync.Dispatcher.prototype.on = function(callback, context) {
-    this.listeners[this.listeners.length] = {callback:callback, context:context};
+JSync.RamDB.prototype._importData = function(data, callback) {
+    callback = callback || NOOP;
+    if(!data) return callback();
+    var self = this;
+    var create = function(id, state, cb) { self.createState(id, state, cb, cb); },
+        steps = [];
+    _.each(data, function(v, id) { steps[steps.length] = [create, id, JSync.State(v)]; });
+    slide.chain(steps, callback);
 };
-JSync.Dispatcher.prototype.off = function(callback, context) {
-    var i, l;
-    for(i=this.listeners.length-1; i>=0; i--) {
-        l = this.listeners[i];
-        if( (l.callback===callback && l.context===context) || (callback==JSync.ALL) )
-            this.listeners.splice(i, 1);  // Remove.
-    }
+JSync.RamDB.prototype._exportData = function(callback) {
+    callback = callback || NOOP;
+    var self = this,
+        data = {};
+    _.each(this._states, function(state, id) { data[id] = state.data; });
+    return callback(data);
 };
-JSync.Dispatcher.prototype.trigger = function() {
-    var args = Array.prototype.slice.call(arguments);
-    var Ls = this.listeners.slice(),  // Make a copy because listeners can be modified from the event handlers (like removing the handlers for one-shot handlers).
-        el, i, ii;
-    for(i=0, ii=Ls.length; i<ii; i++) {
-        el = Ls[i];
-        // Fire!
-        el.callback.apply(el.context, args);
-    }
+JSync.RamDB.prototype.on = function(callback, context) {
+    return this._dispatcher.on(callback, context);
 };
+JSync.RamDB.prototype.off = function(callback, context) {
+    return this._dispatcher.off(callback, context);
+};
+JSync.RamDB.prototype._stateCallback = function(state,delta,id) {
+    this._dispatcher.trigger(id, state, 'delta', delta);
+};
+JSync.RamDB.prototype.exists = function(id, callback) {
+    callback = callback || NOOP;
+    return callback(this._states.hasOwnProperty(id));
+};
+JSync.RamDB.prototype.listIDs = function(callback) {
+    callback = callback || NOOP;
+    return callback(_.keys(this._states));
+};
+JSync.RamDB.prototype.getState = function(id, onSuccess, onError) {
+    onSuccess = onSuccess || NOOP; onError = onError || FAIL;
+    var state = this._states[id];
+    if(!state) return onError(new Error('State does not exist: '+id));
+    return onSuccess(state, id);
+};
+JSync.RamDB.prototype.createState = function(id, state, onSuccess, onError) {
+    onSuccess = onSuccess || NOOP; onError = onError || FAIL;
+    var self = this;
+    this.exists(id, function(exists) {
+        if(exists) return onError(new Error('Already exists: '+id));
+        self._states[id] = state = state || JSync.State();
+        state.on(self._stateCallback, self, id);
+        self._dispatcher.trigger(id, state, 'create', undefined);
+        return onSuccess();
+    });
+};
+JSync.RamDB.prototype.deleteState = function(id, onSuccess, onError) {
+    onSuccess = onSuccess || NOOP; onError = onError || FAIL;
+    var self = this;
+    this.exists(id, function(exists) {
+        if(!exists) return onError(new Error('Does not exists: '+id));
+        var state = self._states[id];
+        state.off(self._stateCallback, self, id);
+        delete self._states[id];
+        self._dispatcher.trigger(id, state, 'delete', undefined);
+        return onSuccess();
+    });
+};
+
+
+
+
+
+
+
+
+
+
+
+
+
 
 
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //
-// This third section deals with network connectivity.
+// This next section deals with network connectivity.
 //
 // Note that authentication and usernames have no place in this client framework.
 // All those access-control details are dealt with on the server-side.
