@@ -4,6 +4,7 @@
     
 // First, install ourselves and import our dependencies:
 var JSync = {},
+    slide,
     _,
     jQuery,     // Browser only.
     NOOP = function(){},  // Surprisingly useful.
@@ -12,10 +13,12 @@ var JSync = {},
 if(typeof exports !== 'undefined') {
     // We are in Node.
     exports.JSync = JSync;
+    slide = require('./slide.js').slide;
     _ = require('underscore');
 } else if(typeof window !== 'undefined') {
     // We are in a browser.
     window.JSync = JSync;
+    slide = window.slide;
     _ = window._;
     jQuery = window.jQuery || window.$;
 } else throw new Error('This environment is not yet supported.');
@@ -24,10 +27,10 @@ JSync.VERSION = '201508012330';
 
 JSync._test = function() {
     var testNum = 0;
-    var eq = function(a,b) {  // Test for equality
+    var eq = function(a,b,name) {  // Test for equality
         testNum += 1;
         var result = a===b;
-        console.log('Test #'+testNum+' : '+(result ? 'ok' : 'FAIL!  '+a+'  !==  '+b));
+        console.log('Test #'+(name||testNum)+' : '+(result ? 'ok' : 'FAIL!  '+a+'  !==  '+b));
     }
     eq(JSync.stringify({b:[1,2,3],a:{y:4,z:[5],x:'6'}}), '{"a":{"x":"6","y":4,"z":[5]},"b":[1,2,3]}');
     eq(JSync.pad('va','E',3), 'Eva');
@@ -48,17 +51,19 @@ JSync._test = function() {
                {op:'arrayInsert', path:['b','c'], key:0, value:'item-0'},
                {op:'arrayRemove', path:['b','c'], key:1}];
     var delta = JSync.edit(JSync.deepCopy(obj), ops);
-    var badOps = JSync.deepCopy(ops); badOps[badOps.length] = {op:'delete', key:'nonthere'};
+    var badOps = JSync.deepCopy(ops); badOps[badOps.length] = {op:'delete', key:'notthere'};
     var o1 = JSync.deepCopy(obj);
-    try { JSync.edit(o1, badOps) } catch(err) {}
+    try { JSync.edit(o1, badOps) } catch(err) {eq(err.message, 'Not in target: notthere', 'badDelta1')}
     eq(JSync.stringify(o1), JSync.stringify(obj));
-    eq(JSync.stringify(delta), '{"steps":[{"after":{"x":24},"key":"b","op":"create","path":[]},{"after":3,"key":"c","op":"create","path":["b"]},{"after":[30],"before":3,"key":"c","op":"update","path":["b"]},{"before":1,"key":"a","op":"delete","path":[]},{"after":"item-0","key":0,"op":"arrayInsert","path":["b","c"]},{"before":30,"key":1,"op":"arrayRemove","path":["b","c"]}]}');
-    eq(JSync.stringify(JSync.reverseDelta(delta)), '{"steps":[{"after":30,"key":1,"op":"arrayInsert","path":["b","c"]},{"before":"item-0","key":0,"op":"arrayRemove","path":["b","c"]},{"after":1,"key":"a","op":"create","path":[]},{"after":3,"before":[30],"key":"c","op":"update","path":["b"]},{"before":3,"key":"c","op":"delete","path":["b"]},{"before":{"x":24},"key":"b","op":"delete","path":[]}]}');
+    eq(JSync.stringify(delta), '{"endHash":"0x2289c69e","startHash":"0xb02841f6","steps":[{"after":{"x":24},"key":"b","op":"create","path":[]},{"after":3,"key":"c","op":"create","path":["b"]},{"after":[30],"before":3,"key":"c","op":"update","path":["b"]},{"before":1,"key":"a","op":"delete","path":[]},{"after":"item-0","key":0,"op":"arrayInsert","path":["b","c"]},{"before":30,"key":1,"op":"arrayRemove","path":["b","c"]}]}', 'delta1');
+    eq(JSync.stringify(JSync.reverseDelta(delta)), '{"endHash":"0xb02841f6","startHash":"0x2289c69e","steps":[{"after":30,"key":1,"op":"arrayInsert","path":["b","c"]},{"before":"item-0","key":0,"op":"arrayRemove","path":["b","c"]},{"after":1,"key":"a","op":"create","path":[]},{"after":3,"before":[30],"key":"c","op":"update","path":["b"]},{"before":3,"key":"c","op":"delete","path":["b"]},{"before":{"x":24},"key":"b","op":"delete","path":[]}]}');
     eq(JSync.stringify(delta), JSync.stringify(JSync.reverseDelta(JSync.reverseDelta(delta))));
     eq(JSync.stringify(JSync.applyDelta(JSync.deepCopy(obj),delta)), '{"b":{"c":["item-0"],"x":24}}');
     var d1=JSync.deepCopy(delta); d1.steps[5].key = 5;  // Create a broken delta.
-    try { JSync.applyDelta(o1, d1) } catch(err) {}  // Expect failure
+    try { JSync.applyDelta(o1, d1) } catch(err) {eq(err.message, 'IndexError', 'badDelta2')}  // Expect failure
     eq(JSync.stringify(o1), JSync.stringify(obj));
+    o1.tamper=true;
+    try { JSync.applyDelta(o1, d1); } catch(err) { eq(err.message, 'Wrong startHash.', 'tamper1') }  // Expect failure
     var d = JSync.Dispatcher();
     var out1 = null,
         out2 = {};
@@ -79,24 +84,31 @@ JSync._test = function() {
     eq(JSync.stringify(s.data), '{"a":111,"b":222,"c":333}');
     s.applyDelta( JSync.edit(JSync.deepCopy(s.data), [{op:'create', key:'d', value:444}, {op:'delete', key:'a'}]) );
     eq(JSync.stringify(s.data), '{"b":222,"c":333,"d":444}');
-    eq(JSync.stringify([1,2,3].concat(4)), '[1,2,3,4]');
-    eq(JSync.stringify([1,2,3].concat([4])), '[1,2,3,4]');
+    eq(JSync.stringify([1,2,3].concat(4)), '[1,2,3,4]', 'concat1');
+    eq(JSync.stringify([1,2,3].concat([4])), '[1,2,3,4]', 'concat2');
     var db = JSync.RamDB({a:{a:'a'}, b:{b:'b'}});
-    db._exportData(function(data) { eq(JSync.stringify(data), '{"a":{"a":"a"},"b":{"b":"b"}}') })
+    eq(JSync.stringify(db._exportData()), '{"a":{"a":"a"},"b":{"b":"b"}}', 'export1');
+    var lastStateCbVal = null;
     var stL = function(state, delta, x) {
-        eq(JSync.stringify([state.data,delta,x]), '[{"a":"a","c":3},{"steps":[{"after":3,"key":"c","op":"create","path":[]}]},null]');
+        lastStateCbVal = JSync.stringify([state.data,delta,x]);
     };
     var dbL1 = function(id, state, op, delta, x) {
-        eq(JSync.stringify([id,state.data,op,delta,x]), '["a",{"a":"a","c":3},"delta",{"steps":[{"after":3,"key":"c","op":"create","path":[]}]},null]');
+        eq(JSync.stringify([id,state.data,op,delta,x]), '["a",{"a":"a","c":3},"delta",{"endHash":"0x2426c73b","startHash":"0xc68c0c4b","steps":[{"after":3,"key":"c","op":"create","path":[]}]},null]', 'dbCB1');
     };
-    db.getState('a', function(state, id) { state.on(stL) });
+    var stateRef = null;
+    db.getState('a', function(state, id) { stateRef=state });  // I am making the wild assumption that this async method is actually synchronous.
+    stateRef.on(stL);
     db.on(dbL1);
-    db.getState('a', function(state, id) { state.edit([{op:'update!', key:'c', value:3}]) });
+    stateRef.edit([{op:'update!', key:'c', value:3}]);
+    eq(lastStateCbVal, '[{"a":"a","c":3},{"endHash":"0x2426c73b","startHash":"0xc68c0c4b","steps":[{"after":3,"key":"c","op":"create","path":[]}]},null]', 'stateCB1');
     db.off(dbL1);
     var dbL2 = function(id, state, op, delta, x) {
-        eq(JSync.stringify([id,state.data,op,delta,x]), '["a",{"a":"a","c":3},"delete",null,null]');
+        eq(JSync.stringify([id,state.data,op,delta,x]), '["a",{"a":"a","c":3},"delete",null,null]', 'dbCB2');
     };
+    db.on(dbL2);
     db.deleteState('a');
+    stateRef.edit([{op:'update!', key:'d', value:4}]);
+    eq(lastStateCbVal, '[{"a":"a","c":3,"d":4},{"endHash":"0xdb2a4dff","startHash":"0x2426c73b","steps":[{"after":4,"key":"d","op":"create","path":[]}]},null]', 'stateCB2');
 };
 
 
@@ -403,6 +415,13 @@ JSync._test = function() {
 ///////////////////////////////////////////////////////////////////////////////////
 
 
+JSync.stateID_to_htmlID = function(stateID) {
+    return stateID.replace(/\//g, "_");
+};
+JSync.htmlID_to_stateID = function(htmlID) {
+    return htmlID.replace(/_/g, '/');
+};
+
 
 JSync.pad = function(s, p, n) {
     while(s.length < n)
@@ -571,7 +590,7 @@ JSync.edit = function(obj, operations) {
                 FAIL('Illegal operation: '+op);
         }
     }
-    return {steps:steps};
+    return {startHash:JSync.dsHash(origObjStr), endHash:JSync.dsHash(JSync.stringify(obj)), steps:steps};
 };
 JSync.reverseDelta = function(delta) {
     if(!_.isObject(delta))
@@ -622,9 +641,9 @@ JSync.reverseDelta = function(delta) {
         }
         reversedSteps[reversedSteps.length] = rstep;
     }
-    return {steps:reversedSteps};
+    return {startHash:delta.endHash, endHash:delta.startHash, steps:reversedSteps};
 };
-JSync.applyDelta = function(obj, delta) {
+JSync.applyDelta = function(obj, delta, doNotCheckStartHash, doNotCheckEndHash) {
     // Note: 'obj' is modified.
     if(!_.isObject(obj))
         throw new Error("Expected 'obj' to be an Object or Array.");
@@ -632,12 +651,15 @@ JSync.applyDelta = function(obj, delta) {
         throw new Error("Expected 'delta' to be a Delta object.");
     if(!_.isArray(delta.steps))
         throw new Error('Invalid Delta object.');
-    var origObjStr = JSync.stringify(obj),
-        steps = delta.steps,
+    var origObjStr = JSync.stringify(obj);
+    if(!doNotCheckStartHash && delta.startHash!==undefined) {
+        if(JSync.dsHash(origObjStr) !== delta.startHash) throw new Error('Wrong startHash.');
+    }
+    var steps = delta.steps,
         i, ii, step, op, path, key, target;
     var FAIL = function(msg) {
         console.error('Delta Application Failed.  Rolling back...');
-        JSync.applyDelta(obj, JSync.reverseDelta({steps:delta.steps.slice(0,i)}));
+        JSync.applyDelta(obj, JSync.reverseDelta({startHash:delta.startHash, steps:delta.steps.slice(0,i)}));
         if(JSync.stringify(obj) === origObjStr) console.error('Rollback Successful.');
         else console.error('Rollback Failed!');
         throw new Error(msg);
@@ -697,6 +719,9 @@ JSync.applyDelta = function(obj, delta) {
             default:
                 FAIL('Illegal operation: '+step.op);
         }
+    }
+    if(!doNotCheckEndHash && delta.endHash!==undefined) {
+        if(JSync.dsHash(JSync.stringify(obj)) !== delta.endHash) FAIL('Wrong endHash.');
     }
     return obj; // For chaining...
 };
@@ -773,33 +798,33 @@ JSync.RamDB = function(initialData, callback) {
     var self = this;
     this._states = {};
     this._dispatcher = JSync.Dispatcher();
-    this._doneLoading = false;
-    this._importData(initialData, function() {
-        self._doneLoading = true;
-        return callback();
-    });
+    this._importData(initialData, callback);
 };
 JSync.RamDB.prototype._importData = function(data, callback) {
     callback = callback || NOOP;
     if(!data) return callback();
     var self = this;
     var create = function(id, state, cb) { self.createState(id, state, cb, cb); },
-        steps = [];
-    _.each(data, function(v, id) { steps[steps.length] = [create, id, JSync.State(v)]; });
+        steps = [],
+        id;;
+    for(id in data) if(data.hasOwnProperty(id)) {
+        steps[steps.length] = [create, id, JSync.State(data[id])];
+    }
     slide.chain(steps, callback);
 };
-JSync.RamDB.prototype._exportData = function(callback) {
-    callback = callback || NOOP;
-    var self = this,
-        data = {};
-    _.each(this._states, function(state, id) { data[id] = state.data; });
-    return callback(data);
+JSync.RamDB.prototype._exportData = function() {
+    var data = {},
+        id;
+    for(id in this._states) if(this._states.hasOwnProperty(id)) {
+        data[id] = this._states[id].data;
+    }
+    return data;
 };
-JSync.RamDB.prototype.on = function(callback, context) {
-    return this._dispatcher.on(callback, context);
+JSync.RamDB.prototype.on = function(callback, context, data) {
+    return this._dispatcher.on(callback, context, data);
 };
-JSync.RamDB.prototype.off = function(callback, context) {
-    return this._dispatcher.off(callback, context);
+JSync.RamDB.prototype.off = function(callback, context, data) {
+    return this._dispatcher.off(callback, context, data);
 };
 JSync.RamDB.prototype._stateCallback = function(state,delta,id) {
     this._dispatcher.trigger(id, state, 'delta', delta);
@@ -817,6 +842,16 @@ JSync.RamDB.prototype.getState = function(id, onSuccess, onError) {
     var state = this._states[id];
     if(!state) return onError(new Error('State does not exist: '+id));
     return onSuccess(state, id);
+};
+JSync.RamDB.prototype.getStateAutocreate = function(id, defaultData, onSuccess, onError) {
+    onSuccess = onSuccess || NOOP; onError = onError || FAIL;
+    var self = this;
+    this.getState(id, onSuccess, function(err) {
+        if(err.message === 'State does not exist: '+id) {
+            var state = JSync.State(defaultData);
+            self.createState(id, state, function() { return onSuccess(state, id); }, onError);
+        } else return onError(err);
+    });
 };
 JSync.RamDB.prototype.createState = function(id, state, onSuccess, onError) {
     onSuccess = onSuccess || NOOP; onError = onError || FAIL;
@@ -841,18 +876,6 @@ JSync.RamDB.prototype.deleteState = function(id, onSuccess, onError) {
         return onSuccess();
     });
 };
-
-
-
-
-
-
-
-
-
-
-
-
 
 
 
@@ -889,10 +912,13 @@ JSync.getBrowser = function() {   // I am adding this here because jQuery has re
     };
 };
 
-JSync.Client = function(url) {
+JSync.HttpDB = function(url, callback) {
     // Guard against forgetting the 'new' operator:
-    if(!(this instanceof JSync.Client)) return new JSync.Client(url);
-    var self = this;
+    if(!(this instanceof JSync.HttpDB)) return new JSync.HttpDB(url, callback);
+    callback = callback || NOOP;
+    this._states = {};
+    this._dispatcher = JSync.Dispatcher();
+    this._messageDispatcher = JSync.Dispatcher();
 
     this.maxSendBundleBytes = 100*1024;
     this.successReceiveReconnectMS = 1;
@@ -904,9 +930,51 @@ JSync.Client = function(url) {
     this._ajaxSingletons = {};
     this._activeAJAX = [];
 
+    this._connect(callback);
     console.log('Still need to installAutoUnloader()');
 };
-JSync.Client.prototype._handleAjaxErrorCodes = function(jqXHR) {
+JSync.HttpDB.prototype.getConnectionInfo = function(callback) {  // You can use this like a 'waitForConnection()' function.
+    // This function was added 2012-11-07 to enable me to create more reliable communications.
+    var self = this;
+    var check = function() {
+        if(self.connectionID) return callback({connectionID:self.connectionID, browserID:self.browserID});
+        setTimeout(check, 100);  // Right now, I'm using this inefficient polling implementation.  Maybe in the future I will convert it to an event-based implementation.
+    };
+    return check();
+};
+JSync.HttpDB.prototype.onMessage = function(callback, context, data) {
+    return this._messageDispatcher.on(callback, context, data);
+};
+JSync.HttpDB.prototype.offMessage = function(callback, context, data) {
+    return this._messageDispatcher.off(callback, context, data);
+};
+JSync.HttpDB.prototype.on = function(callback, context, data) {
+    return this._dispatcher.on(callback, context, data);
+};
+JSync.HttpDB.prototype.off = function(callback, context, data) {
+    return this._dispatcher.off(callback, context, data);
+};
+JSync.HttpDB.prototype.exists = function(id, callback) {
+    // I'm using this generic, inefficient implementation for now.
+    callback = callback || NOOP;
+    var self = this;
+    this.listIDs(function(ids) {
+        for(var i=ids.length-1; i>=0; i--) {
+            if(ids[i]===id) return callback(true);
+        }
+        return callback(false);
+    });
+};
+JSync.HttpDB.prototype.listIDs = function(callback) {
+};
+JSync.HttpDB.prototype.getState = function(id, onSuccess, onError) {
+};
+JSync.HttpDB.prototype.createState = function(id, state, onSuccess, onError) {
+};
+JSync.HttpDB.prototype.deleteState = function(id, onSuccess, onError) {
+};
+
+JSync.HttpDB.prototype._handleAjaxErrorCodes = function(jqXHR) {
     // If jqXHR.status is 0, it means there is a problem with cross-domain communication, and Javascript has been dis-allowed access to the XHR object.
     if(jqXHR.status === 401) {
         // Our connectionID has been deleted because it was idle.
@@ -923,7 +991,7 @@ JSync.Client.prototype._handleAjaxErrorCodes = function(jqXHR) {
     }
     return false;
 };
-JSync.Client.prototype.ajax = function(options) {
+JSync.HttpDB.prototype._ajax = function(options) {
     // A robust, commonly-used convenience function.
     var self = this,
         errRetryMS = options.errRetryMS || 1000,
@@ -973,9 +1041,9 @@ JSync.Client.prototype.ajax = function(options) {
     if(options.requireConnection) return this.getConnectionInfo(DOIT);
     else return DOIT();
 };
-JSync.Client.prototype.connect = function(callback) {
+JSync.HttpDB.prototype._connect = function(callback) {
     var self = this;
-    this.ajax({
+    this._ajax({
         errRetryMaxMS:30000,
         url:self._url+'/connect',
         type:'POST',
@@ -989,12 +1057,12 @@ JSync.Client.prototype.connect = function(callback) {
         },
     });
 };
-JSync.Client.prototype.disconnect = function(callback, sync) {
+JSync.HttpDB.prototype._disconnect = function(callback, sync) {
     if(!this.connectionID) { // Already logged out.
         if(callback) return callback(this);
         return
     }
-    this.ajax({
+    this._ajax({
         doNotRetry:true,
         ajaxOpts:{async:!sync},
         url:self._url+'/disconnect',
@@ -1017,7 +1085,7 @@ JSync.Client.prototype.disconnect = function(callback, sync) {
         }
     });
 };
-JSync.Client.prototype.reconnect = function() {
+JSync.HttpDB.prototype._reconnect = function() {
     var self = this;
     this.disconnect(function() {
         self.connect(function() {
@@ -1025,24 +1093,9 @@ JSync.Client.prototype.reconnect = function() {
         });
     });
 };
-JSync.Client.prototype.getConnectionInfo = function(callback) {  // You can use this like a 'waitForConnection()' function.
-    // This function was added 2012-11-07 to enable me to create more reliable communications.
-    var self = this;
-    var check = function() {
-        if(self.connectionID) return callback({connectionID:self.connectionID, browserID:self.browserID});
-        setTimeout(check, 100);
-    };
-    return check();
+JSync.HttpDB.prototype._fetchState = function(stateID, onSuccess, onError) {
 };
-JSync.Client.prototype.onMessage = function(callback) {
-};
-JSync.Client.prototype.offMessage = function(callback) {
-};
-JSync.Client.prototype.getState = function(stateID, onSuccess, onError) {
-};
-JSync.Client.prototype.fetchState = function(stateID, onSuccess, onError) {
-};
-JSync.Client.prototype.installAutoUnloader = function() {
+JSync.HttpDB.prototype._installAutoUnloader = function() {
     if(typeof window === 'undefined') return;
     var self = this;
     window.onbeforeunload = function(e) {

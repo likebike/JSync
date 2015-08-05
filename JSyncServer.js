@@ -6,6 +6,8 @@ var JSync,  // We re-use the JSync namespace.
     _,
     fs,
     PATH,
+    NOOP = function(){},  // Surprisingly useful.
+    FAIL = function(err){throw err},
     undefined;  // So 'undefined' really is undefined.
 if(typeof exports !== 'undefined') {
     // We are in Node.
@@ -33,75 +35,72 @@ if(typeof exports !== 'undefined') {
 // This first section deals with storage and retreival of JSync States.
 //
 
-JSync.RamDB = function(path) {
-    if(!(this instanceof JSync.RamDB)) return new JSync.RamDB(path);
+JSync.FileDB = function(path, callback) {
+    if(!(this instanceof JSync.FileDB)) return new JSync.FileDB(path, callback);
+    callback = callback || NOOP;
     this._states = {};
-    this._path = path;
-    if(this._path) this._path = PATH.resolve(this._path);
-    this._loadSync();
-    this.save = _.debounce(_.bind(this._rawSaveSync, this), 1000);
-};
-JSync.RamDB.prototype._loadSync = function() {  // Synchronous loading is OK because we usually only do this at server startup.
-    if(!this._path) return;
-    if(fs.existsSync(this._path)) {
-        var data = JSON.parse(fs.readFileSync(this._path)),
-            k;
-        for(k in data) if(data.hasOwnProperty(k)) {
-            this._states[k] = JSync.State(data[k]);
-        }
-    }
-};
-JSync.RamDB.prototype._rawSaveSync = function() {
-    if(!this._path) return;
-    var newPath = this._path + '.new',
-        outObj = {},
-        k;
-    for(k in this._states) if(this._states.hasOwnProperty(k)) {
-        outObj[k] = this._states[k].data;
-    }
-    fs.writeFileSync(newPath, JSync.stringify(outObj, undefined, 2));
-    fs.renameSync(newPath, this._path);
-};
-JSync.RamDB.prototype.existsSync = function(id) {
-    return this._states.hasOwnProperty(id);
-};
-JSync.RamDB.prototype.exists = function(id, callback) {
-    return callback(this.existsSync(id));
-};
-JSync.RamDB.prototype.listIDs = function(callback) {
-    var ids = [],
-        k;
-    for(k in this._states) if(this._states.hasOwnProperty(k)) {
-        ids[ids.length] = k;
-    }
-    ids.sort();
-    return callback(ids);
-};
-JSync.RamDB.prototype.createStateSync = function(id, state) {
-    if(this.existsSync(id)) throw new Error('Already exists: '+id);
-    this._states[id] = state || JSync.State();
-};
-JSync.RamDB.prototype.deleteState = function(id, onSuccess, onError) {
+    this._dispatcher = JSync.Dispatcher();
+    this._path = PATH.resolve(path);
+
+    this._save = _.debounce(_.bind(this._rawSave, this), 1000);
+
     var self = this;
-    this.exists(id, function(exists) {
-        if(!exists) {
-            var err = new Error('Does not exists: '+id);
-            if(onError) return onError(err);
-            throw err;
-        }
-        var state = self._states[id];
-        state.off(JSync.ALL);
-        delete self._states[id];
-        self.save();
-        return onSuccess();
+    this._load(function() {
+        self.on(function() { self._save(); });  // Register the saver after loading so the load events don't trigger another save.
+        return callback();
     });
 };
+JSync.FileDB.prototype._importData = JSync.RamDB.prototype._importData;
+JSync.FileDB.prototype._load = function(onSuccess, onError) {
+    onSuccess = onSuccess || NOOP; onError = onError || FAIL;
+    var self = this;
+    if(!this._path) return onError(new Error('Missing _path!'));
+    fs.readFile(this._path, function(err, dataStr) {
+        if(err) {
+            if(err.code === 'ENOENT') {
+                // The path doesn't exist.  This isn't a fatal error.
+                console.log('File does not exist:',self._path);
+                // Just exit, since there's no data to load:
+                return onSuccess();
+            }
+            return onError(err);
+        }
+        var data = JSON.parse(dataStr);
+        self._importData(data, onSuccess);
+    });
+};
+JSync.FileDB.prototype._exportData = JSync.RamDB.prototype._exportData;
+JSync.FileDB.prototype._rawSave = function(onSuccess, onError) {
+    onSuccess = onSuccess || NOOP; onError = onError || FAIL;
+    if(!this._path) return onError(new Error('Missing _path!'));
+    var self = this,
+        newPath = this._path + '.new',
+        data = this._exportData(),
+        k;
+    fs.writeFile(newPath, JSync.stringify(data, undefined, 2), function(err) {
+        if(err) return onError(err);
+        fs.rename(newPath, self._path, function(err) {
+            if(err) return onError(err);
+            console.log('Saved:',self._path);
+            return onSuccess();
+        });
+    });
+};
+JSync.FileDB.prototype.on = JSync.RamDB.prototype.on;
+JSync.FileDB.prototype.off = JSync.RamDB.prototype.off;
+JSync.FileDB.prototype._stateCallback = JSync.RamDB.prototype._stateCallback;
+JSync.FileDB.prototype.exists = JSync.RamDB.prototype.exists;
+JSync.FileDB.prototype.listIDs = JSync.RamDB.prototype.listIDs;
+JSync.FileDB.prototype.getState = JSync.RamDB.prototype.getState;
+JSync.FileDB.prototype.getStateAutocreate = JSync.RamDB.prototype.getStateAutocreate;
+JSync.FileDB.prototype.createState = JSync.RamDB.prototype.createState;
+JSync.FileDB.prototype.deleteState = JSync.RamDB.prototype.deleteState;
 
 
 
 
 ///// I don't know if we need any locks in this implementation...
-//JSync.RamDB.prototype.acquireLock = function(alreadyLocked, callback) {
+//JSync.FileDB.prototype.acquireLock = function(alreadyLocked, callback) {
 //    console.log('acquireLock...');
 //    if(alreadyLocked) {
 //        console.log('Already own lock.  Calling...');
@@ -118,7 +117,7 @@ JSync.RamDB.prototype.deleteState = function(id, onSuccess, onError) {
 //    console.log('Adding to lock queue.');
 //    //console.trace();
 //};
-//JSync.RamDB.prototype._nextLockCB = function() {
+//JSync.FileDB.prototype._nextLockCB = function() {
 //    console.log('nextLockCB...');
 //    var self = this;
 //    if(this.lockKey) throw new Error('NextLockCB called while previous lock exists!');
@@ -138,7 +137,7 @@ JSync.DirDB = function(path) {
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 //
-// This second section implements a JSync network server.
+// This second section implements a JSync.HttpDB server.
 //
 
 
@@ -175,32 +174,71 @@ JSync.AccessPolicy_NoClientEdits.prototype.canRead   = AP_TRUE;
 JSync.AccessPolicy_NoClientEdits.prototype.canUpdate = AP_FALSE;
 
 
-JSync.Server = function(stateDB, accessPolicy, options) {
-    if(!(this instanceof JSync.Server)) return new JSync.Server(stateDB, accessPolicy, options);
-    if(!stateDB) throw new Error('Expected a stateDB arg.');
+JSync.HttpDBServer = function(stateDB, metaDB, accessPolicy, options) {
+    if(!(this instanceof JSync.HttpDBServer)) return new JSync.HttpDBServer(stateDB, metaDB, accessPolicy, options);
     
     this.longPollTimeoutMS = 100000;
     this.connectionStaleTime = 1000*60*5;
     this.disposableQueueSizeLimit = 200;
 
-    this.accessPolicy = accessPolicy || JSync.AccessPolicy_WideOpen();
     this.options = options;
-
-    this._activeConnections = {};
+    this.accessPolicy = accessPolicy || JSync.AccessPolicy_WideOpen();
+    this.setMetaDB(metaDB);
     this.setStateDB(stateDB);
 
     this.removeStaleConnectionsInterval = setInterval(_.bind(this._removeStaleConnections, this), 10000);
 };
-JSync.Server.prototype.setStateDB = function(stateDB) {
+JSync.HttpDBServer.prototype.setStateDB = function(stateDB) {
     if(!stateDB) throw new Error('Null stateDB');
-    if(this.stateDB) throw new Error('Not implemented yet.');  // When replacing a stateDB, you would need to unregister callback, re-load currently-used states... etc.
+    if(this.stateDB) throw new Error('stateDB replacement not implemented yet.');  // When replacing a stateDB, you would need to unregister callback, re-load currently-used states... etc.
     this.stateDB = stateDB;
-    // We assume that stateDB is loaded/created synchronously.  Therefore, we don't need to make use of a waitForLoad() function to get accurate data.
-    // Initialize our activeConnections so there is no loss of data while our clients reconnect after a server restart:
-    console.log('Need to implement activeConnection reloading...');
     stateDB.on(this._stateDBEventCallback, this);
 };
-JSync.Server._removeStaleConnections = function() {
+JSync.HttpDBServer.prototype.setMetaDB = function(metaDB) {
+    if(!metaDB) throw new Error('Null metaDB');
+    if(this.metaDB) throw new Error('metaDB replacement not implemented yet.');
+    this.metaDB = metaDB;
+    metaDB.on(this._metaDBEventCallback, this);
+    // Define some states that definitely need to be there:
+    metaDB.getStateAutocreate('browsers');
+    metaDB.getStateAutocreate('connections');
+};
+JSync.HttpDBServer.prototype._stateDBEventCallback = function(a,b,c,d,e) {
+    console.log('stateDBEventCallback:',a,b,c,d,e);
+};
+JSync.HttpDBServer.prototype._metaDBEventCallback = function(id,state,op,data) {
+    console.log('metaDBEventCallback:',id,state,op,data);
+};
+JSync.HttpDBServer.prototype.browserInfo = function(browserID, callback) {
+    callback = callback || NOOP;
+    this.metaDB.getState('browsers', function(state) {
+        if(!state.data.hasOwnProperty(browserID)) return callback(null);
+        var info = JSync.deepCopy(state.data[browserID]);  // Prevent mutation of state object.
+        info.browserID = browserID;
+        info.connections = [];
+        this.metaDB.getState('connections', function(state) {
+            var connectionInfo, connectionID;
+            for(connectionID in state.data) if(state.data.hasOwnProperty(connectionID)) {
+                connectionInfo = state.data[connectionID];
+                if(connectionInfo.browserID === browserID) {
+                    info.connections[info.connections.length] = connectionID;
+                }
+            }
+            return callback(info);
+        });
+    });
+};
+
+
+
+
+
+
+
+
+
+
+JSync.HttpDBServer.prototype._removeStaleConnections = function() {
     var curTime = new Date().getTime(),
         conn, connTime, connectionID;
     for(connectionID in this._activeConnections) if(this._activeConnections.hasOwnProperty(connectionID)) {
@@ -219,17 +257,21 @@ JSync.Server._removeStaleConnections = function() {
         }
     }
 };
-JSync.Server.clientConnect = function(browserID, req, onSuccess, onError) {
-    var connectionID;
-    while(true) {
-        connectionID = JSync.generateID();
-        if(!this.connectionInfo(connectionID)) break;
-    }
-    console.log('New Connection: browserID='+browserID+' connectionID='+connectionID);
-    this._addConnection(browserID, connectionID);
-    return onSuccess({browserID:browserID, connectionID:connectionID});
+JSync.HttpDBServer.prototype.clientConnect = function(browserID, req, onSuccess, onError) {
+    onSuccess = onSuccess || NOOP; onError = onError || FAIL;
+    var self = this;
+    this.metaDB.getState('connections', function(connections) {
+        var connectionID;
+        while(true) {
+            connectionID = JSync.generateID();
+            if(!(connectionID in connections.data)) break;
+        }
+        console.log('New Connection: browserID='+browserID+' connectionID='+connectionID);
+        connections.edit([{op:'create', key:connectionID, value:{browserID:browserID, atime:new Date().getTime()}}]);
+        return onSuccess({browserID:browserID, connectionID:connectionID});
+    });
 };
-JSync.Server.clientDisconnect = function(connectionID, req, onSuccess, onError) {
+JSync.HttpDBServer.prototype.clientDisconnect = function(connectionID, req, onSuccess, onError) {
     var connectionInfo = this.connectionInfo(connectionID);
     if(!connectionInfo) return onError(new Error('connectionID not found!'));
     this._removeConnection(connectionInfo.browserID, connectionID);
@@ -237,7 +279,7 @@ JSync.Server.clientDisconnect = function(connectionID, req, onSuccess, onError) 
 };
 
 
-JSync.Server.prototype.installIntoSebwebRouter = function(router, baseURL) {
+JSync.HttpDBServer.prototype.installIntoSebwebRouter = function(router, baseURL) {
     if(!_.isString(baseURL)) throw new Error('Expected a baseURL');
     if(!baseURL.length) throw new Error('Empty baseURL!');
     if(baseURL.charAt(0) !== '/') throw new Error("baseURL should start with '/'.");
@@ -249,8 +291,8 @@ JSync.Server.prototype.installIntoSebwebRouter = function(router, baseURL) {
 JSync.sebwebHandler_connect = function(syncServer) {
     var sebweb = require('sebweb');
     if(!syncServer.options.sebweb_cookie_secret) throw new Error('You must define syncServer.options.sebweb_cookie_secret!');
-    return sebweb.BodyParser(sebweb.CookieStore(syncServer.optioons.sebweb_cookie_secret, function(req, res, onSuccess, onError) {
-        sebCorsHeaders(req, res, syncServer);
+    return sebweb.BodyParser(sebweb.CookieStore(syncServer.options.sebweb_cookie_secret, function(req, res, onSuccess, onError) {
+        JSync._setCorsHeaders(req, res, syncServer);
         var afterWeHaveABrowserID = function(browserID) {
             var opArray = req.formidable.fields.op;
             if(!_.isArray(opArray)) return onError(new Error('no op!'));
@@ -287,20 +329,22 @@ JSync.sebwebHandler_connect = function(syncServer) {
                 default: return onError(new Error('Invalid op!'));
             }
         };
-        var browserID = res.SWCS_get('JSync_BrowserID');
-        if(browserID) {
-            if(syncServer.browserInfo(browserID)) return afterWeHaveABrowserID(browserID);
-            console.log('BrowserID was provided by client, but not recognized by server:',browserID);
-        } else {
-            console.log('No BrowserID was provided.');
-        }
+        syncServer.metaDB.getState('browsers', function(browsers) {
+            var browserID = res.SWCS_get('JSync_BrowserID');
+            if(browserID) {
+                if(browserID in browsers.data) return afterWeHaveABrowserID(browserID);
+                console.log('BrowserID was provided by client, but not recognized by server:',browserID);
+                console.log(_.keys(browsers.data));
+            } else {
+                console.log('No BrowserID was provided.');
+            }
 
-        // Either no browserID was given, or we did not recognize the given browserID.  Generate a new one:
-        while(true) {
-            browserID = JSync.generateID();
-            if(!syncServer.browserInfo(browserID)) break;  // check for collision
-        }
-        return syncServer._addBrowser(browserID, function() {
+            // Either no browserID was given, or we did not recognize the given browserID.  Generate a new one:
+            while(true) {
+                browserID = JSync.generateID();
+                if(!(browserID in browsers.data)) break;  // check for collision
+            }
+            browsers.edit([{op:'create', key:browserID, value:{}}]);
             res.SWCS_set('JSync_BrowserID', browserID);
             return afterWeHaveABrowserID(browserID);
         });
