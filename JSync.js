@@ -776,10 +776,13 @@ JSync.State.prototype.off = function(callback, context, data) {
     return this._dispatcher.off(callback, context, data);
 };
 JSync.State.prototype.edit = function(operations) {
+    if(!_.isArray(operations)) throw new Error('Expected Array operations argument.');
+    if(!operations.length) return;   // Skip noops.
     var delta = JSync.edit(this.data, operations);
     this._dispatcher.trigger(this, delta);
 };
 JSync.State.prototype.applyDelta = function(delta) {
+    if(!delta || !delta.steps.length) return;   // Skip noops.
     JSync.applyDelta(this.data, delta);
     this._dispatcher.trigger(this, delta);
 };
@@ -792,25 +795,73 @@ JSync.State.prototype.applyDelta = function(delta) {
 // Third Layer deals with groups of States.  This is where we begin to be aware of creation/deletion events and IDs.
 // 
 
-JSync.RamDB = function(initialData, callback) {
-    if(!(this instanceof JSync.RamDB)) return new JSync.RamDB(initialData, callback);
-    callback = callback || NOOP;
+JSync._allWaiters = [];
+JSync._waiterDeadlockCheck = function() {
+    var curTime = new Date().getTime(),
+        i, ii, waiter, name, r, j, jj;
+    for(i=0, ii=JSync._allWaiters.length; i<ii; i++) {
+        waiter = JSync._allWaiters[i];
+        for(name in waiter._readys) if(waiter._readys.hasOwnProperty(name)) {
+            r = waiter._getReady(name);
+            for(j=0, jj=r.listeners.length; j<jj; j++) {
+                if(curTime - r.listeners[j].ctime > 20000) {
+                    console.log('Possible Waiter Deadlock:', name);
+                    break;  // Only need to print once per name.
+                }
+            }
+        }
+    }
+}
+setInterval(JSync._waiterDeadlockCheck, 30000);
+JSync.Waiter = function() {
+    if(!(this instanceof JSync.Waiter)) return new JSync.Waiter();
+    this._readys = {};
+    JSync._allWaiters[JSync._allWaiters.length] = this;
+};
+JSync.Waiter.prototype._getReady = function(name) {
+    if(this._readys[name] === undefined) this._readys[name] = {};
+    if(this._readys[name].isReady === undefined) this._readys[name].isReady = false;
+    if(this._readys[name].listeners === undefined) this._readys[name].listeners = [];
+    return this._readys[name];
+};
+JSync.Waiter.prototype.notReady = function(name) {
+    this._getReady(name).isReady = false;
+};
+JSync.Waiter.prototype.ready = function(name) {
+    var r = this._getReady(name);
+    r.isReady = true;
+    while(r.listeners.length > 0) r.listeners.pop().callback();
+};
+JSync.Waiter.prototype.waitReady = function(name, callback) {
+    var r = this._getReady(name);
+    if(r.isReady) return callback();
+    r.listeners[r.listeners.length] = {callback:callback, ctime:new Date().getTime()};
+};
+
+
+JSync.RamDB = function(initialData) {
+    if(!(this instanceof JSync.RamDB)) return new JSync.RamDB(initialData);
     var self = this;
     this._states = {};
     this._dispatcher = JSync.Dispatcher();
-    this._importData(initialData, callback);
+    this._waiter = JSync.Waiter();
+    this._watier.notReady('READY');
+    this._importData(initialData);
+    this._waiter.waitReady('RamDB._importData', function() { self._waiter.ready('READY') });
 };
-JSync.RamDB.prototype._importData = function(data, callback) {
-    callback = callback || NOOP;
-    if(!data) return callback();
+JSync.RamDB.prototype._importData = function(data) {
+    if(!data) return;
+    this._waiter.notReady('RamDB._importData');
     var self = this;
-    var create = function(id, state, cb) { self.createState(id, state, cb, cb); },
+    var create = function(id, state, cb) { self.createState(id, state, cb, cb, true); },  // 'true' tells createState (and therefore 'exists') not to wait for READY, otherwise we'd have a deadlock, since READY can't occur until we are done here..
         steps = [],
         id;;
     for(id in data) if(data.hasOwnProperty(id)) {
         steps[steps.length] = [create, id, JSync.State(data[id])];
     }
-    slide.chain(steps, callback);
+    slide.chain(steps, function() {
+        self._waiter.ready('RamDB._importData');
+    });
 };
 JSync.RamDB.prototype._exportData = function() {
     var data = {},
@@ -829,19 +880,30 @@ JSync.RamDB.prototype.off = function(callback, context, data) {
 JSync.RamDB.prototype._stateCallback = function(state,delta,id) {
     this._dispatcher.trigger(id, state, 'delta', delta);
 };
-JSync.RamDB.prototype.exists = function(id, callback) {
+JSync.RamDB.prototype.exists = function(id, callback, doNotWaitReady) {
     callback = callback || NOOP;
-    return callback(this._states.hasOwnProperty(id));
+    var self = this;
+    var afterReady = function() {
+        callback(self._states.hasOwnProperty(id));
+    };
+    if(doNotWaitReady) return afterReady();
+    this._waiter.waitReady('READY', afterReady);
 };
 JSync.RamDB.prototype.listIDs = function(callback) {
     callback = callback || NOOP;
-    return callback(_.keys(this._states));
+    var self = this;
+    this._waiter.waitReady('READY', function() {
+        callback(_.keys(self._states));
+    });
 };
 JSync.RamDB.prototype.getState = function(id, onSuccess, onError) {
     onSuccess = onSuccess || NOOP; onError = onError || FAIL;
-    var state = this._states[id];
-    if(!state) return onError(new Error('State does not exist: '+id));
-    return onSuccess(state, id);
+    var self = this;
+    this._waiter.waitReady('READY', function() {
+        var state = self._states[id];
+        if(!state) return onError(new Error('State does not exist: '+id));
+        return onSuccess(state, id);
+    });
 };
 JSync.RamDB.prototype.getStateAutocreate = function(id, defaultData, onSuccess, onError) {
     onSuccess = onSuccess || NOOP; onError = onError || FAIL;
@@ -853,7 +915,7 @@ JSync.RamDB.prototype.getStateAutocreate = function(id, defaultData, onSuccess, 
         } else return onError(err);
     });
 };
-JSync.RamDB.prototype.createState = function(id, state, onSuccess, onError) {
+JSync.RamDB.prototype.createState = function(id, state, onSuccess, onError, doNotWaitReady) {
     onSuccess = onSuccess || NOOP; onError = onError || FAIL;
     var self = this;
     this.exists(id, function(exists) {
@@ -862,7 +924,7 @@ JSync.RamDB.prototype.createState = function(id, state, onSuccess, onError) {
         state.on(self._stateCallback, self, id);
         self._dispatcher.trigger(id, state, 'create', undefined);
         return onSuccess();
-    });
+    }, doNotWaitReady);
 };
 JSync.RamDB.prototype.deleteState = function(id, onSuccess, onError) {
     onSuccess = onSuccess || NOOP; onError = onError || FAIL;
@@ -912,13 +974,14 @@ JSync.getBrowser = function() {   // I am adding this here because jQuery has re
     };
 };
 
-JSync.HttpDB = function(url, callback) {
+JSync.WebDB = function(url) {
     // Guard against forgetting the 'new' operator:
-    if(!(this instanceof JSync.HttpDB)) return new JSync.HttpDB(url, callback);
-    callback = callback || NOOP;
+    if(!(this instanceof JSync.WebDB)) return new JSync.WebDB(url);
     this._states = {};
     this._dispatcher = JSync.Dispatcher();
     this._messageDispatcher = JSync.Dispatcher();
+    this._waiter = JSync.Waiter();
+    this._waiter.notReady('READY');
 
     this.maxSendBundleBytes = 100*1024;
     this.successReceiveReconnectMS = 1;
@@ -930,31 +993,31 @@ JSync.HttpDB = function(url, callback) {
     this._ajaxSingletons = {};
     this._activeAJAX = [];
 
-    this._connect(callback);
-    console.log('Still need to installAutoUnloader()');
-};
-JSync.HttpDB.prototype.getConnectionInfo = function(callback) {  // You can use this like a 'waitForConnection()' function.
-    // This function was added 2012-11-07 to enable me to create more reliable communications.
+    this._connect();
     var self = this;
-    var check = function() {
-        if(self.connectionID) return callback({connectionID:self.connectionID, browserID:self.browserID});
-        setTimeout(check, 100);  // Right now, I'm using this inefficient polling implementation.  Maybe in the future I will convert it to an event-based implementation.
-    };
-    return check();
+    this._waiter.waitReady('WebDB._connect', function() {  // I don't think WebDB._connect is actually the correct thing to wait for.  I think we need to load some data from the server before we're actuallly READY.
+        console.log('Still need to installAutoUnloader()');
+    });
 };
-JSync.HttpDB.prototype.onMessage = function(callback, context, data) {
+JSync.WebDB.prototype.getConnectionInfo = function(callback) {  // You can use this like a 'waitForConnection()' function.
+    var self = this;
+    this._waiter.waitReady('WebDB._connect', function() {
+        callback({connectionID:self.connectionID, browserID:self.browserID});
+    });
+};
+JSync.WebDB.prototype.onMessage = function(callback, context, data) {
     return this._messageDispatcher.on(callback, context, data);
 };
-JSync.HttpDB.prototype.offMessage = function(callback, context, data) {
+JSync.WebDB.prototype.offMessage = function(callback, context, data) {
     return this._messageDispatcher.off(callback, context, data);
 };
-JSync.HttpDB.prototype.on = function(callback, context, data) {
+JSync.WebDB.prototype.on = function(callback, context, data) {
     return this._dispatcher.on(callback, context, data);
 };
-JSync.HttpDB.prototype.off = function(callback, context, data) {
+JSync.WebDB.prototype.off = function(callback, context, data) {
     return this._dispatcher.off(callback, context, data);
 };
-JSync.HttpDB.prototype.exists = function(id, callback) {
+JSync.WebDB.prototype.exists = function(id, callback) {
     // I'm using this generic, inefficient implementation for now.
     callback = callback || NOOP;
     var self = this;
@@ -965,16 +1028,16 @@ JSync.HttpDB.prototype.exists = function(id, callback) {
         return callback(false);
     });
 };
-JSync.HttpDB.prototype.listIDs = function(callback) {
+JSync.WebDB.prototype.listIDs = function(callback) {
 };
-JSync.HttpDB.prototype.getState = function(id, onSuccess, onError) {
+JSync.WebDB.prototype.getState = function(id, onSuccess, onError) {
 };
-JSync.HttpDB.prototype.createState = function(id, state, onSuccess, onError) {
+JSync.WebDB.prototype.createState = function(id, state, onSuccess, onError) {
 };
-JSync.HttpDB.prototype.deleteState = function(id, onSuccess, onError) {
+JSync.WebDB.prototype.deleteState = function(id, onSuccess, onError) {
 };
 
-JSync.HttpDB.prototype._handleAjaxErrorCodes = function(jqXHR) {
+JSync.WebDB.prototype._handleAjaxErrorCodes = function(jqXHR) {
     // If jqXHR.status is 0, it means there is a problem with cross-domain communication, and Javascript has been dis-allowed access to the XHR object.
     if(jqXHR.status === 401) {
         // Our connectionID has been deleted because it was idle.
@@ -986,12 +1049,12 @@ JSync.HttpDB.prototype._handleAjaxErrorCodes = function(jqXHR) {
         // Our IP has changed, and our cookie has been changed.
         // We need to login and re-join again.
         if(typeof console !== 'undefined') console.log('browserID Lost.  Reconnecting...');
-        this.reconnect();
+        this._reconnect();
         return true;
     }
     return false;
 };
-JSync.HttpDB.prototype._ajax = function(options) {
+JSync.WebDB.prototype._ajax = function(options) {
     // A robust, commonly-used convenience function.
     var self = this,
         errRetryMS = options.errRetryMS || 1000,
@@ -1041,8 +1104,9 @@ JSync.HttpDB.prototype._ajax = function(options) {
     if(options.requireConnection) return this.getConnectionInfo(DOIT);
     else return DOIT();
 };
-JSync.HttpDB.prototype._connect = function(callback) {
+JSync.WebDB.prototype._connect = function() {
     var self = this;
+    this._waiter.notReady('WebDB._connect');
     this._ajax({
         errRetryMaxMS:30000,
         url:self._url+'/connect',
@@ -1052,16 +1116,17 @@ JSync.HttpDB.prototype._connect = function(callback) {
             if(!_.isObject(data)) throw new Error('Expected object from server!');
             self.connectionID = data.connectionID;
             self.browserID = data.browserID;
+            self._waiter.ready('WebDB._connect');
             console.log('Connected.  Do I need to re-fetch all states?');
-            if(callback) return callback(self);
+            self._waiter.ready('READY');
         },
     });
 };
-JSync.HttpDB.prototype._disconnect = function(callback, sync) {
-    if(!this.connectionID) { // Already logged out.
-        if(callback) return callback(this);
-        return
-    }
+JSync.WebDB.prototype._disconnect = function(callback, sync) {
+    callback = callback || NOOP;
+    var self = this;
+    this._waiter.notReady('WebDB._connect'); this._waiter.notReady('READY');
+    if(!this.connectionID) return callback(this); // Already logged out.
     this._ajax({
         doNotRetry:true,
         ajaxOpts:{async:!sync},
@@ -1074,28 +1139,26 @@ JSync.HttpDB.prototype._disconnect = function(callback, sync) {
             self.connectionID = null;
             for(var i=self._activeAJAX.length-1; i>=0; i--) {
                 try { self._activeAJAX[i].abort();  // This actually *runs* the error handlers and thrown exceptions will pop thru our stack if we don't try...catch this.
-                } catch(e) {}
+                } catch(e) { console.error(e); }
                 self._activeAJAX.splice(i, 1);
             }
-            if(callback) return callback(self);
+            return callback(self);
         },
         onError:function(jqXHR, retCodeStr, exceptionObj) {
             console.log('Error logging out:', exceptionObj);
-            if(callback) return callback(self);
+            return callback(self);
         }
     });
 };
-JSync.HttpDB.prototype._reconnect = function() {
+JSync.WebDB.prototype._reconnect = function() {
     var self = this;
-    this.disconnect(function() {
-        self.connect(function() {
-            console.log('Reconnected.  Do I need to re-fetch all states?');
-        });
+    this._disconnect(function() {
+        self._connect();
     });
 };
-JSync.HttpDB.prototype._fetchState = function(stateID, onSuccess, onError) {
+JSync.WebDB.prototype._fetchState = function(stateID, onSuccess, onError) {
 };
-JSync.HttpDB.prototype._installAutoUnloader = function() {
+JSync.WebDB.prototype._installAutoUnloader = function() {
     if(typeof window === 'undefined') return;
     var self = this;
     window.onbeforeunload = function(e) {
