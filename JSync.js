@@ -36,7 +36,7 @@ JSync._test = function() {
     eq(JSync.pad('va','E',3), 'Eva');
     eq(JSync.pad('Eva','Awesome',4), 'AwesomeEva');
     eq(JSync.pad(' Eva','♥',10), '♥♥♥♥♥♥ Eva');
-    eq(JSync.generateID(8).length, 8);
+    eq(JSync._generateID(8).length, 8);
     eq(JSync.dsHash('Eva'), '0xe51a2ff8');
     eq(JSync.dsHash('黄哲'), '0x8c4234fa');
     eq(JSync.getTarget({a:{b:'c'}},['a','b']), 'c');
@@ -430,8 +430,8 @@ JSync.pad = function(s, p, n) {
 };
 
 var ID_CHARS = '0123456789abcdefghijkmnopqrstuvwxyzABCDEFGHIJKLMNPQRSTUVWXYZ';  // Removed l and O because they are easily confused with 1 and 0.
-JSync.generateID = function(len) {
-    if(len === undefined) len = 8;
+JSync._generateID = function(len) {
+    if(len===undefined  ||  len===null) len = 8;
     var id = [];
     while(len--) {
         id[id.length] = ID_CHARS.charAt(Math.floor(Math.random()*ID_CHARS.length));
@@ -440,6 +440,21 @@ JSync.generateID = function(len) {
     //var hexStr = Math.floor(Math.random()*0xffffffff).toString(16);
     //while(hexStr.length < 8) hexStr = '0'+hexStr;
     //return '0x' + hexStr;
+};
+JSync._ids = {};
+JSync.newID = function(len, tracker) {  // Make it easy to create IDs that are guaranteed to be unique.
+    tracker = tracker || JSync._ids;
+    var id;
+    while(true) {
+        id = JSync._generateID(len);
+        if(tracker.hasOwnProperty(id)) continue;
+        if(tracker === JSync._ids) JSync._ids[id] = true;  // We don't auto-set for custom trackers.
+        return id;
+    }
+};
+JSync.delID = function(id) {  // After you're done with an ID (created with the default tracker), you can call this to free up a bit of RAM.
+    if(!JSync._ids.hasOwnProperty(id)) throw new Error('Tried to delete non-existent ID: '+id);
+    delete JSync._ids[id];
 };
 
 JSync.dsHash = function(s) {
@@ -526,31 +541,26 @@ JSync.edit = function(obj, operations) {
         path = step.path  ||  [];
         key = step.key;
         value = step.value;
-        if(op === undefined)
-            FAIL('undefined op!');
-        if(key === undefined)
-                FAIL('undefined key!');
         target = JSync.getTarget(obj, path);
+        if(op === undefined) FAIL('undefined op!');
         switch(op) {
             case 'create':
-                if(value === undefined)
-                    FAIL('undefined value!');
-                if(key in target)
-                    FAIL('Already in target: '+key);
+                if(key === undefined) FAIL('undefined key!');
+                if(value === undefined) FAIL('undefined value!');
+                if(key in target) FAIL('Already in target: '+key);
                 steps[steps.length] = {op:op, path:path, key:key, after:JSync.deepCopy(value)};  // We need to '_deepCopy' because if the object gets modified by future operations, it could affect a reference.
                 target[key] = value;
                 break;
             case 'update':
-                if(value === undefined)
-                    FAIL('undefined value!');  // If you want to set something to undefined, just delete instead.
-                if(!(key in target))
-                    FAIL('Not in target: '+key);
+                if(key === undefined) FAIL('undefined key!');
+                if(value === undefined) FAIL('undefined value!');  // If you want to set something to undefined, just delete instead.
+                if(!(key in target)) FAIL('Not in target: '+key);
                 steps[steps.length] = {op:op, path:path, key:key, before:JSync.deepCopy(target[key]), after:JSync.deepCopy(value)};
                 target[key] = value;
                 break;
             case 'update!':
-                if(value === undefined)
-                    FAIL('undefined value!');  // If you want to set something to undefined, just delete instead.
+                if(key === undefined) FAIL('undefined key!');
+                if(value === undefined) FAIL('undefined value!');  // If you want to set something to undefined, just delete instead.
                 if(key in target) {
                     // Update.
                     steps[steps.length] = {op:'update', path:path, key:key, before:JSync.deepCopy(target[key]), after:JSync.deepCopy(value)};
@@ -561,28 +571,34 @@ JSync.edit = function(obj, operations) {
                 target[key] = value;
                 break;
             case 'delete':
-                if(!(key in target))
-                    FAIL('Not in target: '+key);
+                if(key === undefined) FAIL('undefined key!');
+                if(!(key in target)) FAIL('Not in target: '+key);
                 steps[steps.length] = {op:op, path:path, key:key, before:JSync.deepCopy(target[key])};
                 delete target[key];
                 break;
+            case 'arrayPush':
+                if(key !== undefined) FAIL('arrayPush: Expected key to be undefined!');
+                if(!_.isArray(target)) FAIL('arrayPush: Expected an Array target!');
+                op = 'arrayInsert';
+                key = target.length;
             case 'arrayInsert':
-                if(!JSync._isInt(key))
-                    FAIL('Expected an integer key!');
-                if(!_.isArray(target))
-                    FAIL('create:arrayInsert: Expected an Array target!');
-                if(key<0  ||  key>target.length)
-                    FAIL('IndexError');
+                if(key === undefined) FAIL('undefined key!');
+                if(!JSync._isInt(key)) FAIL('Expected an integer key!');
+                if(!_.isArray(target)) FAIL('arrayInsert: Expected an Array target!');
+                if(key<0  ||  key>target.length) FAIL('IndexError');
                 steps[steps.length] = {op:op, path:path, key:key, after:JSync.deepCopy(value)};
                 target.splice(key, 0, value);
                 break;
+            case 'arrayPop':
+                if(key !== undefined) FAIL('arrayPop: Expected key to be undefined!');
+                if(!_.isArray(target)) FAIL('arrayPop: Expected and Array target!');
+                op = 'arrayRemove';
+                key = target.length-1;
             case 'arrayRemove':
-                if(!JSync._isInt(key))
-                    FAIL('Expected an integer key!');
-                if(!_.isArray(target))
-                    FAIL('create:arrayRemove: Expected an Array target!');
-                if(key<0  ||  key>=target.length)
-                    FAIL('IndexError');
+                if(key === undefined) FAIL('undefined key!');
+                if(!JSync._isInt(key)) FAIL('Expected an integer key!');
+                if(!_.isArray(target)) FAIL('arrayRemove: Expected an Array target!');
+                if(key<0  ||  key>=target.length) FAIL('IndexError');
                 steps[steps.length] = {op:op, path:path, key:key, before:JSync.deepCopy(target[key])};
                 target.splice(key, 1);
                 break;
@@ -802,7 +818,7 @@ JSync._waiterDeadlockCheck = function() {
     for(i=0, ii=JSync._allWaiters.length; i<ii; i++) {
         waiter = JSync._allWaiters[i];
         for(name in waiter._readys) if(waiter._readys.hasOwnProperty(name)) {
-            r = waiter._getReady(name);
+            r = waiter.getReady(name);
             for(j=0, jj=r.listeners.length; j<jj; j++) {
                 if(curTime - r.listeners[j].ctime > 20000) {
                     console.log('Possible Waiter Deadlock:', name);
@@ -818,22 +834,22 @@ JSync.Waiter = function() {
     this._readys = {};
     JSync._allWaiters[JSync._allWaiters.length] = this;
 };
-JSync.Waiter.prototype._getReady = function(name) {
+JSync.Waiter.prototype.getReady = function(name) {
     if(this._readys[name] === undefined) this._readys[name] = {};
     if(this._readys[name].isReady === undefined) this._readys[name].isReady = false;
     if(this._readys[name].listeners === undefined) this._readys[name].listeners = [];
     return this._readys[name];
 };
 JSync.Waiter.prototype.notReady = function(name) {
-    this._getReady(name).isReady = false;
+    this.getReady(name).isReady = false;
 };
 JSync.Waiter.prototype.ready = function(name) {
-    var r = this._getReady(name);
+    var r = this.getReady(name);
     r.isReady = true;
     while(r.listeners.length > 0) r.listeners.pop().callback();
 };
 JSync.Waiter.prototype.waitReady = function(name, callback) {
-    var r = this._getReady(name);
+    var r = this.getReady(name);
     if(r.isReady) return callback();
     r.listeners[r.listeners.length] = {callback:callback, ctime:new Date().getTime()};
 };
@@ -963,7 +979,7 @@ JSync.getBrowser = function() {   // I am adding this here because jQuery has re
 
     var match = /(chrome)[ \/]([\w.]+)/.exec( ua ) ||  // What about Chromium?  -- Ah, Chromium also includes 'Chrome' in the UserAgent.
         /(webkit)[ \/]([\w.]+)/.exec( ua ) ||
-        /(opera)(?:.*version|)[ \/]([\w.]+)/.exec( ua ) ||  // I really need to separate Old Opera from New Opera (which is actually Chrome).
+        /(opera)(?:.*version|)[ \/]([\w.]+)/.exec( ua ) ||  // I really need to separate Old Opera from New Opera (which is actually Chrome).  Even though new Opera is based on WebKit, it still has some of the old Opera behavior, such as not calling the 'window.onbeforeunload' function.
         /(msie) ([\w.]+)/.exec( ua ) ||
         ua.indexOf("compatible") < 0 && /(mozilla)(?:.*? rv:([\w.]+)|)/.exec( ua ) ||
         [];
@@ -974,29 +990,32 @@ JSync.getBrowser = function() {   // I am adding this here because jQuery has re
     };
 };
 
+
 JSync.WebDB = function(url) {
     // Guard against forgetting the 'new' operator:
     if(!(this instanceof JSync.WebDB)) return new JSync.WebDB(url);
-    this._states = {};
     this._dispatcher = JSync.Dispatcher();
     this._messageDispatcher = JSync.Dispatcher();
     this._waiter = JSync.Waiter();
     this._waiter.notReady('READY');
 
-    this.maxSendBundleBytes = 100*1024;
-    this.successReceiveReconnectMS = 1;
-
-    if(!_.isString(url)) throw new Error('You must provide a base url.');
+    if(!_.isString(url)) throw new Error('You must provide a WebDBServer url.');
     this._url = url;
     this.connectionID = null;
     this.browserID = null;
     this._ajaxSingletons = {};
     this._activeAJAX = [];
 
+    this.maxSendBundleBytes = 100*1024;
+    this.successReceiveReconnectMS = 1;
+    this._sendQ = [];
+    this._receiveQ = {};
+
     this._connect();
     var self = this;
-    this._waiter.waitReady('WebDB._connect', function() {  // I don't think WebDB._connect is actually the correct thing to wait for.  I think we need to load some data from the server before we're actuallly READY.
-        console.log('Still need to installAutoUnloader()');
+    this._waiter.waitReady('WebDB._connect', function() {
+        self._receive();
+        self._installAutoUnloader();
     });
 };
 JSync.WebDB.prototype.getConnectionInfo = function(callback) {  // You can use this like a 'waitForConnection()' function.
@@ -1033,6 +1052,7 @@ JSync.WebDB.prototype.listIDs = function(callback) {
 JSync.WebDB.prototype.getState = function(id, onSuccess, onError) {
 };
 JSync.WebDB.prototype.createState = function(id, state, onSuccess, onError) {
+    
 };
 JSync.WebDB.prototype.deleteState = function(id, onSuccess, onError) {
 };
@@ -1101,7 +1121,7 @@ JSync.WebDB.prototype._ajax = function(options) {
             //}
         }, JSync.extraAjaxOptions, options.ajaxOpts));
     };
-    if(options.requireConnection) return this.getConnectionInfo(DOIT);
+    if(options.requireConnection) return this._waiter.waitReady('WebDB._connect', DOIT);
     else return DOIT();
 };
 JSync.WebDB.prototype._connect = function() {
@@ -1117,9 +1137,8 @@ JSync.WebDB.prototype._connect = function() {
             self.connectionID = data.connectionID;
             self.browserID = data.browserID;
             self._waiter.ready('WebDB._connect');
-            console.log('Connected.  Do I need to re-fetch all states?');
             self._waiter.ready('READY');
-        },
+        }
     });
 };
 JSync.WebDB.prototype._disconnect = function(callback, sync) {
@@ -1156,15 +1175,14 @@ JSync.WebDB.prototype._reconnect = function() {
         self._connect();
     });
 };
-JSync.WebDB.prototype._fetchState = function(stateID, onSuccess, onError) {
-};
 JSync.WebDB.prototype._installAutoUnloader = function() {
     if(typeof window === 'undefined') return;
     var self = this;
     window.onbeforeunload = function(e) {
+        console.log('WebDB onbeforeunload Called.');
         if(JSync.getBrowser().browser == 'mozilla') {
             // Firefox does not support "withCredentials" for cross-domain synchronous AJAX... and can therefore not pass the cookie unless we use async.   (This might just be the most arbitrary restriction of all time.)
-            self.logout();
+            self._disconnect();
             var startTime = new Date().getTime();
             while(self.connectionID  &&  (new Date().getTime()-startTime)<3000) {  // We must loop a few times for older versions of FF because they first issue preflighted CORS requests, which take extra time.
                 // Issue a synchronouse request to give the above async some time to get to the server.
@@ -1173,7 +1191,7 @@ JSync.WebDB.prototype._installAutoUnloader = function() {
                              async:false});
             }
         } else {
-            self.logout(null, true);  // Use a synchronous request.
+            self._disconnect(null, true);  // Use a synchronous request.
             // IE likes to fire this event A LOT!!!  Every time you click a link that does not start with '#', this gets
             // triggered, even if you have overridden the click() event, or specified a 'javascript:' href.
             // The best solution to this problem is the set your hrefs to "#" and then return false from your click handler.
@@ -1182,5 +1200,102 @@ JSync.WebDB.prototype._installAutoUnloader = function() {
         }
     };
 };
+JSync.WebDB.prototype._addToSendQ = function(data, afterSend, afterReply, onError) {
+    // In the old logic, I check whether the related item is in the reset queue, and if it is, I discard the data and call the onError callback.
+    var msgID = JSync.newID();
+    this._sendQ[this._sendQ.length] = {msgID:msgID, data:data, afterSend:afterSend, afterReply:afterReply, onError:onError};
+    this._send();
+};
+JSync.WebDB.prototype._send = function() {
+    var self = this;
+    if(!this.__send_raw) this.__send_raw = _.debounce(slide.asyncOneAtATime(function(next) {
+        var FAIL = function(err) {
+            next();
+            throw err;
+        };
+        if(!self._sendQ.length) return next();  // Nothing to send.
+        var bundle = [],
+            bundleBytes = 0,
+            i, ii, item;
+        for(i=0, ii=self._sendQ.length; i<ii; i++) {
+            item = self._sendQ[i];
+            bundle[bundle.length] = {msgID:item.msgID, data:item.data};
+            bundleBytes += JSON.stringify(bundle[bundle.length]-1).length;  // Not really bytes (unicode)... but, whatever.
+            if(bundleBytes > self.maxSendBundleBytes) break;
+        }
+        self._ajax({
+            url:self._url+'/send',
+            type:'POST',
+            data:{connectionID:self.connectionID,
+                  bundle:JSON.stringify(bundle)},
+            onSuccess:function(data, retCodeStr, jqXHR) {
+                if(!_.isArray(data)) return FAIL(new Error('Expected array from server!'));
+                var msgID, sendQItem;
+                while(data.length) {
+                    msgID = data[0].msgID;
+                    if(msgID !== bundle[0].msgID) return FAIL(new Error('I have never seen this.  msgID='+msgID));
+                    bundle.splice(0,1);
+                    // It is possible for items to get removed from the send queue by resets, so be careful when removing the current data item:
+                    sendQItem = {};
+                    if(self._sendQ.length  &&  self._sendQ[0].msgID===msgID) {
+                        sendQItem = self._sendQ[0];
+                        self._sendQ.splice(0,1);
+                    }
+                    if(data[0].willReply) self._receiveQ[msgID] = {afterReply:sendQItem.afterReply, onError:sendQItem.onError};
+                    else JSync.delID(msgID); // We don't expect a reply.  We are done with this msgID.
+                    if(sendQItem.afterSend) sendQItem.afterSend(data[0].data);
+                    data.splice(0,1);
+                }
+                if(self._sendQ.length) self._send();
+                return next();
+            }
+        });
+    }), 10);
+    this.__send_raw();
+};
+JSync.WebDB.prototype._receive = function() {
+    var self = this;
+    if(!this.__receive_raw) this.__receive_raw = slide.asyncOneAtATime(function(next) {
+        var FAIL = function(err) {
+            next();
+            throw err;
+        };
+        self._ajax({
+            url:self._url+'/receive',
+            type:'POST',
+            data:{connectionID:self.connectionID},
+            onSuccess:function(data, retCodeStr, jqXHR) {
+                if(!_.isArray(data)) return FAIL(new Error('Expected array from server!'));
+                console.log('Received:', data);
+                setTimeout(_.bind(self._receive, self), 1);
+                return next();
+            }
+        });
+    });
+    this._waiter.waitReady('WebDB._connect', this.__receive_raw);
+};
+
+
+
+
+//////  See if we should apply the above pattern to anywhere else in the debounce or asyncOneAtATime codes usageses....
+
+/////////////  Here's what I was thinking before going to bed:
+///
+///  The best design is having the 'send' just deliver the command to the server and get a quick "ok, i got your command" response.
+///  Don't wait around for the actual command result.  Command results are placed in to the 'receive' queue.
+///  This enables the server to always have the best performance for a bundle of command -- one slow command won't block a bunch
+///  of fast commands.
+///
+///  I guess I must have been dreaming, but i thought I also needed to convert some [] to {} ...
+///
+///  Also, the server-side 'clientReceive' queue should also be debounced.  Don't send on the first piece of data.  Wait for
+///  a whole bundle or until the debounce time.  This will really help reduce the number of reconnects to 'receive'.
+///
+///  This new design is turning out to be so much better than the original!  The world needs this.
+
+
+
+
 
 })();

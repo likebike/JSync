@@ -63,6 +63,11 @@ slide.chain = function(things, cb) {
   cb = cb || function(){};                              ////////   Added by Christopher Sebastian.
   var res = [];
   (function LOOP(i, len) {
+    var NEXT = function() {                             ////////   Added by Christopher Sebastian.
+        // Prevent stack overflow:
+        if(i>0 && i%500===0) setTimeout(function() { LOOP(i+1, len) }, 0);
+        else LOOP(i+1, len);
+    };
     if(i >= len) return cb(null,res);
     if(_.isArray(things[i])) things[i] = slide._bindActor.apply(null, _.map(things[i], function(i){
                                                                                           return (i===slide.first)  ? res[0] :
@@ -70,12 +75,12 @@ slide.chain = function(things, cb) {
                                                                                                  (i===slide.last)   ? res[res.length - 1] :
                                                                                                  (i===slide.last0)  ? res[res.length - 1][0] :
                                                                                                  i; }));
-    if(!things[i]) return LOOP(i + 1, len);
+    if(!things[i]) return NEXT();
     things[i](function (er, data) {
       if(er) return cb(er, res);
       //if(data !== undefined) res = res.concat(data);   /////////  Commented by Christopher Sebastian.  I disagree with the use of 'concat' to collect results.  I think it should be an append instead.
       if(data !== undefined) res[res.length] = data;     /////////  Added by Christopher Sebastian.
-      LOOP(i + 1, len);
+      return NEXT();
     });
   })(0, things.length);
 };
@@ -174,7 +179,7 @@ slide.asyncOneAtATime = function(func, hasOnError) {
     return function() {
         var args = Array.prototype.slice.call(arguments);
         if(running) {
-            //console.log('already running.');
+            console.log('already running.');
             return;
         }
         //console.log('RUNNING.');
