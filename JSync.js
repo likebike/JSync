@@ -1219,6 +1219,9 @@ JSync.WebDB.prototype._send = function() {
             i, ii, item;
         for(i=0, ii=self._sendQ.length; i<ii; i++) {
             item = self._sendQ[i];
+            // We add this item to the receiveQ here because we might start receiving the reply before we're done sending the request.
+            // If we don't add it to the receiveQ ahead of time, we might not expect the reply when it comes in.
+            self._receiveQ[item.msgID] = {afterReply:item.afterReply, onError:item.onError};
             bundle[bundle.length] = {msgID:item.msgID, data:item.data};
             bundleBytes += JSON.stringify(bundle[bundle.length]-1).length;  // Not really bytes (unicode)... but, whatever.
             if(bundleBytes > self.maxSendBundleBytes) break;
@@ -1234,17 +1237,19 @@ JSync.WebDB.prototype._send = function() {
                 while(data.length) {
                     msgID = data[0].msgID;
                     if(msgID !== bundle[0].msgID) return FAIL(new Error('I have never seen this.  msgID='+msgID));
-                    bundle.splice(0,1);
+                    bundle.shift();
                     // It is possible for items to get removed from the send queue by resets, so be careful when removing the current data item:
                     sendQItem = {};
                     if(self._sendQ.length  &&  self._sendQ[0].msgID===msgID) {
                         sendQItem = self._sendQ[0];
-                        self._sendQ.splice(0,1);
+                        self._sendQ.shift();
                     }
-                    if(data[0].willReply) self._receiveQ[msgID] = {afterReply:sendQItem.afterReply, onError:sendQItem.onError};
-                    else JSync.delID(msgID); // We don't expect a reply.  We are done with this msgID.
+                    if(!data[0].willReply) {
+                        delete self._receiveQ[msgID]; // We don't expect a reply.  Clean up the anticipated entry.
+                        JSync.delID(msgID);           // We are done with this msgID.
+                    }
                     if(sendQItem.afterSend) sendQItem.afterSend(data[0].data);
-                    data.splice(0,1);
+                    data.shift();
                 }
                 if(self._sendQ.length) self._send();
                 return next();
@@ -1266,7 +1271,18 @@ JSync.WebDB.prototype._receive = function() {
             data:{connectionID:self.connectionID},
             onSuccess:function(data, retCodeStr, jqXHR) {
                 if(!_.isArray(data)) return FAIL(new Error('Expected array from server!'));
-                console.log('Received:', data);
+                var item;
+                while(data.length) {
+                    item = data.shift();
+                    if(self._receiveQ.hasOwnProperty(item.msgID)) {
+                        (self._receiveQ[item.msgID].afterReply || NOOP)(item.data);
+                        delete self._receiveQ[item.msgID];
+                        JSync.delID(item.msgID);           // We are done with this msgID.
+                    } else {
+                        console.log('TODO: Handle unexpected receive item.');
+                    }
+                    // Need to actually do stuff with the received data... especially items that were not expected.
+                }
                 setTimeout(_.bind(self._receive, self), 1);
                 return next();
             }
