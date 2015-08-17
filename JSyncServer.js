@@ -297,7 +297,7 @@ JSync.WebDBServer.prototype.addToReceiveQ = function(connectionID, data) {
         (self._receives[connectionID] || {dataIsWaiting:NOOP}).dataIsWaiting();
     });
 };
-JSync.WebDBServer.prototype.clientReceive = function(connectionID, req, onSuccess, onError) {
+JSync.WebDBServer.prototype.clientReceive = function(connectionID, onSuccess, onError) {
     this._touchConnection(connectionID);
 
     // First, does a long poll already exist for this connectionID?  If so, kill the old one before proceeding:
@@ -361,7 +361,7 @@ JSync.WebDBServer.prototype.installIntoSebwebRouter = function(router, baseURL) 
         {path:'^'+baseURL+'/connect$',    func:JSync.sebwebHandler_connect(this)},
         {path:'^'+baseURL+'/disconnect$', func:JSync.sebwebHandler_connect(this)},
         {path:'^'+baseURL+'/send$',       func:JSync.sebwebHandler_send(this)},
-        {path:'^'+baseURL+'/receive$',    func:JSync.sebwebHandler_receive(this)},
+        {path:'^'+baseURL+'/receive$',    func:JSync.sebwebHandler_receive(this), skipLog:true},
     ]);
 };
 
@@ -477,7 +477,7 @@ JSync.sebwebHandler_send = function(syncServer) {
 };
 JSync.sebwebHandler_receive = function(syncServer) {
     return JSync.sebwebAuth(syncServer, function(browserID, connectionID, req, res, onSuccess, onError) {
-        syncServer.clientReceive(connectionID, req, function(result) {
+        syncServer.clientReceive(connectionID, function(result) {
             res.setHeader('Content-Type', 'application/json');
             res.setHeader('Cache-Control', 'no-cache, must-revalidate');
             res.end(JSON.stringify(result));
