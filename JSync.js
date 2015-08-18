@@ -811,47 +811,75 @@ JSync.State.prototype.applyDelta = function(delta) {
 // Third Layer deals with groups of States.  This is where we begin to be aware of creation/deletion events and IDs.
 // 
 
-JSync._allWaiters = [];
-JSync._waiterDeadlockCheck = function() {
+JSync._allReadys = [];
+JSync._readyDeadlockCheck = function() {
     var curTime = new Date().getTime(),
-        i, ii, waiter, name, r, j, jj;
-    for(i=0, ii=JSync._allWaiters.length; i<ii; i++) {
-        waiter = JSync._allWaiters[i];
-        for(name in waiter._readys) if(waiter._readys.hasOwnProperty(name)) {
-            r = waiter.getReady(name);
+        i, ii, ready, name, r, j, jj;
+    for(i=0, ii=JSync._allReadys.length; i<ii; i++) {
+        ready = JSync._allReadys[i];
+        for(name in ready._readys) if(ready._readys.hasOwnProperty(name)) {
+            r = ready.getReady(name);
             for(j=0, jj=r.listeners.length; j<jj; j++) {
                 if(curTime - r.listeners[j].ctime > 20000) {
-                    console.log('Possible Waiter Deadlock:', name);
+                    console.log('Possible Ready Deadlock:', name);
                     break;  // Only need to print once per name.
                 }
             }
         }
     }
 }
-setInterval(JSync._waiterDeadlockCheck, 30000);
-JSync.Waiter = function() {
-    if(!(this instanceof JSync.Waiter)) return new JSync.Waiter();
+setInterval(JSync._readyDeadlockCheck, 30000);
+JSync.Ready = function() {
+    if(!(this instanceof JSync.Ready)) return new JSync.Ready();
     this._readys = {};
-    JSync._allWaiters[JSync._allWaiters.length] = this;
+    this._notReadys = {};
+    JSync._allReadys[JSync._allReadys.length] = this;
 };
-JSync.Waiter.prototype.getReady = function(name) {
+JSync.Ready.prototype.getReady = function(name) {
     if(this._readys[name] === undefined) this._readys[name] = {};
     if(this._readys[name].isReady === undefined) this._readys[name].isReady = false;
     if(this._readys[name].listeners === undefined) this._readys[name].listeners = [];
     return this._readys[name];
 };
-JSync.Waiter.prototype.notReady = function(name) {
-    this.getReady(name).isReady = false;
+JSync.Ready.prototype.getNotReady = function(name) {
+    if(this._notReadys[name] === undefined) this._notReadys[name] = [];
+    return this._notReadys[name];
 };
-JSync.Waiter.prototype.ready = function(name) {
+JSync.Ready.prototype.notReady = function(name) {
     var r = this.getReady(name);
-    r.isReady = true;
-    while(r.listeners.length > 0) r.listeners.pop().callback();
+    if(r.isReady) {
+        r.isReady = false;
+        var n = this.getNotReady(name).slice(),  // Make a copy because it's possible for the list to change while we iterate.
+            i, ii;
+        for(i=0, ii=n.length; i<ii; i++) n[i]();
+    }
 };
-JSync.Waiter.prototype.waitReady = function(name, callback) {
+JSync.Ready.prototype.ready = function(name) {
+    var r = this.getReady(name);
+    if(!r.isReady) {
+        r.isReady = true;
+        while(r.listeners.length > 0) r.listeners.pop().callback();
+    }
+};
+JSync.Ready.prototype.waitReady = function(name, callback) {
     var r = this.getReady(name);
     if(r.isReady) return callback();
     r.listeners[r.listeners.length] = {callback:callback, ctime:new Date().getTime()};
+};
+JSync.Ready.prototype.onNotReady = function(name, callback, checkCurValue) {
+    var l = this.getNotReady(name);
+    l[l.length] = callback;
+    if(checkCurValue) {
+        var r = this.getReady(name);
+        if(!r.isReady) callback();
+    }
+};
+JSync.Ready.prototype.offNotReady = function(name, callback) {
+    var l = this.getNotReady(name),
+        i;
+    for(i=l.length-1; i>=0; i--) {
+        if(l[i] === callback) l.splice(i, 1);
+    }
 };
 
 
@@ -860,14 +888,14 @@ JSync.RamDB = function(initialData) {
     var self = this;
     this._states = {};
     this._dispatcher = JSync.Dispatcher();
-    this._waiter = JSync.Waiter();
+    this._ready = JSync.Ready();
     this._watier.notReady('READY');
     this._importData(initialData);
-    this._waiter.waitReady('RamDB._importData', function() { self._waiter.ready('READY') });
+    this._ready.waitReady('RamDB._importData', function() { self._ready.ready('READY') });
 };
 JSync.RamDB.prototype._importData = function(data) {
     if(!data) return;
-    this._waiter.notReady('RamDB._importData');
+    this._ready.notReady('RamDB._importData');
     var self = this;
     var create = function(id, state, cb) { self.createState(id, state, cb, cb, true); },  // 'true' tells createState (and therefore 'exists') not to wait for READY, otherwise we'd have a deadlock, since READY can't occur until we are done here..
         steps = [],
@@ -876,7 +904,7 @@ JSync.RamDB.prototype._importData = function(data) {
         steps[steps.length] = [create, id, JSync.State(data[id])];
     }
     slide.chain(steps, function() {
-        self._waiter.ready('RamDB._importData');
+        self._ready.ready('RamDB._importData');
     });
 };
 JSync.RamDB.prototype._exportData = function() {
@@ -903,19 +931,19 @@ JSync.RamDB.prototype.exists = function(id, callback, doNotWaitReady) {
         callback(self._states.hasOwnProperty(id));
     };
     if(doNotWaitReady) return afterReady();
-    this._waiter.waitReady('READY', afterReady);
+    this._ready.waitReady('READY', afterReady);
 };
 JSync.RamDB.prototype.listIDs = function(callback) {
     callback = callback || NOOP;
     var self = this;
-    this._waiter.waitReady('READY', function() {
+    this._ready.waitReady('READY', function() {
         callback(_.keys(self._states));
     });
 };
 JSync.RamDB.prototype.getState = function(id, onSuccess, onError) {
     onSuccess = onSuccess || NOOP; onError = onError || FAIL;
     var self = this;
-    this._waiter.waitReady('READY', function() {
+    this._ready.waitReady('READY', function() {
         var state = self._states[id];
         if(!state) return onError(new Error('State does not exist: '+id));
         return onSuccess(state, id);
@@ -991,44 +1019,291 @@ JSync.getBrowser = function() {   // I am adding this here because jQuery has re
 };
 
 
+JSync.CometClient = function(url) {
+    if(!(this instanceof JSync.CometClient)) return new JSync.CometClient(url);
+
+    this.ready = JSync.Ready();
+    
+    if(!_.isString(url)) throw new Error('You must provide a CometServer url.');
+    this.url = url;
+    this.connectionID = null;
+    this.browserID = null;
+    this.ajaxSingletons = {};
+    this.activeAJAX = [];
+
+    this.maxSendBundleBytes = 10*1024;
+    this.successReceiveReconnectMS = 1;
+    this.sendQ = [];
+    this.receiveQ = {};
+
+    this.connect();
+    var self = this;
+    this.ready.waitReady('CometClient.connect', function() {
+        self._receive();
+        self.installAutoUnloader();
+    });
+};
+JSync.CometClient.prototype.handleAjaxErrorCodes = function(jqXHR) {
+    // If jqXHR.status is 0, it means there is a problem with cross-domain communication, and Javascript has been dis-allowed access to the XHR object.
+    if(jqXHR.status === 401) {
+        // Our connectionID has been deleted because it was idle.
+        // We need to login again.
+        if(typeof console !== 'undefined') console.log('connectionID Lost.  Reconnecting...');
+        this.reconnect();
+        return true;
+    } else if(jqXHR.status === 403) {
+        // Our IP has changed, our cookie has been changed, or the server cometDB got cleared.
+        // We need to login and re-join again.
+        if(typeof console !== 'undefined') console.log('browserID Lost.  Reconnecting...');
+        this.reconnect();
+        return true;
+    }
+    return false;
+};
+JSync.CometClient.prototype.ajax = function(options) {
+    // A robust, commonly-used convenience function.
+    var self = this,
+        errRetryMS = options.errRetryMS || 1000,
+        errRetryMaxMS = options.errRetryMaxMS || 120000;
+    var afterConnection = function() {
+        // If 'data' contains 'connectionID', make sure it's up to date ( in case we are in a retry loop and had to reconnect ):
+        if(options.data.hasOwnProperty('connectionID')) options.data.connectionID = self.connectionID;
+
+        if(options.singleton) {
+            if(self.ajaxSingletons[options.singleton]) return;
+            self.ajaxSingletons[options.singleton] = true;
+        }
+        var myRequest = [null];
+        var cleanup = function() {
+            for(var i=self.activeAJAX.length-1; i>=0; i--) {
+                if(self.activeAJAX[i] === myRequest[0]) self.activeAJAX.splice(i,1);
+            }
+            if(options.singleton) self.ajaxSingletons[options.singleton] = false;
+        };
+        myRequest[0] = self.activeAJAX[self.activeAJAX.length] = jQuery.ajax(_.extend({
+            url:options.url,
+            type:options.type,
+            data:options.data,
+            dataType:'json',      // For some reason, FireFox ignores the server's content-type for CORS requests.  >:(
+            jsonp:false,          // Prevent jQuery from auto-converting "dataType:json" to "dataType:jsonp" for cross-domain requests.
+            cache:false,
+            success:function(data, retCodeStr, jqXHR) {
+                //console.log('SUCCESS: data:', data, 'retCodeStr:', retCodeStr, 'jqXHR:', jqXHR);
+                cleanup();
+                return options.onSuccess.call(options, data, retCodeStr, jqXHR);
+            },
+            error:function(jqXHR, retCodeStr, exceptionObj) {
+                //console.log('ERROR:', jqXHR, retCodeStr, exceptionObj);
+                cleanup();
+                if(!options.doNotRetry) {
+                    self.handleAjaxErrorCodes(jqXHR);
+                    setTimeout(DOIT, errRetryMS);
+                }
+                errRetryMS *= 1.62; if(errRetryMS > errRetryMaxMS) errRetryMS = errRetryMaxMS;
+                if(options.onError) options.onError.call(options, jqXHR, retCodeStr, exceptionObj);
+                else throw exceptionObj;  // Occurs when there is a problem connecting to the server.
+            }//,
+            //// The COMPLETE function is always called after success and error, so for us it's redundant:
+            //complete:function(jqXHR, retCodeStr) {
+            //    console.log('COMPLETE:', jqXHR, retCodeStr);
+            //    cleanup();
+            //}
+        }, JSync.extraAjaxOptions, options.ajaxOpts));
+    };
+    var DOIT = function() {
+        // We treat the presence of data.connectionID as a signal that we should expect to be connected.
+        if(options.data.hasOwnProperty('connectionID')) self.ready.waitReady('CometClient.connect', afterConnection);
+        else afterConnection();
+    };
+    DOIT();
+};
+JSync.CometClient.prototype.connect = function() {
+    var self = this;
+    this.ready.notReady('CometClient.connect');
+    this.ajax({
+        errRetryMaxMS:30000,
+        url:self.url+'/connect',
+        type:'POST',
+        data:{op:'connect'},
+        onSuccess:function(data, retCodeStr, jqXHR) {
+            if(!_.isObject(data)) throw new Error('Expected object from server!');
+            self.connectionID = data.connectionID;
+            self.browserID = data.browserID;
+            self.ready.ready('CometClient.connect');
+        }
+    });
+};
+JSync.CometClient.prototype.disconnect = function(callback, sync) {
+    callback = callback || NOOP;
+    var self = this;
+    if(!this.connectionID) return callback(this); // Already logged out.
+    this.ready.notReady('CometClient.connect');
+    this.ajax({
+        doNotRetry:true,
+        ajaxOpts:{async:!sync},
+        url:self.url+'/disconnect',
+        type:'POST',
+        data:{op:'disconnect',
+              _connectionID:self.connectionID},  // We prefix 'connectionID' with '_' to avoid triggering ajax() wait-for-connection logic.
+        onSuccess:function(data, retCodeStr, jqXHR) {
+            if(!_.isObject(data)) throw new Error('Expected object from server!');
+            self.connectionID = null;
+            for(var i=self.activeAJAX.length-1; i>=0; i--) {
+                try { self.activeAJAX[i].abort();  // This actually *runs* the error handlers and thrown exceptions will pop thru our stack if we don't try...catch this.
+                } catch(e) { console.error(e); }
+                self.activeAJAX.splice(i, 1);
+            }
+            return callback();
+        },
+        onError:function(jqXHR, retCodeStr, exceptionObj) {
+            console.log('Error logging out:', exceptionObj);
+            return callback();
+        }
+    });
+};
+JSync.CometClient.prototype.reconnect = function() {
+    var self = this;
+    this.disconnect(function() {
+        self.connect();
+    });
+};
+JSync.CometClient.prototype.installAutoUnloader = function() {
+    if(typeof window === 'undefined') return;
+    var self = this;
+    window.onbeforeunload = function(e) {
+        console.log('CometClient onbeforeunload Called.');
+        if(JSync.getBrowser().browser == 'mozilla') {
+            // Firefox does not support "withCredentials" for cross-domain synchronous AJAX... and can therefore not pass the cookie unless we use async.   (This might just be the most arbitrary restriction of all time.)
+            self.disconnect();
+            var startTime = new Date().getTime();
+            while(self.connectionID  &&  (new Date().getTime()-startTime)<3000) {  // We must loop a few times for older versions of FF because they first issue preflighted CORS requests, which take extra time.
+                // Issue a synchronouse request to give the above async some time to get to the server.
+                jQuery.ajax({url:'/jsync_gettime',
+                             cache:false,
+                             async:false});
+            }
+        } else {
+            self.disconnect(null, true);  // Use a synchronous request.
+            // IE likes to fire this event A LOT!!!  Every time you click a link that does not start with '#', this gets
+            // triggered, even if you have overridden the click() event, or specified a 'javascript:' href.
+            // The best solution to this problem is the set your hrefs to "#" and then return false from your click handler.
+            // Here is a console message to help me to understand this issue when it occurs:
+            setTimeout(function() {console.log('Note: window.onbeforeunload has been triggered.  This occurs in IE when you click a link that does not have a # href.')}, 5000);
+        }
+    };
+};
+JSync.CometClient.prototype.addToSendQ = function(data, afterSend, afterReply, onError) {
+    // In the old logic, I check whether the related item is in the reset queue, and if it is, I discard the data and call the onError callback.
+    var msgID = JSync.newID();
+    this.sendQ[this.sendQ.length] = {msgID:msgID, data:data, afterSend:afterSend, afterReply:afterReply, onError:onError};
+    this._send();
+};
+JSync.CometClient.prototype._send = function() {
+    var self = this;
+    if(!this.__send_raw) this.__send_raw = _.debounce(slide.asyncOneAtATime(function(next) {
+        var FAIL = function(err) {
+            next();
+            throw err;
+        };
+        if(!self.sendQ.length) return next();  // Nothing to send.
+        var bundle = [],
+            bundleBytes = 0,
+            i, ii, item;
+        for(i=0, ii=self.sendQ.length; i<ii; i++) {
+            item = self.sendQ[i];
+            // We add this item to the receiveQ here because we might start receiving the reply before we're done sending the request.
+            // If we don't add it to the receiveQ ahead of time, we might not expect the reply when it comes in.
+            self.receiveQ[item.msgID] = {afterReply:item.afterReply, onError:item.onError};
+            bundle[bundle.length] = {msgID:item.msgID, data:item.data};
+            bundleBytes += JSON.stringify(bundle[bundle.length]-1).length;  // Not really bytes (unicode)... but, whatever.
+            if(bundleBytes > self.maxSendBundleBytes) break;
+        }
+        self.ajax({
+            url:self.url+'/send',
+            type:'POST',
+            data:{connectionID:self.connectionID,
+                  bundle:JSON.stringify(bundle)},
+            onSuccess:function(data, retCodeStr, jqXHR) {
+                if(!_.isArray(data)) return FAIL(new Error('Expected array from server!'));
+                var msgID, sendQItem;
+                while(data.length) {
+                    msgID = data[0].msgID;
+                    if(msgID !== bundle[0].msgID) return FAIL(new Error('I have never seen this.  msgID='+msgID));
+                    bundle.shift();
+                    // It is possible for items to get removed from the send queue by resets, so be careful when removing the current data item:
+                    sendQItem = {};
+                    if(self.sendQ.length  &&  self.sendQ[0].msgID===msgID) {
+                        sendQItem = self.sendQ[0];
+                        self.sendQ.shift();
+                    }
+                    if(!data[0].willReply) {
+                        delete self.receiveQ[msgID]; // We don't expect a reply.  Clean up the anticipated entry.
+                        JSync.delID(msgID);           // We are done with this msgID.
+                    }
+                    if(sendQItem.afterSend) sendQItem.afterSend(data[0].data);
+                    data.shift();
+                }
+                if(self.sendQ.length) self._send();
+                return next();
+            }
+        });
+    }), 10);
+    this.__send_raw();
+};
+JSync.CometClient.prototype._receive = function() {
+    var self = this;
+    if(!this.__receive_raw) this.__receive_raw = slide.asyncOneAtATime(function(next) {
+        var FAIL = function(err) {
+            next();
+            throw err;
+        };
+        self.ajax({
+            url:self.url+'/receive',
+            type:'POST',
+            data:{connectionID:self.connectionID},
+            onSuccess:function(data, retCodeStr, jqXHR) {
+                if(!_.isArray(data)) return FAIL(new Error('Expected array from server!'));
+                var item;
+                while(data.length) {
+                    item = data.shift();
+                    if(self.receiveQ.hasOwnProperty(item.msgID)) {
+                        (self.receiveQ[item.msgID].afterReply || NOOP)(item.data);
+                        delete self.receiveQ[item.msgID];
+                        JSync.delID(item.msgID);           // We are done with this msgID.
+                    } else {
+                        // This item had an unexpected msgID.  This means that the message originated from the server, OR our send() got reconnected in the middle and had to re-transmit some items.
+                        console.log('TODO: Handle unexpected receive item.');
+                    }
+                    // Need to actually do stuff with the received data... especially items that were not expected.
+                }
+                setTimeout(_.bind(self._receive, self), 1);
+                return next();
+            }
+        });
+    });
+    this.ready.waitReady('CometClient.connect', this.__receive_raw);
+};
+
+
+
+
+
 JSync.WebDB = function(url) {
     // Guard against forgetting the 'new' operator:
     if(!(this instanceof JSync.WebDB)) return new JSync.WebDB(url);
     this._dispatcher = JSync.Dispatcher();
-    this._messageDispatcher = JSync.Dispatcher();
-    this._waiter = JSync.Waiter();
-    this._waiter.notReady('READY');
+    this._ready = JSync.Ready();
 
-    if(!_.isString(url)) throw new Error('You must provide a WebDBServer url.');
-    this._url = url;
-    this.connectionID = null;
-    this.browserID = null;
-    this._ajaxSingletons = {};
-    this._activeAJAX = [];
-
-    this.maxSendBundleBytes = 100*1024;
-    this.successReceiveReconnectMS = 1;
-    this._sendQ = [];
-    this._receiveQ = {};
-
-    this._connect();
+    this.comet = JSync.CometClient(url);
     var self = this;
-    this._waiter.waitReady('WebDB._connect', function() {
-        self._receive();
-        self._installAutoUnloader();
-    });
-};
-JSync.WebDB.prototype.getConnectionInfo = function(callback) {  // You can use this like a 'waitForConnection()' function.
-    var self = this;
-    this._waiter.waitReady('WebDB._connect', function() {
-        callback({connectionID:self.connectionID, browserID:self.browserID});
-    });
-};
-JSync.WebDB.prototype.onMessage = function(callback, context, data) {
-    return this._messageDispatcher.on(callback, context, data);
-};
-JSync.WebDB.prototype.offMessage = function(callback, context, data) {
-    return this._messageDispatcher.off(callback, context, data);
+    this.comet.ready.onNotReady('CometClient.connect', function() {
+        self._ready.notReady('READY');
+        console.log('Comet is NOT ready...');
+        self.comet.ready.waitReady('CometClient.connect', function() {
+            self._ready.ready('READY');
+            console.log('Comet IS ready...');
+        });
+    }, true);
 };
 JSync.WebDB.prototype.on = function(callback, context, data) {
     return this._dispatcher.on(callback, context, data);
@@ -1055,240 +1330,6 @@ JSync.WebDB.prototype.createState = function(id, state, onSuccess, onError) {
     
 };
 JSync.WebDB.prototype.deleteState = function(id, onSuccess, onError) {
-};
-
-JSync.WebDB.prototype._handleAjaxErrorCodes = function(jqXHR) {
-    // If jqXHR.status is 0, it means there is a problem with cross-domain communication, and Javascript has been dis-allowed access to the XHR object.
-    if(jqXHR.status === 401) {
-        // Our connectionID has been deleted because it was idle.
-        // We need to login again.
-        if(typeof console !== 'undefined') console.log('connectionID Lost.  Reconnecting...');
-        this.connect();
-        return true;
-    } else if(jqXHR.status === 403) {
-        // Our IP has changed, and our cookie has been changed.
-        // We need to login and re-join again.
-        if(typeof console !== 'undefined') console.log('browserID Lost.  Reconnecting...');
-        this._reconnect();
-        return true;
-    }
-    return false;
-};
-JSync.WebDB.prototype._ajax = function(options) {
-    // A robust, commonly-used convenience function.
-    var self = this,
-        errRetryMS = options.errRetryMS || 1000,
-        errRetryMaxMS = options.errRetryMaxMS || 120000;
-    var DOIT = function() {
-        if(options.singleton) {
-            if(self._ajaxSingletons[options.singleton]) return;
-            self._ajaxSingletons[options.singleton] = true;
-        }
-        var myRequest = [null];
-        var cleanup = function() {
-            for(var i=self._activeAJAX.length-1; i>=0; i--) {
-                if(self._activeAJAX[i] === myRequest[0]) self._activeAJAX.splice(i,1);
-            }
-            if(options.singleton) self._ajaxSingletons[options.singleton] = false;
-        };
-        myRequest[0] = self._activeAJAX[self._activeAJAX.length] = jQuery.ajax(_.extend({
-            url:options.url,
-            type:options.type,
-            data:options.data,
-            dataType:'json',      // For some reason, FireFox ignores the server's content-type for CORS requests.  >:(
-            jsonp:false,          // Prevent jQuery from auto-converting "dataType:json" to "dataType:jsonp" for cross-domain requests.
-            cache:false,
-            success:function(data, retCodeStr, jqXHR) {
-                //console.log('SUCCESS: data:', data, 'retCodeStr:', retCodeStr, 'jqXHR:', jqXHR);
-                cleanup();
-                return options.onSuccess.call(options, data, retCodeStr, jqXHR);
-            },
-            error:function(jqXHR, retCodeStr, exceptionObj) {
-                //console.log('ERROR:', jqXHR, retCodeStr, exceptionObj);
-                cleanup();
-                if(!options.doNotRetry) {
-                    if(options.requireConnection) self._handleAjaxErrorCodes(jqXHR);   //  Auto-reconnect.
-                    setTimeout(DOIT, errRetryMS);
-                }
-                errRetryMS *= 1.62; if(errRetryMS > errRetryMaxMS) errRetryMS = errRetryMaxMS;
-                if(options.onError) options.onError.call(options, jqXHR, retCodeStr, exceptionObj);
-                else throw exceptionObj;  // Occurs when there is a problem connecting to the server.
-            }//,
-            //// The COMPLETE function is always called after success and error, so for us it's redundant:
-            //complete:function(jqXHR, retCodeStr) {
-            //    console.log('COMPLETE:', jqXHR, retCodeStr);
-            //    cleanup();
-            //}
-        }, JSync.extraAjaxOptions, options.ajaxOpts));
-    };
-    if(options.requireConnection) return this._waiter.waitReady('WebDB._connect', DOIT);
-    else return DOIT();
-};
-JSync.WebDB.prototype._connect = function() {
-    var self = this;
-    this._waiter.notReady('WebDB._connect');
-    this._ajax({
-        errRetryMaxMS:30000,
-        url:self._url+'/connect',
-        type:'POST',
-        data:{op:'connect'},
-        onSuccess:function(data, retCodeStr, jqXHR) {
-            if(!_.isObject(data)) throw new Error('Expected object from server!');
-            self.connectionID = data.connectionID;
-            self.browserID = data.browserID;
-            self._waiter.ready('WebDB._connect');
-            self._waiter.ready('READY');
-        }
-    });
-};
-JSync.WebDB.prototype._disconnect = function(callback, sync) {
-    callback = callback || NOOP;
-    var self = this;
-    this._waiter.notReady('WebDB._connect'); this._waiter.notReady('READY');
-    if(!this.connectionID) return callback(this); // Already logged out.
-    this._ajax({
-        doNotRetry:true,
-        ajaxOpts:{async:!sync},
-        url:self._url+'/disconnect',
-        type:'POST',
-        data:{op:'disconnect',
-              connectionID:self.connectionID},
-        onSuccess:function(data, retCodeStr, jqXHR) {
-            if(!_.isObject(data)) throw new Error('Expected object from server!');
-            self.connectionID = null;
-            for(var i=self._activeAJAX.length-1; i>=0; i--) {
-                try { self._activeAJAX[i].abort();  // This actually *runs* the error handlers and thrown exceptions will pop thru our stack if we don't try...catch this.
-                } catch(e) { console.error(e); }
-                self._activeAJAX.splice(i, 1);
-            }
-            return callback(self);
-        },
-        onError:function(jqXHR, retCodeStr, exceptionObj) {
-            console.log('Error logging out:', exceptionObj);
-            return callback(self);
-        }
-    });
-};
-JSync.WebDB.prototype._reconnect = function() {
-    var self = this;
-    this._disconnect(function() {
-        self._connect();
-    });
-};
-JSync.WebDB.prototype._installAutoUnloader = function() {
-    if(typeof window === 'undefined') return;
-    var self = this;
-    window.onbeforeunload = function(e) {
-        console.log('WebDB onbeforeunload Called.');
-        if(JSync.getBrowser().browser == 'mozilla') {
-            // Firefox does not support "withCredentials" for cross-domain synchronous AJAX... and can therefore not pass the cookie unless we use async.   (This might just be the most arbitrary restriction of all time.)
-            self._disconnect();
-            var startTime = new Date().getTime();
-            while(self.connectionID  &&  (new Date().getTime()-startTime)<3000) {  // We must loop a few times for older versions of FF because they first issue preflighted CORS requests, which take extra time.
-                // Issue a synchronouse request to give the above async some time to get to the server.
-                jQuery.ajax({url:'/jsync_gettime',
-                             cache:false,
-                             async:false});
-            }
-        } else {
-            self._disconnect(null, true);  // Use a synchronous request.
-            // IE likes to fire this event A LOT!!!  Every time you click a link that does not start with '#', this gets
-            // triggered, even if you have overridden the click() event, or specified a 'javascript:' href.
-            // The best solution to this problem is the set your hrefs to "#" and then return false from your click handler.
-            // Here is a console message to help me to understand this issue when it occurs:
-            setTimeout(function() {console.log('Note: window.onbeforeunload has been triggered.  This occurs in IE when you click a link that does not have a # href.')}, 5000);
-        }
-    };
-};
-JSync.WebDB.prototype._addToSendQ = function(data, afterSend, afterReply, onError) {
-    // In the old logic, I check whether the related item is in the reset queue, and if it is, I discard the data and call the onError callback.
-    var msgID = JSync.newID();
-    this._sendQ[this._sendQ.length] = {msgID:msgID, data:data, afterSend:afterSend, afterReply:afterReply, onError:onError};
-    this._send();
-};
-JSync.WebDB.prototype._send = function() {
-    var self = this;
-    if(!this.__send_raw) this.__send_raw = _.debounce(slide.asyncOneAtATime(function(next) {
-        var FAIL = function(err) {
-            next();
-            throw err;
-        };
-        if(!self._sendQ.length) return next();  // Nothing to send.
-        var bundle = [],
-            bundleBytes = 0,
-            i, ii, item;
-        for(i=0, ii=self._sendQ.length; i<ii; i++) {
-            item = self._sendQ[i];
-            // We add this item to the receiveQ here because we might start receiving the reply before we're done sending the request.
-            // If we don't add it to the receiveQ ahead of time, we might not expect the reply when it comes in.
-            self._receiveQ[item.msgID] = {afterReply:item.afterReply, onError:item.onError};
-            bundle[bundle.length] = {msgID:item.msgID, data:item.data};
-            bundleBytes += JSON.stringify(bundle[bundle.length]-1).length;  // Not really bytes (unicode)... but, whatever.
-            if(bundleBytes > self.maxSendBundleBytes) break;
-        }
-        self._ajax({
-            url:self._url+'/send',
-            type:'POST',
-            data:{connectionID:self.connectionID,
-                  bundle:JSON.stringify(bundle)},
-            onSuccess:function(data, retCodeStr, jqXHR) {
-                if(!_.isArray(data)) return FAIL(new Error('Expected array from server!'));
-                var msgID, sendQItem;
-                while(data.length) {
-                    msgID = data[0].msgID;
-                    if(msgID !== bundle[0].msgID) return FAIL(new Error('I have never seen this.  msgID='+msgID));
-                    bundle.shift();
-                    // It is possible for items to get removed from the send queue by resets, so be careful when removing the current data item:
-                    sendQItem = {};
-                    if(self._sendQ.length  &&  self._sendQ[0].msgID===msgID) {
-                        sendQItem = self._sendQ[0];
-                        self._sendQ.shift();
-                    }
-                    if(!data[0].willReply) {
-                        delete self._receiveQ[msgID]; // We don't expect a reply.  Clean up the anticipated entry.
-                        JSync.delID(msgID);           // We are done with this msgID.
-                    }
-                    if(sendQItem.afterSend) sendQItem.afterSend(data[0].data);
-                    data.shift();
-                }
-                if(self._sendQ.length) self._send();
-                return next();
-            }
-        });
-    }), 10);
-    this.__send_raw();
-};
-JSync.WebDB.prototype._receive = function() {
-    var self = this;
-    if(!this.__receive_raw) this.__receive_raw = slide.asyncOneAtATime(function(next) {
-        var FAIL = function(err) {
-            next();
-            throw err;
-        };
-        self._ajax({
-            url:self._url+'/receive',
-            type:'POST',
-            data:{connectionID:self.connectionID},
-            onSuccess:function(data, retCodeStr, jqXHR) {
-                if(!_.isArray(data)) return FAIL(new Error('Expected array from server!'));
-                var item;
-                while(data.length) {
-                    item = data.shift();
-                    if(self._receiveQ.hasOwnProperty(item.msgID)) {
-                        (self._receiveQ[item.msgID].afterReply || NOOP)(item.data);
-                        delete self._receiveQ[item.msgID];
-                        JSync.delID(item.msgID);           // We are done with this msgID.
-                    } else {
-                        console.log('TODO: Handle unexpected receive item.');
-                    }
-                    // Need to actually do stuff with the received data... especially items that were not expected.
-                }
-                setTimeout(_.bind(self._receive, self), 1);
-                return next();
-            }
-        });
-    });
-    this._waiter.waitReady('WebDB._connect', this.__receive_raw);
 };
 
 

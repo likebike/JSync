@@ -41,22 +41,22 @@ JSync.FileDB = function(path) {
     if(!(this instanceof JSync.FileDB)) return new JSync.FileDB(path);
     this._states = {};
     this._dispatcher = JSync.Dispatcher();
-    this._waiter = JSync.Waiter();
-    this._waiter.notReady('READY');
+    this._ready = JSync.Ready();
+    this._ready.notReady('READY');
     this._path = PATH.resolve(path);
     this._load();
     var self = this;
-    this._waiter.waitReady('FileDB._load', function() {
+    this._ready.waitReady('FileDB._load', function() {
         self.on(function() { self._save(); });  // Register the saver after loading so the load events don't trigger another save.
-        self._waiter.ready('READY')
+        self._ready.ready('READY')
     });
 };
 JSync.FileDB.prototype._importData = JSync.RamDB.prototype._importData;
 JSync.FileDB.prototype._load = function() {
     var self = this;
     if(!this._path) throw new Error('Missing _path!');
-    this._waiter.notReady('FileDB._load');
-    var ready = function() { self._waiter.ready('FileDB._load') };
+    this._ready.notReady('FileDB._load');
+    var ready = function() { self._ready.ready('FileDB._load') };
     fs.readFile(this._path, function(err, dataStr) {
         if(err) {
             if(err.code === 'ENOENT') {
@@ -70,7 +70,7 @@ JSync.FileDB.prototype._load = function() {
         }
         var data = JSON.parse(dataStr);
         self._importData(data);
-        self._waiter.waitReady('RamDB._importData', ready);
+        self._ready.waitReady('RamDB._importData', ready);
     });
 };
 JSync.FileDB.prototype._exportData = JSync.RamDB.prototype._exportData;
@@ -122,9 +122,9 @@ JSync.DirDB = function(path) {
 
 
 
-JSync._setCorsHeaders = function(req, res, syncServer) {
+JSync._setCorsHeaders = function(req, res, options) {
     // I do this same thing in several places, so I am turning it into a function.
-    res.setHeader('Access-Control-Allow-Origin', syncServer.options.accessControlAllowOrigin || req.headers.origin || req.headers.referer);  // Allow cross-domain requests.  ...otherwise javascript can't see the status code (it sees 0 instead because it is not allows to see any data that is not granted access via CORS).   ///// NOTE 2015-08-01: Client requests do not contain the 'Origin' header because they are not cross-domain requests.  I am adding 'Referer' as another option.
+    res.setHeader('Access-Control-Allow-Origin', options.accessControlAllowOrigin || req.headers.origin || req.headers.referer);  // Allow cross-domain requests.  ...otherwise javascript can't see the status code (it sees 0 instead because it is not allows to see any data that is not granted access via CORS).   ///// NOTE 2015-08-01: Client requests do not contain the 'Origin' header because they are not cross-domain requests.  I am adding 'Referer' as another option.
     res.setHeader('Access-Control-Allow-Credentials', 'true');  // Allow cross-domain cookies.  ...otherwise, javascript can't access the response body.
 };
 JSync._setJsonResponseHeaders = function(res) {
@@ -153,55 +153,59 @@ JSync.AccessPolicy_NoClientEdits.prototype.canRead   = AP_TRUE;
 JSync.AccessPolicy_NoClientEdits.prototype.canUpdate = AP_FALSE;
 
 
-JSync.WebDBServer = function(stateDB, metaDB, accessPolicy, options) {
-    if(!(this instanceof JSync.WebDBServer)) return new JSync.WebDBServer(stateDB, metaDB, accessPolicy, options);
-    
+
+
+
+
+
+JSync.CometServer = function(db) {
+    if(!(this instanceof JSync.CometServer)) return new JSync.CometServer(db);
     this.longPollTimeout = 100000;
     this.connectionStaleTime = 1000*60*5;
     this.disposableQueueSizeLimit = 200;
-
-    this.options = options;
-    this.accessPolicy = accessPolicy || JSync.AccessPolicy_WideOpen();
-    this.setMetaDB(metaDB);
-    this.setStateDB(stateDB);
     this._receives = {};
+    this.setDB(db);
+    this.installOpHandlers();
 
-    this.removeStaleConnectionsInterval = setInterval(_.bind(this._removeStaleConnections, this), 10000);
+    this._removeStaleConnectionsInterval = setInterval(_.bind(this._removeStaleConnections, this), 10000);
 };
-JSync.WebDBServer.prototype.setStateDB = function(stateDB) {
-    if(!stateDB) throw new Error('Null stateDB');
-    if(this.stateDB) throw new Error('stateDB replacement not implemented yet.');  // When replacing a stateDB, you would need to unregister callback, re-load currently-used states... etc.
-    this.stateDB = stateDB;
-    stateDB.on(this._stateDBEventCallback, this);
-};
-JSync.WebDBServer.prototype.setMetaDB = function(metaDB) {
-    if(!metaDB) throw new Error('Null metaDB');
-    if(this.metaDB) throw new Error('metaDB replacement not implemented yet.');
-    this.metaDB = metaDB;
-    metaDB.on(this._metaDBEventCallback, this);
+JSync.CometServer.prototype.setDB = function(db) {
+    if(!db) throw new Error('Null DB');
+    if(this.db) throw new Error('DB replacement not implemented yet.');
+    this.db = db;
+    //db.on(this._dbEventCallback, this);  // For now, I don't actually have a need for these callbacks.
     // Define some states that definitely need to be there:
-    metaDB.getStateAutocreate('browsers');
-    metaDB.getStateAutocreate('connections');
+    db.getStateAutocreate('browsers');
+    db.getStateAutocreate('connections');
 };
-JSync.WebDBServer.prototype._stateDBEventCallback = function(a,b,c,d,e) {
-    console.log('stateDBEventCallback:',a,b,c,d,e);
+JSync.CometServer.prototype._dbEventCallback = function(id,state,op,data) {
+    console.log('CometServer dbEventCallback:',id,state,op,data);
 };
-JSync.WebDBServer.prototype._metaDBEventCallback = function(id,state,op,data) {
-    //console.log('metaDBEventCallback:',id,state,op,data);
+JSync.CometServer.prototype.setOpHandler = function(name, func) {
+    if(!this.opHandlers) this.opHandlers = {};
+    if(this.opHandlers.hasOwnProperty(name)) throw new Error('OpHandler replacement not implemented yet.');
+    this.opHandlers[name] = func;
 };
-JSync.WebDBServer.prototype.browserInfo = function(browserID, callback) {
+JSync.CometServer.prototype.installOpHandlers = function() {
+    var self = this;
+    this.setOpHandler('echo', function(connectionID, item, next) {
+        self.addToReceiveQ(connectionID, {msgID:item.msgID, data:item.data});
+        next({msgID:item.msgID, willReply:true});
+    });
+};
+JSync.CometServer.prototype.browserInfo = function(browserID, callback) {
     callback = callback || NOOP;
     var self = this;
     if(!browserID) return callback(null);
-    this.metaDB.getState('browsers', function(state) {
-        if(!state.data.hasOwnProperty(browserID)) return callback(null);
-        var info = JSync.deepCopy(state.data[browserID]);  // Prevent mutation of state object.
+    this.db.getState('browsers', function(browsers) {
+        if(!browsers.data.hasOwnProperty(browserID)) return callback(null);
+        var info = JSync.deepCopy(browsers.data[browserID]);  // Prevent mutation of state object.
         info.browserID = browserID;
         info.connections = {};
-        self.metaDB.getState('connections', function(state) {
+        self.db.getState('connections', function(connections) {
             var connectionInfo, connectionID;
-            for(connectionID in state.data) if(state.data.hasOwnProperty(connectionID)) {
-                connectionInfo = state.data[connectionID];
+            for(connectionID in connections.data) if(connections.data.hasOwnProperty(connectionID)) {
+                connectionInfo = connections.data[connectionID];
                 if(connectionInfo.browserID === browserID) {
                     info.connections[connectionID] = true;
                 }
@@ -210,77 +214,67 @@ JSync.WebDBServer.prototype.browserInfo = function(browserID, callback) {
         });
     });
 };
-JSync.WebDBServer.prototype.clientConnect = function(browserID, req, onSuccess, onError) {
+JSync.CometServer.prototype.clientConnect = function(browserID, onSuccess, onError) {
     onSuccess = onSuccess || NOOP; onError = onError || FAIL;
     var self = this;
-    this.metaDB.getState('connections', function(connections) {
+    this.db.getState('connections', function(connections) {
         var connectionID = JSync.newID(null, connections.data);
-        console.log('New Connection: browserID='+browserID+' connectionID='+connectionID);
+        console.log('Connected: browserID='+browserID+' connectionID='+connectionID);
         connections.edit([{op:'create', key:connectionID, value:{browserID:browserID, atime:new Date().getTime(), receiveQ:[]}}]);
         return onSuccess({browserID:browserID, connectionID:connectionID});
     });
 };
-JSync.WebDBServer.prototype.clientDisconnect = function(connectionID, req, onSuccess, onError) {
+JSync.CometServer.prototype.clientDisconnect = function(connectionID, onSuccess, onError) {
     onSuccess = onSuccess || NOOP; onError = onError || FAIL;
     var self = this;
-    this.metaDB.getState('connections', function(connections) {
+    this.db.getState('connections', function(connections) {
         if(!connections.data.hasOwnProperty(connectionID)) return onError(new Error('connectionID not found: '+connectionID));
         self._removeConnection(connections, connectionID);
         return onSuccess();
     });
 };
-JSync.WebDBServer.prototype._removeConnection = function(connectionsState, connectionID) {
+JSync.CometServer.prototype._removeConnection = function(connectionsState, connectionID) {
+    (this._receives[connectionID] || {shutdown:NOOP}).shutdown();  // The shutdown() will remove the entry from _receives.
+    if(this._receives.hasOwnProperty(connectionID)) console.log('CometServer shutdown() did not remove _receives[connectionID] !');
     connectionsState.edit([{op:'delete', key:connectionID}]);
-
-    ///////// I still might need to implement this old logic:
-    // // Also remove from the activeConnections:
-    // if(conn.req  &&  !conn.req.socket.destroyed) conn.req.destroy();
-    // if(conn.sendToLongPoll) conn.sendToLongPoll();  // Allow the connection to clean up.
-    // delete self._activeConnections[connectionID];
 };
-JSync.WebDBServer.prototype._removeStaleConnections = function() {
+JSync.CometServer.prototype._removeStaleConnections = function() {
     var self = this;
-    this.metaDB.getState('connections', function(connections) {
+    this.db.getState('connections', function(connections) {
         var curTime = new Date().getTime(),
             connectionID;
         for(connectionID in connections.data) if(connections.data.hasOwnProperty(connectionID)) {
-            if(curTime - connections.data[connectionID].atime > self.connectionStaleTime) {
+            if(curTime-connections.data[connectionID].atime > self.connectionStaleTime) {
                 console.log('Removing Stale Connection:', connectionID);
                 self._removeConnection(connections, connectionID);
             }
         }
     });
 };
-JSync.WebDBServer.prototype._touchConnection = function(connectionID, onSuccess, onError) {
+JSync.CometServer.prototype._touchConnection = function(connectionID, onSuccess, onError) {
     onSuccess = onSuccess || NOOP; onError = onError || FAIL;
     var self = this;
-    this.metaDB.getState('connections', function(connections) {
+    this.db.getState('connections', function(connections) {
         connections.edit([{op:'update', path:[connectionID], key:'atime', value:new Date().getTime()}]);
         return onSuccess();
     });
 };
-JSync.WebDBServer.prototype.clientSend = function(connectionID, bundle, onSuccess, onError) {
+JSync.CometServer.prototype.clientSend = function(connectionID, bundle, onSuccess, onError) {
     this._touchConnection(connectionID);    
     var self = this,
         i = 0;
-    var handler = function(bundleItem, next) {
+    var handler = function(bundleItem, _next) {
         var NEXT = function(result) {
             i += 1;
-            if(i%100 === 0) setTimeout(function() { next(null, result) }, 0);  // Prevent stack overflow or blocking of server by one client.
-            else next(null, result);
+            if(i%100 === 0) setTimeout(function() { _next(null, result) }, 0);  // Prevent stack overflow or blocking of server by one client.
+            else _next(null, result);
         };
         bundleItem = bundleItem || {}; bundleItem.data = bundleItem.data || {};
-        switch(bundleItem.data.op) {
-
-            case 'echo':
-                self.addToReceiveQ(connectionID, {msgID:bundleItem.msgID, data:bundleItem.data});
-                NEXT({msgID:bundleItem.msgID, willReply:true});
-                break;
-
-            default:
-                console.log('Unknown clientSend op:', bundleItem.data.op);
-                NEXT({msgID:bundleItem.msgID});
-        }
+        var h = self.opHandlers[bundleItem.data.op] || function(connectionID, item, next) {
+                                                           console.log('Unknown clientSend op:', item.data.op);
+                                                           next({msgID:bundleItem.msgID});
+                                                       };
+        return h(connectionID, bundleItem, NEXT);
     };
     var chain = [],
         i, ii;
@@ -290,14 +284,15 @@ JSync.WebDBServer.prototype.clientSend = function(connectionID, bundle, onSucces
         return onSuccess(result);
     });
 };
-JSync.WebDBServer.prototype.addToReceiveQ = function(connectionID, data) {
+JSync.CometServer.prototype.addToReceiveQ = function(connectionID, data) {
     var self = this;
-    this.metaDB.getState('connections', function(connections) {
-        connections.edit([{op:'arrayPush', path:[connectionID, 'receiveQ'], value:data}]);   // 2015-08-17: Received a "Path not found" exception because 'path' could not be allocated, and was therefore '[]'.  I was doing a recursion stress test at the time.
+    this.db.getState('connections', function(connections) {
+        if(!connections.data.hasOwnProperty(connectionID)) return; // The client disconnected while we were sending data to them.  Discard the data.
+        connections.edit([{op:'arrayPush', path:[connectionID, 'receiveQ'], value:data}]);
         (self._receives[connectionID] || {dataIsWaiting:NOOP}).dataIsWaiting();
     });
 };
-JSync.WebDBServer.prototype.clientReceive = function(connectionID, onSuccess, onError) {
+JSync.CometServer.prototype.clientReceive = function(connectionID, onSuccess, onError) {
     this._touchConnection(connectionID);
 
     // First, does a long poll already exist for this connectionID?  If so, kill the old one before proceeding:
@@ -309,7 +304,7 @@ JSync.WebDBServer.prototype.clientReceive = function(connectionID, onSuccess, on
     this._receives[connectionID] = myObj;
     myObj.shutdown = function() {
         if(self._receives[connectionID] !== myObj) {   // The connection was already shut down.
-            if(out.length) throw new Error('Connection is already shutdown, but output is still in queue!  I have never seen this.');
+            if(out.length) throw new Error('Connection is already shutdown, but output is still in queue!  This should never happen.');
             return;
         }
         var r = self._receives[connectionID];
@@ -320,8 +315,9 @@ JSync.WebDBServer.prototype.clientReceive = function(connectionID, onSuccess, on
         return onSuccess(myOut);
     };
     var send = function() {
-        self.metaDB.getState('connections', function(connections) {
+        self.db.getState('connections', function(connections) {
             if(self._receives[connectionID] !== myObj) return;  // The connection was already shut down.
+            if(!connections.data.hasOwnProperty(connectionID)) return myObj.shutdown(); // The client disconnected.  There's no point to send any data.  (Also, it would cause a "Path not found" exception in edit() below.)  Just shut down the socket and stuff like that.
             out = connections.data[connectionID].receiveQ;
             connections.edit([{op:'update', path:[connectionID], key:'receiveQ', value:[]}]);
             myObj.shutdown();
@@ -337,43 +333,30 @@ JSync.WebDBServer.prototype.clientReceive = function(connectionID, onSuccess, on
     setTimeout(myObj.shutdown, this.longPollTimeout); // Force the long-poll to execute before the server or filewalls close our connection.  The reason we need to do this from the server is becasue Chrome does not support the ajax 'timeout' option.
 
     // Finally, if there is data already waiting, initiate the process:
-    this.metaDB.getState('connections', function(connections) {
+    this.db.getState('connections', function(connections) {
         if(connections.data[connectionID].receiveQ.length) myObj.dataIsWaiting();
     });
 };
 
 
 
-
-
-
-
-
-
-
-
-JSync.WebDBServer.prototype.installIntoSebwebRouter = function(router, baseURL) {
+JSync.installCometServerIntoSebwebRouter = function(comet, router, baseURL, options) {
     if(!_.isString(baseURL)) throw new Error('Expected a baseURL');
     if(!baseURL.length) throw new Error('Empty baseURL!');
     if(baseURL.charAt(0) !== '/') throw new Error("baseURL should start with '/'.");
     if(baseURL.charAt(baseURL.length-1) === '/') throw new Error("baseURL should not end with '/'.");
     router.prependRoutes([
-        {path:'^'+baseURL+'/connect$',    func:JSync.sebwebHandler_connect(this)},
-        {path:'^'+baseURL+'/disconnect$', func:JSync.sebwebHandler_connect(this)},
-        {path:'^'+baseURL+'/send$',       func:JSync.sebwebHandler_send(this)},
-        {path:'^'+baseURL+'/receive$',    func:JSync.sebwebHandler_receive(this), skipLog:true},
+        {path:'^'+baseURL+'/connect$',    func:JSync.sebwebHandler_connect(comet, options)},
+        {path:'^'+baseURL+'/disconnect$', func:JSync.sebwebHandler_connect(comet, options)},
+        {path:'^'+baseURL+'/send$',       func:JSync.sebwebHandler_send(comet, options)},
+        {path:'^'+baseURL+'/receive$',    func:JSync.sebwebHandler_receive(comet, options), skipLog:true}
     ]);
 };
-
-
-
-
-
-JSync.sebwebHandler_connect = function(syncServer) {
+JSync.sebwebHandler_connect = function(comet, options) {
     var sebweb = require('sebweb');
-    if(!syncServer.options.sebweb_cookie_secret) throw new Error('You must define syncServer.options.sebweb_cookie_secret!');
-    return sebweb.BodyParser(sebweb.CookieStore(syncServer.options.sebweb_cookie_secret, function(req, res, onSuccess, onError) {
-        JSync._setCorsHeaders(req, res, syncServer);
+    if(!options.sebweb_cookie_secret) throw new Error('You must define options.sebweb_cookie_secret!');
+    return sebweb.BodyParser(sebweb.CookieStore(options.sebweb_cookie_secret, function(req, res, onSuccess, onError) {
+        JSync._setCorsHeaders(req, res, options);
         var afterWeHaveABrowserID = function(browserID) {
             var opArray = req.formidable.fields.op;
             if(!_.isArray(opArray)) return onError(new Error('no op!'));
@@ -382,8 +365,7 @@ JSync.sebwebHandler_connect = function(syncServer) {
             if(!_.isString(op)) return onError(new Error('non-string op!'));
             switch(op) {
                 case 'connect':
-                    console.log('Connecting:',browserID);
-                    syncServer.clientConnect(browserID, req, function(connectionInfo) {
+                    comet.clientConnect(browserID, function(connectionInfo) {
                         JSync._setJsonResponseHeaders(res);
                         res.end(JSON.stringify(connectionInfo));
                         return onSuccess();
@@ -391,17 +373,16 @@ JSync.sebwebHandler_connect = function(syncServer) {
                     break;
 
                 case 'disconnect':
-                    console.log('Disconnecting:',browserID);
-                    var connectionIdArray = req.formidable.fields.connectionID;
+                    var connectionIdArray = req.formidable.fields._connectionID;  // The 'disconnect' command uses '_connectionID' (_ prefix) to avoid magic ajax() wait-for-connection logic.
                     if(!_.isArray(connectionIdArray)) return onError(new Error('no connectionID!'));
                     if(connectionIdArray.length !== 1) return onError(new Error('Wrong number of connectionIDs!'));
                     var connectionID = connectionIdArray[0];
                     if(!_.isString(connectionID)) return onError(new Error('non-string connectionID!'));
-                    syncServer.browserInfo(browserID, function(browserInfo) {
-                        console.log('browserInfo:',browserInfo);
+                    console.log('Disconnecting: browserID='+browserID+' connectionID='+connectionID);
+                    comet.browserInfo(browserID, function(browserInfo) {
                         if(!browserInfo) return onError(new Error('Disconnect: browserID not found (weird!): '+browserID));  // This would be weird, since we *just* validated the browserID...
                         if(!(connectionID in browserInfo.connections)) return onError(new Error('Disconnect: Wrong browserID, or expired connection.'));
-                        syncServer.clientDisconnect(connectionID, req, function() {
+                        comet.clientDisconnect(connectionID, function() {
                             JSync._setJsonResponseHeaders(res);
                             res.end('{}');
                             onSuccess();
@@ -412,12 +393,11 @@ JSync.sebwebHandler_connect = function(syncServer) {
                 default: return onError(new Error('Invalid op!'));
             }
         };
-        syncServer.metaDB.getState('browsers', function(browsers) {
+        comet.db.getState('browsers', function(browsers) {
             var browserID = res.SWCS_get('JSync_BrowserID');
             if(browserID) {
                 if(browserID in browsers.data) return afterWeHaveABrowserID(browserID);
                 console.log('BrowserID was provided by client, but not recognized by server:',browserID);
-                console.log(_.keys(browsers.data));
             } else {
                 console.log('No BrowserID was provided.');
             }
@@ -428,12 +408,12 @@ JSync.sebwebHandler_connect = function(syncServer) {
             res.SWCS_set('JSync_BrowserID', browserID);
             return afterWeHaveABrowserID(browserID);
         });
-    }, syncServer.options.sebweb_cookie_options));
+    }, options.sebweb_cookie_options));
 };
-JSync.sebwebAuth = function(syncServer, next) {
+JSync.sebwebAuth = function(comet, options, next) {
     var sebweb = require('sebweb');
-    return sebweb.BodyParser(sebweb.CookieStore(syncServer.options.sebweb_cookie_secret, function(req, res, onSuccess, onError) {
-        JSync._setCorsHeaders(req, res, syncServer);
+    return sebweb.BodyParser(sebweb.CookieStore(options.sebweb_cookie_secret, function(req, res, onSuccess, onError) {
+        JSync._setCorsHeaders(req, res, options);
         var connectionIDArray = req.formidable.fields.connectionID;
         if(!_.isArray(connectionIDArray)) return onError(new Error('No connectionID!'));
         if(connectionIDArray.length !== 1) return onError(new Error('Wrong number of connectionIDs!'));
@@ -441,7 +421,7 @@ JSync.sebwebAuth = function(syncServer, next) {
         if(!_.isString(connectionID)) return onError(new Error('connectionID is not a string!'));
         // First, check the browserID:
         var browserID = res.SWCS_get('JSync_BrowserID');
-        syncServer.browserInfo(browserID, function(browserInfo) {
+        comet.browserInfo(browserID, function(browserInfo) {
             if(!browserInfo) {
                 // This occurs when a client IP address changes, or if a cookie gets hijacked.  The user should log back in and re-authenticate.
                 res.statusCode = 403;  // Forbidden.
@@ -449,17 +429,17 @@ JSync.sebwebAuth = function(syncServer, next) {
             }
             // Now that the browserID is checked, make sure the connectionID matches:
             if(!browserInfo.connections.hasOwnProperty(connectionID)) {
-                // This occurs when a client goes to sleep for a long time and then wakes up again (after their stale connection has already been cleared).  It is safe to allow the usser to connect() again and resume where they left off.
+                // This occurs when a client goes to sleep for a long time and then wakes up again (after their stale connection has already been cleared).  It is safe to allow the user to connect() again and resume where they left off.
                 res.statusCode = 401;  // Unauthorized.
                 return onError(new Error('connectionID not found: '+connectionID));
             }
             // Authentication complete.  Continue on to the next step:
             return next(browserID, connectionID, req, res, onSuccess, onError);
         });
-    }, syncServer.options.sebweb_cookie_options));
+    }, options.sebweb_cookie_options));
 };
-JSync.sebwebHandler_send = function(syncServer) {
-    return JSync.sebwebAuth(syncServer, function(browserID, connectionID, req, res, onSuccess, onError) {
+JSync.sebwebHandler_send = function(comet, options) {
+    return JSync.sebwebAuth(comet, options, function(browserID, connectionID, req, res, onSuccess, onError) {
         var bundleArray = req.formidable.fields.bundle;
         if(!_.isArray(bundleArray)) return onError(new Error('No Bundle!'));
         if(bundleArray.length !== 1) return onError(new Error('Wrong Bundle Length!'));
@@ -467,7 +447,7 @@ JSync.sebwebHandler_send = function(syncServer) {
         if(!bundleStr) return onError(new Error('Blank Bundle!'));
         if(bundleStr.charAt(0) !== '['  ||  bundleStr.charAt(bundleStr.length-1) !== ']') return onError(new Error('Bundle missing [] chars!'));
         var bundle = JSON.parse(bundleStr);
-        syncServer.clientSend(connectionID, bundle, function(result) {
+        comet.clientSend(connectionID, bundle, function(result) {
             res.setHeader('Content-Type', 'application/json');
             res.setHeader('Cache-Control', 'no-cache, must-revalidate');
             res.end(JSON.stringify(result));
@@ -475,9 +455,9 @@ JSync.sebwebHandler_send = function(syncServer) {
         }, onError);
     });
 };
-JSync.sebwebHandler_receive = function(syncServer) {
-    return JSync.sebwebAuth(syncServer, function(browserID, connectionID, req, res, onSuccess, onError) {
-        syncServer.clientReceive(connectionID, function(result) {
+JSync.sebwebHandler_receive = function(comet, options) {
+    return JSync.sebwebAuth(comet, options, function(browserID, connectionID, req, res, onSuccess, onError) {
+        comet.clientReceive(connectionID, function(result) {
             res.setHeader('Content-Type', 'application/json');
             res.setHeader('Cache-Control', 'no-cache, must-revalidate');
             res.end(JSON.stringify(result));
@@ -485,6 +465,71 @@ JSync.sebwebHandler_receive = function(syncServer) {
         }, onError);
     });
 };
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+JSync.WebDBServer = function(comet, stateDB, accessPolicy) {
+    if(!(this instanceof JSync.WebDBServer)) return new JSync.WebDBServer(comet, stateDB, accessPolicy);
+    
+    this.comet = comet;
+    this.accessPolicy = accessPolicy || JSync.AccessPolicy_WideOpen();
+    this.setStateDB(stateDB);
+    this.installOpHandlers();
+
+};
+JSync.WebDBServer.prototype.setStateDB = function(stateDB) {
+    if(!stateDB) throw new Error('Null stateDB');
+    if(this.stateDB) throw new Error('stateDB replacement not implemented yet.');  // When replacing a stateDB, you would need to unregister callback, re-load currently-used states... etc.
+    this.stateDB = stateDB;
+    stateDB.on(this._stateDBEventCallback, this);
+};
+JSync.WebDBServer.prototype._stateDBEventCallback = function(a,b,c,d,e) {
+    console.log('stateDBEventCallback:',a,b,c,d,e);
+};
+JSync.WebDBServer.prototype.installOpHandlers = function() {
+};
+
+
+
+
+
+
+
 
 
 
