@@ -457,6 +457,22 @@ JSync.delID = function(id) {  // After you're done with an ID (created with the 
     delete JSync._ids[id];
 };
 
+JSync._globals = {};
+JSync.newGlobal = function(value) {
+    var key = JSync.newID(null, JSync._globals);
+    JSync._globals[key] = value;
+    return key;
+};
+JSync.getGlobal = function(key) {
+    if(!JSync._globals.hasOwnProperty(key)) throw new Error('Unknown global key: '+key);
+    return JSync._globals[key];
+};
+JSync.popGlobal = function(key) {
+    var value = JSync.getGlobal(key);
+    delete JSync._globals[key];
+    return value;
+};
+
 JSync.dsHash = function(s) {
     // The Down Syndrome Hash algorithm, created by Christopher Sebastian.
     // A fast simple hash function for detecting errors, NOT for cryptography!
@@ -894,7 +910,7 @@ JSync.RamDB = function(initialData) {
     this.ready.waitReady('RamDB._importData', function() { THIS.ready.ready('READY') });
 };
 JSync.RamDB.prototype._importData = function(data) {
-    if(!data) return;
+    if(!data) return this.ready.ready('RamDB._importData');
     this.ready.notReady('RamDB._importData');
     var THIS = this;
     var create = function(id, state, cb) { THIS.createState(id, state, cb, cb, true); },  // 'true' tells createState (and therefore 'exists') not to wait for READY, otherwise we'd have a deadlock, since READY can't occur until we are done here..
@@ -1048,17 +1064,25 @@ JSync.CometClient.prototype.setOpHandler = function(name, handler) {
 };
 JSync.CometClient.prototype.getOpHandler = function(name) {
     var h = this.opHandlers[name];
-    if(!h) h = function(item, next) {
-                   console.error('Unknown OpHandler:',(item||0).op);
+    if(!h) h = function(data, next) {
+                   console.error('Unknown OpHandler:',(data||0).op);
                    next();
                };
     return h;
 };
 JSync.CometClient.prototype.installOpHandlers = function() {
     var THIS = this;
-    this.setOpHandler('echo_reply', function(item, next) {
-        console.log('Echo Reply:',item);
-        next();
+    this.setOpHandler('REPLY', function(reply, next) {
+        // We can sometimes get double replies.  Imagine this scenario:  We are sending a large bundle of operations.  Half of them make it to the server, but then our connection gets interrupted.  send() will re-attempt the connection and re-send all the items.  So the first half of the items could produce double results for "async" replies.
+        // An alternate way to handle this cornercase is to have popGlobal() keep the data there for a while before removing it, that way it can be double-popped.
+        var replyHandler;
+        try {
+            replyHandler = JSync.popGlobal(reply._cbID);
+        } catch(err) {
+            console.error(err, reply);
+            return next();
+        }
+        replyHandler(reply, next);
     });
 };
 JSync.CometClient.prototype.handleAjaxErrorCodes = function(jqXHR) {
@@ -1210,14 +1234,14 @@ JSync.CometClient.prototype.installAutoUnloader = function() {
         }
     };
 };
-// Example usage:  cometClient.addToSendQ({op:'myOp', disposable:true, data:{a:1, b:2}})
-//                 cometClient.addToSendQ({op:'myOp', data:{a:1, b:2}})
-JSync.CometClient.prototype.addToSendQ = function(data) {
-    if(data.disposable) {
-        // This item is disposable.  Throw it out if the queue is already too long:
-        if(this.sendQ.length > this.disposableQueueSizeLimit) return console.log('SendQ too long, disposing item:',data);
+// Example usage:  cometClient.addToSendQ({op:'myOp', a:1, b:2, _disposable:true}, function(reply, next) { console.log(reply); next(); })
+JSync.CometClient.prototype.addToSendQ = function(data, replyHandler) {
+    if(data._disposable) {
+        // This data is disposable.  Throw it out if the queue is already too long:
+        if(this.sendQ.length > this.disposableQueueSizeLimit) return console.log('SendQ too long, disposing data:',data);
+        delete data['_disposable'];  // Save some bandwidth.
     }
-    // In the old logic, I check whether the related item is in the reset queue, and if it is, I discard the data and call the onError callback.
+    if(replyHandler) data._cbID = JSync.newGlobal(replyHandler);
     this.sendQ[this.sendQ.length] = data;
     this._send();
 };
@@ -1250,8 +1274,8 @@ JSync.CometClient.prototype._send = function() {
                         if(THIS.sendQ.length) THIS._send();
                         return next();
                     }
-                    var immediateReply = data.shift();
-                    return THIS.getOpHandler((immediateReply||0).op)(immediateReply, LOOP);
+                    var reply = data.shift();  // These are "immediate" replies.  We can also receive async replies in receive().
+                    if(reply.hasOwnProperty('_cbID')) return JSync.popGlobal(reply._cbID)(reply, LOOP);
                 };
                 return LOOP();
             }
@@ -1279,7 +1303,7 @@ JSync.CometClient.prototype._receive = function() {
                         return next();
                     }
                     var item = data.shift();
-                    return THIS.getOpHandler((item||0).op)(item, LOOP);
+                    return THIS.getOpHandler(item.op)(item, LOOP);
                 };
                 return LOOP();
             }
@@ -1292,9 +1316,11 @@ JSync.CometClient.prototype._receive = function() {
 
 
 
-JSync.CometDB = function(comet) {
+JSync.CometDB = function(comet, initialData) {
     // Guard against forgetting the 'new' operator:
     if(!(this instanceof JSync.CometDB)) return new JSync.CometDB(comet);
+    this._ramdb = JSync.RamDB(initialData);
+    this._ids = {};
     this._dispatcher = JSync.Dispatcher();
     this.ready = JSync.Ready();
     this.comet = comet;
@@ -1309,11 +1335,6 @@ JSync.CometDB = function(comet) {
 };
 JSync.CometDB.prototype.installOpHandlers = function() {
     var THIS = this;
-    this.comet.setOpHandler('createState_reply', function(item, next) {
-        if(item.hasOwnProperty('error')) console.error('Error Creating State:', item);
-        else console.log('State Created Successfully:', item.id);
-        next();
-    });
 };
 JSync.CometDB.prototype.on = function(callback, context, data) {
     return this._dispatcher.on(callback, context, data);
@@ -1335,6 +1356,21 @@ JSync.CometDB.prototype.exists = function(id, callback) {
 JSync.CometDB.prototype.listIDs = function(callback) {
 };
 JSync.CometDB.prototype.getState = function(id, onSuccess, onError) {
+    var THIS = this;
+    this._ramdb.getState(id, onSuccess, function(err) {
+        // The state was not in our RamDB.  Check the server:
+        THIS.comet.addToSendQ({op:'getState', id:id}, function(reply, next) {
+            if(reply.hasOwnProperty('error')) {
+                onError(new Error(reply.error));
+            } else {
+                // We got the state from the server.  Save it in our RamDB:
+                THIS._ramdb.createState(id, JSync.State(reply.stateData), function() {
+                    THIS._ramdb.getState(id, onSuccess, onError);
+                });
+            }
+            next();
+        });
+    });
 };
 JSync.CometDB.prototype.createState = function(id, state, onSuccess, onError) {
     this.comet.addToSendQ({op:'createState', id:id, stateData:state.data});

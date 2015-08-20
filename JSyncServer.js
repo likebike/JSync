@@ -160,13 +160,12 @@ JSync.CometServer.prototype.setOpHandler = JSync.CometClient.prototype.setOpHand
 JSync.CometServer.prototype.getOpHandler = JSync.CometClient.prototype.getOpHandler;
 JSync.CometServer.prototype.installOpHandlers = function() {
     var THIS = this;
-    this.setOpHandler('echoImmediate', function(connectionID, item, next) {
-        item.op = 'echo_reply';
-        next(item);
+    this.setOpHandler('echoImmediate', function(connectionID, data, next) {
+        next(data);
     });
-    this.setOpHandler('echo', function(connectionID, item, next) {
-        item.op = 'echo_reply';
-        THIS.addToReceiveQ(connectionID, item);
+    this.setOpHandler('echo', function(connectionID, data, next) {
+        data.op = 'REPLY';
+        THIS.addToReceiveQ(connectionID, data);
         next();
     });
 };
@@ -256,24 +255,25 @@ JSync.CometServer.prototype.clientSend = function(connectionID, bundle, onSucces
     slide.chain(chain, function(err, result) {
         if(err) throw new Error('I have never seen this.');
         var out = [],
-            item;
+            data;
         while(result.length) {
-            item = result.shift();
-            if(item === undefined) continue;
-            out[out.length] = item;
+            data = result.shift();
+            if(data === undefined) continue;
+            out[out.length] = data;
         }
         return onSuccess(out);
     });
 };
-// Example usage:  cometServer.addToReceiveQ('0x1245678', {op:'myOp', data:{a:1, b:2}, disposable:true})
+// Example usage:  cometServer.addToReceiveQ('0x1245678', {op:'myOp', a:1, b:2, _disposable:true})
 JSync.CometServer.prototype.addToReceiveQ = function(connectionID, data) {
     var THIS = this;
     this.db.getState('connections', function(connections) {
         if(!connections.data.hasOwnProperty(connectionID)) return; // The client disconnected while we were sending data to them.  Discard the data.
-        if((data||0).disposable) {
+        if((data||0)._disposable) {
             console.log('Oooooooh, great!  A disposable item.  I still need to test these out.');
-            // This item is disposable.  Throw it out if the queue is already too long:
+            // This data is disposable.  Throw it out if the queue is already too long:
             if(connections.data[connectionID].receiveQ.length > THIS.disposableQueueSizeLimit) return;
+            delete data['_disposable'];  // Save some bandwidth.
         }
         connections.edit([{op:'arrayPush', path:[connectionID, 'receiveQ'], value:data}]);
         (THIS._receives[connectionID] || {dataIsWaiting:NOOP}).dataIsWaiting();
@@ -523,14 +523,21 @@ JSync.CometDBServer.prototype._dbEventCallback = function(a,b,c,d,e) {
 };
 JSync.CometDBServer.prototype.installOpHandlers = function() {
     var THIS = this;
-    this.comet.setOpHandler('createState', function(connectionID, item, next) {
-        THIS.db.createState(item.id,
-                            JSync.State(item.stateData),
+    this.comet.setOpHandler('createState', function(connectionID, data, next) {
+        THIS.db.createState(data.id,
+                            JSync.State(data.stateData),
                             function() {
-                                console.log('State Created:',item.id,'.  Need to broadcast to all interested connections (except origin).');
-                                THIS.comet.addToReceiveQ(connectionID, {op:'createState_reply', id:item.id});
+                                console.log('State Created:',data.id,'.  Need to broadcast to all interested connections (except origin).');
+                                THIS.comet.addToReceiveQ(connectionID, {op:'REPLY', id:data.id, _cbID:data._cbID});
                             },
-                            function(err) { THIS.comet.addToReceiveQ(connectionID, {op:'createState_reply', id:item.id, error:err.message}) });
+                            function(err) { THIS.comet.addToReceiveQ(connectionID, {op:'REPLY', id:data.id, error:err.message, _cbID:data._cbID}) });
+        next();
+    });
+    this.comet.setOpHandler('getState', function(connectionID, data, next) {
+        THIS.db.getState(data.id,
+                         function(state, id) {
+                            THIS.comet.addToReceiveQ(connectionID, {op:'REPLY', id:id, stateData:state.data, _cbID:data._cbID});
+                         }, function(err) { THIS.comet.addToReceiveQ(connectionID, {op:'REPLY', id:id, error:err.message, _cbID:data._cbID}) });
         next();
     });
 };
