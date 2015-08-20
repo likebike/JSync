@@ -885,26 +885,26 @@ JSync.Ready.prototype.offNotReady = function(name, callback) {
 
 JSync.RamDB = function(initialData) {
     if(!(this instanceof JSync.RamDB)) return new JSync.RamDB(initialData);
-    var self = this;
+    var THIS = this;
     this._states = {};
     this._dispatcher = JSync.Dispatcher();
-    this._ready = JSync.Ready();
-    this._watier.notReady('READY');
+    this.ready = JSync.Ready();
+    this.ready.notReady('READY');
     this._importData(initialData);
-    this._ready.waitReady('RamDB._importData', function() { self._ready.ready('READY') });
+    this.ready.waitReady('RamDB._importData', function() { THIS.ready.ready('READY') });
 };
 JSync.RamDB.prototype._importData = function(data) {
     if(!data) return;
-    this._ready.notReady('RamDB._importData');
-    var self = this;
-    var create = function(id, state, cb) { self.createState(id, state, cb, cb, true); },  // 'true' tells createState (and therefore 'exists') not to wait for READY, otherwise we'd have a deadlock, since READY can't occur until we are done here..
+    this.ready.notReady('RamDB._importData');
+    var THIS = this;
+    var create = function(id, state, cb) { THIS.createState(id, state, cb, cb, true); },  // 'true' tells createState (and therefore 'exists') not to wait for READY, otherwise we'd have a deadlock, since READY can't occur until we are done here..
         steps = [],
         id;;
     for(id in data) if(data.hasOwnProperty(id)) {
         steps[steps.length] = [create, id, JSync.State(data[id])];
     }
     slide.chain(steps, function() {
-        self._ready.ready('RamDB._importData');
+        THIS.ready.ready('RamDB._importData');
     });
 };
 JSync.RamDB.prototype._exportData = function() {
@@ -926,59 +926,59 @@ JSync.RamDB.prototype._stateCallback = function(state,delta,id) {
 };
 JSync.RamDB.prototype.exists = function(id, callback, doNotWaitReady) {
     callback = callback || NOOP;
-    var self = this;
+    var THIS = this;
     var afterReady = function() {
-        callback(self._states.hasOwnProperty(id));
+        callback(THIS._states.hasOwnProperty(id));
     };
     if(doNotWaitReady) return afterReady();
-    this._ready.waitReady('READY', afterReady);
+    this.ready.waitReady('READY', afterReady);
 };
 JSync.RamDB.prototype.listIDs = function(callback) {
     callback = callback || NOOP;
-    var self = this;
-    this._ready.waitReady('READY', function() {
-        callback(_.keys(self._states));
+    var THIS = this;
+    this.ready.waitReady('READY', function() {
+        callback(_.keys(THIS._states));
     });
 };
 JSync.RamDB.prototype.getState = function(id, onSuccess, onError) {
     onSuccess = onSuccess || NOOP; onError = onError || FAIL;
-    var self = this;
-    this._ready.waitReady('READY', function() {
-        var state = self._states[id];
+    var THIS = this;
+    this.ready.waitReady('READY', function() {
+        var state = THIS._states[id];
         if(!state) return onError(new Error('State does not exist: '+id));
         return onSuccess(state, id);
     });
 };
 JSync.RamDB.prototype.getStateAutocreate = function(id, defaultData, onSuccess, onError) {
     onSuccess = onSuccess || NOOP; onError = onError || FAIL;
-    var self = this;
+    var THIS = this;
     this.getState(id, onSuccess, function(err) {
         if(err.message === 'State does not exist: '+id) {
             var state = JSync.State(defaultData);
-            self.createState(id, state, function() { return onSuccess(state, id); }, onError);
+            THIS.createState(id, state, function() { return onSuccess(state, id); }, onError);
         } else return onError(err);
     });
 };
 JSync.RamDB.prototype.createState = function(id, state, onSuccess, onError, doNotWaitReady) {
     onSuccess = onSuccess || NOOP; onError = onError || FAIL;
-    var self = this;
+    var THIS = this;
     this.exists(id, function(exists) {
         if(exists) return onError(new Error('Already exists: '+id));
-        self._states[id] = state = state || JSync.State();
-        state.on(self._stateCallback, self, id);
-        self._dispatcher.trigger(id, state, 'create', undefined);
+        THIS._states[id] = state = state || JSync.State();
+        state.on(THIS._stateCallback, THIS, id);
+        THIS._dispatcher.trigger(id, state, 'create', undefined);
         return onSuccess();
     }, doNotWaitReady);
 };
 JSync.RamDB.prototype.deleteState = function(id, onSuccess, onError) {
     onSuccess = onSuccess || NOOP; onError = onError || FAIL;
-    var self = this;
+    var THIS = this;
     this.exists(id, function(exists) {
         if(!exists) return onError(new Error('Does not exists: '+id));
-        var state = self._states[id];
-        state.off(self._stateCallback, self, id);
-        delete self._states[id];
-        self._dispatcher.trigger(id, state, 'delete', undefined);
+        var state = THIS._states[id];
+        state.off(THIS._stateCallback, THIS, id);
+        delete THIS._states[id];
+        THIS._dispatcher.trigger(id, state, 'delete', undefined);
         return onSuccess();
     });
 };
@@ -1021,26 +1021,44 @@ JSync.getBrowser = function() {   // I am adding this here because jQuery has re
 
 JSync.CometClient = function(url) {
     if(!(this instanceof JSync.CometClient)) return new JSync.CometClient(url);
-
-    this.ready = JSync.Ready();
-    
+    this.disposableQueueSizeLimit = 200;
+    this.maxSendBundleBytes = 10*1024;
     if(!_.isString(url)) throw new Error('You must provide a CometServer url.');
     this.url = url;
     this.connectionID = null;
     this.browserID = null;
     this.ajaxSingletons = {};
     this.activeAJAX = [];
-
-    this.maxSendBundleBytes = 10*1024;
-    this.successReceiveReconnectMS = 1;
     this.sendQ = [];
-    this.receiveQ = {};
-
+    this.ready = JSync.Ready();
+    this.installOpHandlers();
     this.connect();
-    var self = this;
+    var THIS = this;
     this.ready.waitReady('CometClient.connect', function() {
-        self._receive();
-        self.installAutoUnloader();
+        THIS._receive();
+        THIS.installAutoUnloader();
+    });
+};
+JSync.CometClient.prototype.setOpHandler = function(name, handler) {
+    if(!name) throw new Error('Missing name!');
+    if(!_.isFunction(handler)) throw new Error('Handler is not a function!');
+    if(!this.opHandlers) this.opHandlers = {};
+    if(this.opHandlers.hasOwnProperty(name)) throw new Error('OpHandler replacement not implemented yet.');
+    this.opHandlers[name] = handler;
+};
+JSync.CometClient.prototype.getOpHandler = function(name) {
+    var h = this.opHandlers[name];
+    if(!h) h = function(item, next) {
+                   console.error('Unknown OpHandler:',(item||0).op);
+                   next();
+               };
+    return h;
+};
+JSync.CometClient.prototype.installOpHandlers = function() {
+    var THIS = this;
+    this.setOpHandler('echo_reply', function(item, next) {
+        console.log('Echo Reply:',item);
+        next();
     });
 };
 JSync.CometClient.prototype.handleAjaxErrorCodes = function(jqXHR) {
@@ -1062,25 +1080,25 @@ JSync.CometClient.prototype.handleAjaxErrorCodes = function(jqXHR) {
 };
 JSync.CometClient.prototype.ajax = function(options) {
     // A robust, commonly-used convenience function.
-    var self = this,
+    var THIS = this,
         errRetryMS = options.errRetryMS || 1000,
         errRetryMaxMS = options.errRetryMaxMS || 120000;
     var afterConnection = function() {
         // If 'data' contains 'connectionID', make sure it's up to date ( in case we are in a retry loop and had to reconnect ):
-        if(options.data.hasOwnProperty('connectionID')) options.data.connectionID = self.connectionID;
+        if(options.data.hasOwnProperty('connectionID')) options.data.connectionID = THIS.connectionID;
 
         if(options.singleton) {
-            if(self.ajaxSingletons[options.singleton]) return;
-            self.ajaxSingletons[options.singleton] = true;
+            if(THIS.ajaxSingletons[options.singleton]) return;
+            THIS.ajaxSingletons[options.singleton] = true;
         }
         var myRequest = [null];
         var cleanup = function() {
-            for(var i=self.activeAJAX.length-1; i>=0; i--) {
-                if(self.activeAJAX[i] === myRequest[0]) self.activeAJAX.splice(i,1);
+            for(var i=THIS.activeAJAX.length-1; i>=0; i--) {
+                if(THIS.activeAJAX[i] === myRequest[0]) THIS.activeAJAX.splice(i,1);
             }
-            if(options.singleton) self.ajaxSingletons[options.singleton] = false;
+            if(options.singleton) THIS.ajaxSingletons[options.singleton] = false;
         };
-        myRequest[0] = self.activeAJAX[self.activeAJAX.length] = jQuery.ajax(_.extend({
+        myRequest[0] = THIS.activeAJAX[THIS.activeAJAX.length] = jQuery.ajax(_.extend({
             url:options.url,
             type:options.type,
             data:options.data,
@@ -1096,7 +1114,7 @@ JSync.CometClient.prototype.ajax = function(options) {
                 //console.log('ERROR:', jqXHR, retCodeStr, exceptionObj);
                 cleanup();
                 if(!options.doNotRetry) {
-                    self.handleAjaxErrorCodes(jqXHR);
+                    THIS.handleAjaxErrorCodes(jqXHR);
                     setTimeout(DOIT, errRetryMS);
                 }
                 errRetryMS *= 1.62; if(errRetryMS > errRetryMaxMS) errRetryMS = errRetryMaxMS;
@@ -1112,46 +1130,46 @@ JSync.CometClient.prototype.ajax = function(options) {
     };
     var DOIT = function() {
         // We treat the presence of data.connectionID as a signal that we should expect to be connected.
-        if(options.data.hasOwnProperty('connectionID')) self.ready.waitReady('CometClient.connect', afterConnection);
+        if(options.data.hasOwnProperty('connectionID')) THIS.ready.waitReady('CometClient.connect', afterConnection);
         else afterConnection();
     };
     DOIT();
 };
 JSync.CometClient.prototype.connect = function() {
-    var self = this;
+    var THIS = this;
     this.ready.notReady('CometClient.connect');
     this.ajax({
         errRetryMaxMS:30000,
-        url:self.url+'/connect',
+        url:THIS.url+'/connect',
         type:'POST',
         data:{op:'connect'},
         onSuccess:function(data, retCodeStr, jqXHR) {
             if(!_.isObject(data)) throw new Error('Expected object from server!');
-            self.connectionID = data.connectionID;
-            self.browserID = data.browserID;
-            self.ready.ready('CometClient.connect');
+            THIS.connectionID = data.connectionID;
+            THIS.browserID = data.browserID;
+            THIS.ready.ready('CometClient.connect');
         }
     });
 };
 JSync.CometClient.prototype.disconnect = function(callback, sync) {
     callback = callback || NOOP;
-    var self = this;
+    var THIS = this;
     if(!this.connectionID) return callback(this); // Already logged out.
     this.ready.notReady('CometClient.connect');
     this.ajax({
         doNotRetry:true,
         ajaxOpts:{async:!sync},
-        url:self.url+'/disconnect',
+        url:THIS.url+'/disconnect',
         type:'POST',
         data:{op:'disconnect',
-              _connectionID:self.connectionID},  // We prefix 'connectionID' with '_' to avoid triggering ajax() wait-for-connection logic.
+              _connectionID:THIS.connectionID},  // We prefix 'connectionID' with '_' to avoid triggering ajax() wait-for-connection logic.
         onSuccess:function(data, retCodeStr, jqXHR) {
             if(!_.isObject(data)) throw new Error('Expected object from server!');
-            self.connectionID = null;
-            for(var i=self.activeAJAX.length-1; i>=0; i--) {
-                try { self.activeAJAX[i].abort();  // This actually *runs* the error handlers and thrown exceptions will pop thru our stack if we don't try...catch this.
+            THIS.connectionID = null;
+            for(var i=THIS.activeAJAX.length-1; i>=0; i--) {
+                try { THIS.activeAJAX[i].abort();  // This actually *runs* the error handlers and thrown exceptions will pop thru our stack if we don't try...catch this.
                 } catch(e) { console.error(e); }
-                self.activeAJAX.splice(i, 1);
+                THIS.activeAJAX.splice(i, 1);
             }
             return callback();
         },
@@ -1162,28 +1180,28 @@ JSync.CometClient.prototype.disconnect = function(callback, sync) {
     });
 };
 JSync.CometClient.prototype.reconnect = function() {
-    var self = this;
+    var THIS = this;
     this.disconnect(function() {
-        self.connect();
+        THIS.connect();
     });
 };
 JSync.CometClient.prototype.installAutoUnloader = function() {
     if(typeof window === 'undefined') return;
-    var self = this;
+    var THIS = this;
     window.onbeforeunload = function(e) {
         console.log('CometClient onbeforeunload Called.');
         if(JSync.getBrowser().browser == 'mozilla') {
             // Firefox does not support "withCredentials" for cross-domain synchronous AJAX... and can therefore not pass the cookie unless we use async.   (This might just be the most arbitrary restriction of all time.)
-            self.disconnect();
+            THIS.disconnect();
             var startTime = new Date().getTime();
-            while(self.connectionID  &&  (new Date().getTime()-startTime)<3000) {  // We must loop a few times for older versions of FF because they first issue preflighted CORS requests, which take extra time.
+            while(THIS.connectionID  &&  (new Date().getTime()-startTime)<3000) {  // We must loop a few times for older versions of FF because they first issue preflighted CORS requests, which take extra time.
                 // Issue a synchronouse request to give the above async some time to get to the server.
                 jQuery.ajax({url:'/jsync_gettime',
                              cache:false,
                              async:false});
             }
         } else {
-            self.disconnect(null, true);  // Use a synchronous request.
+            THIS.disconnect(null, true);  // Use a synchronous request.
             // IE likes to fire this event A LOT!!!  Every time you click a link that does not start with '#', this gets
             // triggered, even if you have overridden the click() event, or specified a 'javascript:' href.
             // The best solution to this problem is the set your hrefs to "#" and then return false from your click handler.
@@ -1192,92 +1210,78 @@ JSync.CometClient.prototype.installAutoUnloader = function() {
         }
     };
 };
-JSync.CometClient.prototype.addToSendQ = function(data, afterSend, afterReply, onError) {
+// Example usage:  cometClient.addToSendQ({op:'myOp', disposable:true, data:{a:1, b:2}})
+//                 cometClient.addToSendQ({op:'myOp', data:{a:1, b:2}})
+JSync.CometClient.prototype.addToSendQ = function(data) {
+    if(data.disposable) {
+        // This item is disposable.  Throw it out if the queue is already too long:
+        if(this.sendQ.length > this.disposableQueueSizeLimit) return console.log('SendQ too long, disposing item:',data);
+    }
     // In the old logic, I check whether the related item is in the reset queue, and if it is, I discard the data and call the onError callback.
-    var msgID = JSync.newID();
-    this.sendQ[this.sendQ.length] = {msgID:msgID, data:data, afterSend:afterSend, afterReply:afterReply, onError:onError};
+    this.sendQ[this.sendQ.length] = data;
     this._send();
 };
 JSync.CometClient.prototype._send = function() {
-    var self = this;
+    var THIS = this;
     if(!this.__send_raw) this.__send_raw = _.debounce(slide.asyncOneAtATime(function(next) {
         var FAIL = function(err) {
             next();
             throw err;
         };
-        if(!self.sendQ.length) return next();  // Nothing to send.
+        if(!THIS.sendQ.length) return next();  // Nothing to send.
         var bundle = [],
             bundleBytes = 0,
-            i, ii, item;
-        for(i=0, ii=self.sendQ.length; i<ii; i++) {
-            item = self.sendQ[i];
-            // We add this item to the receiveQ here because we might start receiving the reply before we're done sending the request.
-            // If we don't add it to the receiveQ ahead of time, we might not expect the reply when it comes in.
-            self.receiveQ[item.msgID] = {afterReply:item.afterReply, onError:item.onError};
-            bundle[bundle.length] = {msgID:item.msgID, data:item.data};
+            i, ii;
+        while(THIS.sendQ.length) {
+            bundle[bundle.length] = THIS.sendQ.shift();
             bundleBytes += JSON.stringify(bundle[bundle.length]-1).length;  // Not really bytes (unicode)... but, whatever.
-            if(bundleBytes > self.maxSendBundleBytes) break;
+            if(bundleBytes > THIS.maxSendBundleBytes) break;
         }
-        self.ajax({
-            url:self.url+'/send',
+        THIS.ajax({
+            url:THIS.url+'/send',
             type:'POST',
-            data:{connectionID:self.connectionID,
+            data:{connectionID:THIS.connectionID,
                   bundle:JSON.stringify(bundle)},
             onSuccess:function(data, retCodeStr, jqXHR) {
                 if(!_.isArray(data)) return FAIL(new Error('Expected array from server!'));
-                var msgID, sendQItem;
-                while(data.length) {
-                    msgID = data[0].msgID;
-                    if(msgID !== bundle[0].msgID) return FAIL(new Error('I have never seen this.  msgID='+msgID));
-                    bundle.shift();
-                    // It is possible for items to get removed from the send queue by resets, so be careful when removing the current data item:
-                    sendQItem = {};
-                    if(self.sendQ.length  &&  self.sendQ[0].msgID===msgID) {
-                        sendQItem = self.sendQ[0];
-                        self.sendQ.shift();
+                var LOOP = function() {
+                    if(!data.length) {
+                        // Done with LOOP.
+                        if(THIS.sendQ.length) THIS._send();
+                        return next();
                     }
-                    if(!data[0].willReply) {
-                        delete self.receiveQ[msgID]; // We don't expect a reply.  Clean up the anticipated entry.
-                        JSync.delID(msgID);           // We are done with this msgID.
-                    }
-                    if(sendQItem.afterSend) sendQItem.afterSend(data[0].data);
-                    data.shift();
-                }
-                if(self.sendQ.length) self._send();
-                return next();
+                    var immediateReply = data.shift();
+                    return THIS.getOpHandler((immediateReply||0).op)(immediateReply, LOOP);
+                };
+                return LOOP();
             }
         });
     }), 10);
     this.__send_raw();
 };
 JSync.CometClient.prototype._receive = function() {
-    var self = this;
+    var THIS = this;
     if(!this.__receive_raw) this.__receive_raw = slide.asyncOneAtATime(function(next) {
         var FAIL = function(err) {
             next();
             throw err;
         };
-        self.ajax({
-            url:self.url+'/receive',
+        THIS.ajax({
+            url:THIS.url+'/receive',
             type:'POST',
-            data:{connectionID:self.connectionID},
+            data:{connectionID:THIS.connectionID},
             onSuccess:function(data, retCodeStr, jqXHR) {
                 if(!_.isArray(data)) return FAIL(new Error('Expected array from server!'));
-                var item;
-                while(data.length) {
-                    item = data.shift();
-                    if(self.receiveQ.hasOwnProperty(item.msgID)) {
-                        (self.receiveQ[item.msgID].afterReply || NOOP)(item.data);
-                        delete self.receiveQ[item.msgID];
-                        JSync.delID(item.msgID);           // We are done with this msgID.
-                    } else {
-                        // This item had an unexpected msgID.  This means that the message originated from the server, OR our send() got reconnected in the middle and had to re-transmit some items.
-                        console.log('TODO: Handle unexpected receive item.');
+                var LOOP = function() {
+                    if(!data.length) {
+                        // Done with LOOP.
+                        setTimeout(_.bind(THIS._receive, THIS), 1);
+                        return next();
                     }
-                    // Need to actually do stuff with the received data... especially items that were not expected.
-                }
-                setTimeout(_.bind(self._receive, self), 1);
-                return next();
+                    var item = data.shift();
+                    return THIS.getOpHandler((item||0).op)(item, LOOP);
+                };
+                return LOOP();
             }
         });
     });
@@ -1288,48 +1292,55 @@ JSync.CometClient.prototype._receive = function() {
 
 
 
-JSync.WebDB = function(url) {
+JSync.CometDB = function(comet) {
     // Guard against forgetting the 'new' operator:
-    if(!(this instanceof JSync.WebDB)) return new JSync.WebDB(url);
+    if(!(this instanceof JSync.CometDB)) return new JSync.CometDB(comet);
     this._dispatcher = JSync.Dispatcher();
-    this._ready = JSync.Ready();
-
-    this.comet = JSync.CometClient(url);
-    var self = this;
+    this.ready = JSync.Ready();
+    this.comet = comet;
+    this.installOpHandlers();
+    var THIS = this;
     this.comet.ready.onNotReady('CometClient.connect', function() {
-        self._ready.notReady('READY');
-        console.log('Comet is NOT ready...');
-        self.comet.ready.waitReady('CometClient.connect', function() {
-            self._ready.ready('READY');
-            console.log('Comet IS ready...');
+        THIS.ready.notReady('READY');
+        THIS.comet.ready.waitReady('CometClient.connect', function() {
+            THIS.ready.ready('READY');
         });
     }, true);
 };
-JSync.WebDB.prototype.on = function(callback, context, data) {
+JSync.CometDB.prototype.installOpHandlers = function() {
+    var THIS = this;
+    this.comet.setOpHandler('createState_reply', function(item, next) {
+        if(item.hasOwnProperty('error')) console.error('Error Creating State:', item);
+        else console.log('State Created Successfully:', item.id);
+        next();
+    });
+};
+JSync.CometDB.prototype.on = function(callback, context, data) {
     return this._dispatcher.on(callback, context, data);
 };
-JSync.WebDB.prototype.off = function(callback, context, data) {
+JSync.CometDB.prototype.off = function(callback, context, data) {
     return this._dispatcher.off(callback, context, data);
 };
-JSync.WebDB.prototype.exists = function(id, callback) {
+JSync.CometDB.prototype.exists = function(id, callback) {
     // I'm using this generic, inefficient implementation for now.
     callback = callback || NOOP;
-    var self = this;
+    var THIS = this;
     this.listIDs(function(ids) {
         for(var i=ids.length-1; i>=0; i--) {
-            if(ids[i]===id) return callback(true);
+            if(ids[i] === id) return callback(true);
         }
         return callback(false);
     });
 };
-JSync.WebDB.prototype.listIDs = function(callback) {
+JSync.CometDB.prototype.listIDs = function(callback) {
 };
-JSync.WebDB.prototype.getState = function(id, onSuccess, onError) {
+JSync.CometDB.prototype.getState = function(id, onSuccess, onError) {
 };
-JSync.WebDB.prototype.createState = function(id, state, onSuccess, onError) {
-    
+JSync.CometDB.prototype.createState = function(id, state, onSuccess, onError) {
+    this.comet.addToSendQ({op:'createState', id:id, stateData:state.data});
 };
-JSync.WebDB.prototype.deleteState = function(id, onSuccess, onError) {
+JSync.CometDB.prototype.deleteState = function(id, onSuccess, onError) {
+    this.comet.addToSendQ({op:'deleteState', id:id});
 };
 
 
@@ -1356,3 +1367,16 @@ JSync.WebDB.prototype.deleteState = function(id, onSuccess, onError) {
 
 
 })();
+
+
+
+
+
+
+
+/////////  I'm going to sleep now.  Here are some items to think about:
+/////////  Right now, if an onSuccess() is provided to addToSendQ/ReceiveQ, then the default opHandler will not be called.  Is that the desired behavior?  Will we ever even need onSuccess?
+/////////  I think I'm pretty much ready to add the higher level "DB" logic now.
+/////////  I like the flexibility of the CometClient/Server.
+
+

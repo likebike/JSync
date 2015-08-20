@@ -182,7 +182,6 @@ slide.asyncOneAtATime = function(func, hasOnError) {
             console.log('already running.');
             return;
         }
-        //console.log('RUNNING.');
         running = true;
         var onSuccess, onError;
         if(hasOnError) {
@@ -199,7 +198,7 @@ slide.asyncOneAtATime = function(func, hasOnError) {
             running = false;
             onError && onError.apply(null, results);
         }]);
-        func.apply(null, totalArgs);
+        func.apply(null, totalArgs);  // It's no use to wrap this in a 'try' block because exceptions will usually be thrown from the async activities, which we have no way of catching.
     };
 };
 
