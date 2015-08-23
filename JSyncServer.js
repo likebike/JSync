@@ -506,9 +506,9 @@ JSync.sebwebHandler_receive = function(comet, options) {
 
 
 
-JSync.AccessPolicy_WideOpen = function(stateID, connectionID, cb) { cb({read:true,  create:true,  remove:true,  update:true }) };
-JSync.AccessPolicy_ReadOnly = function(stateID, connectionID, cb) { cb({read:true,  create:false, remove:false, update:false}) };
-JSync.AccessPolicy_Denied =   function(stateID, connectionID, cb) { cb({read:false, create:false, remove:false, update:false}) };
+JSync.AccessPolicy_WideOpen = function(connectionID, stateID, cb) { cb({read:true,  create:true,  remove:true,  update:true }) };
+JSync.AccessPolicy_ReadOnly = function(connectionID, stateID, cb) { cb({read:true,  create:false, remove:false, update:false}) };
+JSync.AccessPolicy_Denied =   function(connectionID, stateID, cb) { cb({read:false, create:false, remove:false, update:false}) };
 
 
 
@@ -521,13 +521,14 @@ JSync.CometDBServer = function(comet, db, accessPolicy) {
     this.comet = comet;
     this.setAccessPolicy(accessPolicy);
     this.setDB(db);
+    this._ignoreSendList = [];
     this.installOpHandlers();
 };
 JSync.CometDBServer.prototype.setAccessPolicy = function(accessPolicy) {
     this.accessPolicy = accessPolicy || JSync.AccessPolicy_Denied;  // 'Denied' is the only safe default.
     var THIS = this;
     this._shouldIncludeInBroadcast = function(connectionID, data, cb) {   // So we don't need to re-create this closure on every network operation.  (That would be expensive.)
-        THIS.accessPolicy(data.id, connectionID, function(access) { cb(access.read) });
+        THIS.accessPolicy(connectionID, data.id, function(access) { cb(access.read) });
     };
 
 
@@ -539,8 +540,33 @@ JSync.CometDBServer.prototype.setDB = function(db) {
     this.db = db;
     db.on(this._dbEventCallback, this);
 };
-JSync.CometDBServer.prototype._dbEventCallback = function(a,b,c,d,e) {
-    console.log('dbEventCallback:',a,b,c,d,e);
+JSync.CometDBServer.prototype._dbEventCallback = function(id, state, op, data) {
+    if(op === 'create') {
+        this._broadcast({op:'createState', id:id, stateData:state.data});
+    } else if(op === 'delete') {
+        this._broadcast({op:'deleteState', id:id}); 
+    } else if(op === 'delta') {
+        this._broadcast({op:op, id:id, delta:data});
+    } else {
+        console.log('Unknown dbEventCallback Op:', id, state, op, data);
+    }
+};
+JSync.CometDBServer.prototype._broadcast = function(data) {
+    var dataStr = JSync.stringify(data),
+        ignoreConnectionIDs = [],
+        i, ii;
+    for(i=0, ii=this._ignoreSendList.length; i<ii; i++) {
+        if(this._ignoreSendList[i].dataStr === dataStr) {
+            ignoreConnectionIDs = this._ignoreSendList[i].connectionIDs;
+            this._ignoreSendList.splice(i,1);
+            break;
+        }
+    }
+    this.comet.broadcast(ignoreConnectionIDs, this._shouldIncludeInBroadcast, data);
+};
+JSync.CometDBServer.prototype._ignoreSend = function(connectionIDs, data) {
+    // This function helps us to be able to propagate server-side state operations, while also being able to handle client-generated ops.
+    this._ignoreSendList[this._ignoreSendList.length] = {dataStr:JSync.stringify(data), connectionIDs:connectionIDs};
 };
 JSync.CometDBServer.prototype.installOpHandlers = function() {
     var THIS = this;
@@ -549,7 +575,7 @@ JSync.CometDBServer.prototype.installOpHandlers = function() {
         };
     var errReply = function(connectionID, reqData, err) { reply(connectionID, reqData, {error:err.message}) };
     this.comet.setOpHandler('getState', function(connectionID, data, next) {
-        THIS.accessPolicy(data.id, connectionID, function(access) {
+        THIS.accessPolicy(connectionID, data.id, function(access) {
             if(access.read) THIS.db.getState(data.id,
                                     function(state, id) {
                                         reply(connectionID, data, {stateData:state.data});
@@ -559,39 +585,37 @@ JSync.CometDBServer.prototype.installOpHandlers = function() {
         });
     });
     this.comet.setOpHandler('createState', function(connectionID, data, next) {
-        THIS.accessPolicy(data.id, connectionID, function(access) {
-            if(access.create) THIS.db.createState(data.id,
+        THIS.accessPolicy(connectionID, data.id, function(access) {
+            if(access.create) {
+                THIS._ignoreSend([connectionID], {op:data.op, id:data.id, stateData:data.stateData});
+                THIS.db.createState(data.id,
                                     JSync.State(data.stateData),
-                                    function() {
-                                        THIS.comet.broadcast([connectionID], THIS._shouldIncludeInBroadcast, data);
-                                        reply(connectionID, data);
-                                    },
+                                    function(state, id) { reply(connectionID, data); },
                                     function(err) { errReply(connectionID, data, err) });
-            else errReply(connectionID, data, new Error('Access Denied'));
+            } else errReply(connectionID, data, new Error('Access Denied'));
             next();
         });
     });
     this.comet.setOpHandler('deleteState', function(connectionID, data, next) {
-        THIS.accessPolicy(data.id, connectionID, function(access) {
-            if(access.remove) THIS.db.deleteState(data.id,
-                                    function(state, id) {
-                                        THIS.comet.broadcast([connectionID], THIS._shouldIncludeInBroadcast, data);
-                                        reply(connectionID, data);
-                                    },
+        THIS.accessPolicy(connectionID, data.id, function(access) {
+            if(access.remove) {
+                THIS._ignoreSend([connectionID], {op:data.op, id:data.id});
+                THIS.db.deleteState(data.id,
+                                    function(state, id) { reply(connectionID, data); },
                                     function(err) { errReply(connectionID, data, err) });
-            else errReply(connectionID, data, new Error('Access Denied'));
+            } else errReply(connectionID, data, new Error('Access Denied'));
             next();
         });
     });
     this.comet.setOpHandler('delta', function(connectionID, data, next) {
-        THIS.accessPolicy(data.id, connectionID, function(access) {
+        THIS.accessPolicy(connectionID, data.id, function(access) {
             if(access.update) THIS.db.getState(data.id,
-                                    function(state, id) {
-                                        try { state.applyDelta(data.delta);
-                                        } catch(err) { return errReply(connectionID, data, err) };
-                                        THIS.comet.broadcast([connectionID], THIS._shouldIncludeInBroadcast, data);
-                                        reply(connectionID, data);
-                                    }, function(err) { errReply(connectionID, data, err) });
+                                               function(state, id) {
+                                                   THIS._ignoreSend([connectionID], {op:data.op, id:data.id, delta:data.delta});
+                                                   try { state.applyDelta(data.delta);
+                                                   } catch(err) { return errReply(connectionID, data, err) };
+                                                   reply(connectionID, data);
+                                               }, function(err) { errReply(connectionID, data, err) });
             else errReply(connectionID, data, new Error('Access Denied'));
             next();
         });

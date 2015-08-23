@@ -965,7 +965,7 @@ JSync.RamDB.prototype.listIDs = function(callback) {
     });
 };
 JSync.RamDB.prototype.getState = function(id, onSuccess, onError) {
-    onSuccess = onSuccess || NOOP; onError = onError || FAIL;
+    onSuccess = onSuccess || NOOP; onError = onError || LOG_ERR;
     var THIS = this;
     this.ready.waitReady('READY', function() {
         var state = THIS._states[id];
@@ -974,7 +974,7 @@ JSync.RamDB.prototype.getState = function(id, onSuccess, onError) {
     });
 };
 JSync.RamDB.prototype.getStateAutocreate = function(id, defaultData, onSuccess, onError) {
-    onSuccess = onSuccess || NOOP; onError = onError || FAIL;
+    onSuccess = onSuccess || NOOP; onError = onError || LOG_ERR;
     var THIS = this;
     this.getState(id, onSuccess, function(err) {
         if(err.message === 'State does not exist: '+id) {
@@ -984,18 +984,18 @@ JSync.RamDB.prototype.getStateAutocreate = function(id, defaultData, onSuccess, 
     });
 };
 JSync.RamDB.prototype.createState = function(id, state, onSuccess, onError, doNotWaitReady) {
-    onSuccess = onSuccess || NOOP; onError = onError || FAIL;
+    onSuccess = onSuccess || NOOP; onError = onError || LOG_ERR;
     var THIS = this;
     this.exists(id, function(exists) {
         if(exists) return onError(new Error('Already exists: '+id));
         THIS._states[id] = state = state || JSync.State();
         state.on(THIS._stateCallback, THIS, id);
-        THIS._dispatcher.trigger(id, state, 'create', undefined);
+        if(!doNotWaitReady) THIS._dispatcher.trigger(id, state, 'create', undefined);  // Do not trigger events and broadcasts during loads.
         return onSuccess(state, id);
     }, doNotWaitReady);
 };
 JSync.RamDB.prototype.deleteState = function(id, onSuccess, onError) {
-    onSuccess = onSuccess || NOOP; onError = onError || FAIL;
+    onSuccess = onSuccess || NOOP; onError = onError || LOG_ERR;
     var THIS = this;
     this.exists(id, function(exists) {
         if(!exists) return onError(new Error('Does not exist: '+id));
@@ -1370,6 +1370,29 @@ JSync.CometDB.prototype.installOpHandlers = function() {
         THIS.deleteState(data.id);
         next();
     });
+    this.comet.setOpHandler('delta', function(data, next) {
+        // Take a peek inside the RamDB to see if we currently have a local copy of this state.
+        // If we do have a local copy, apply the delta.
+        // If we don't have a local copy already, just fetch the new state and ignore this delta, since the delta will already be included in the fetched version.
+        THIS._ramDB.exists(data.id, function(exists) {
+            if(exists) {
+                // We have a local copy of this state.  Apply the delta:
+                THIS.getState(data.id, function(state, id) {
+                    THIS._ignoreSend({op:'delta', id:data.id, delta:data.delta});
+                    try { state.applyDelta(data.delta);
+                    } catch(err) {
+                        LOG_ERR(err);
+                        // Something is wrong.  Reset the state:
+                        THIS.fetchState(data.id);
+                    }
+                }, LOG_ERR);
+            } else {
+                // We do not have a local copy of this state.  Just fetch the latest version:
+                THIS.fetchState(data.id);
+            }
+            next();
+        });
+    });
 };
 JSync.CometDB.prototype.setRamDB = function(ramDB) {
     if(this._ramDB) throw new Error('CometDB RamDB replacement not implemnted yet.');
@@ -1380,14 +1403,15 @@ JSync.CometDB.prototype._ramDBCallback = function(id, state, op, data) {
     var THIS = this;
     if(op==='create' || op==='delete') {
         // These events originate from this CometDB layer, not from the State layer.  So that means we already deal with these events elsewhere.
+        // Note, if the event is originating from the RamDB layer instead of the CometDB layer, you're using this library wrong.  Always interact via the CometDB layer.
     } else if(op === 'delta') {
-        console.log('TODO avoid propagation loop'); // Check whether this delta originally came from the server.  (Avoid propagation loop.)
-        // This delta originated here.  Propagate to server.
-        this._addToSendQ({op:'delta', id:id, delta:data}, function(reply, next) {
+        // This delta might have originated here.  Propagate to server.  If it came from the server, the _addToSendQ() function will ignore it.
+        THIS._addToSendQ({op:'delta', id:id, delta:data}, function(reply, next) {
             if(reply.hasOwnProperty('error')) {
+                if(reply.error === 'IGNORE_SEND') return next();  // This was just a propagation loop.  Nothing to worry about.
                 // Something is out of sync.  Reset the state.
                 THIS.fetchState(id);
-                console.error(reply.error);
+                console.error('Reply Error:',reply.error);
             } else {
             }
             next();
@@ -1532,4 +1556,7 @@ JSync.CometDB.prototype.deleteState = function(id, onSuccess, onError) {
 /////////  I think I'm pretty much ready to add the higher level "DB" logic now.
 /////////  I like the flexibility of the CometClient/Server.
 
+
+
+/////////////////////  HERE I AM.  I still need to test server-side edits, and also the 'reset' events.  Finally, IE6 compatibility.
 
