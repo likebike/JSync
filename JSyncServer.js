@@ -157,7 +157,15 @@ JSync.CometServer.prototype._dbEventCallback = function(id,state,op,data) {
     console.log('CometServer dbEventCallback:',id,state,op,data);
 };
 JSync.CometServer.prototype.setOpHandler = JSync.CometClient.prototype.setOpHandler;
-JSync.CometServer.prototype.getOpHandler = JSync.CometClient.prototype.getOpHandler;
+JSync.CometServer.prototype.getOpHandler = function(name) {
+    var h;
+    if(this.opHandlers.hasOwnProperty(name)) h = this.opHandlers[name];
+    else h = function(connectionID, data, next) {
+                 console.error('Unknown OpHandler:',name);
+                 next({op:'REPLY', error:'Unknown Server OpHandler', _cbID:data._cbID});
+             };
+    return h;
+};
 JSync.CometServer.prototype.installOpHandlers = function() {
     var THIS = this;
     this.setOpHandler('echoImmediate', function(connectionID, data, next) {
@@ -175,7 +183,7 @@ JSync.CometServer.prototype.browserInfo = function(browserID, callback) {
     if(!browserID) return callback(null);
     this.db.getState('browsers', function(browsers) {
         if(!browsers.data.hasOwnProperty(browserID)) return callback(null);
-        var info = JSync.deepCopy(browsers.data[browserID]);  // Prevent mutation of state object.
+        var info = JSync.deepCopy(browsers.data[browserID]);  // Prevent external mutation.
         info.browserID = browserID;
         info.connections = {};
         THIS.db.getState('connections', function(connections) {
@@ -190,14 +198,26 @@ JSync.CometServer.prototype.browserInfo = function(browserID, callback) {
         });
     });
 };
+JSync.CometServer.prototype.connectionInfo = function(connectionID, callback) {
+    callback = callback || NOOP;
+    var THIS = this;
+    if(!connectionID) return callback(null);
+    this.db.getState('connections', function(connections) {
+        if(!connections.data.hasOwnProperty(connectionID)) return callback(null);
+        var info = {connectionID:connectionID, browserID:connections.data[connectionID].browserID};
+        // In the future, I might also want to fetch the 'browsers' state and inclue some info from there, but right now, it's just blank objects.
+        // Might also want to include a list of other connectionIDs that have the same browserID...
+        return info;
+    });
+};
 JSync.CometServer.prototype.clientConnect = function(browserID, onSuccess, onError) {
     onSuccess = onSuccess || NOOP; onError = onError || FAIL;
     var THIS = this;
     this.db.getState('connections', function(connections) {
         var connectionID = JSync.newID(null, connections.data);
         console.log('Connected: browserID='+browserID+' connectionID='+connectionID);
-        connections.edit([{op:'create', key:connectionID, value:{browserID:browserID, atime:new Date().getTime(), receiveQ:[]}}]);
-        return onSuccess({browserID:browserID, connectionID:connectionID});
+        connections.edit([{op:'create', key:connectionID, value:{browserID:browserID, receiveQ:[]}}]);
+        THIS._touchConnection(connectionID, function() { onSuccess({browserID:browserID, connectionID:connectionID}) }, onError);
     });
 };
 JSync.CometServer.prototype.clientDisconnect = function(connectionID, onSuccess, onError) {
@@ -231,9 +251,13 @@ JSync.CometServer.prototype._touchConnection = function(connectionID, onSuccess,
     onSuccess = onSuccess || NOOP; onError = onError || FAIL;
     var THIS = this;
     this.db.getState('connections', function(connections) {
-        connections.edit([{op:'update', path:[connectionID], key:'atime', value:new Date().getTime()}]);
-        return onSuccess();
-    });
+        var now = new Date().getTime();
+        connections.edit([{op:'update!', path:[connectionID], key:'atime', value:now}]);
+        THIS.db.getState('browsers', function(browsers) {
+            browsers.edit([{op:'update!', path:[connections.data[connectionID].browserID], key:'atime', value:now}]);
+            return onSuccess();
+        }, onError);
+    }, onError);
 };
 JSync.CometServer.prototype.clientSend = function(connectionID, bundle, onSuccess, onError) {
     this._touchConnection(connectionID);    
@@ -277,6 +301,22 @@ JSync.CometServer.prototype.addToReceiveQ = function(connectionID, data) {
         }
         connections.edit([{op:'arrayPush', path:[connectionID, 'receiveQ'], value:data}]);
         (THIS._receives[connectionID] || {dataIsWaiting:NOOP}).dataIsWaiting();
+    });
+};
+// Example usage:  cometServer.broadcast(['0x12345678'], function(connectionID, data, cb) {cb(true)}, data)
+JSync.CometServer.prototype.broadcast = function(excludeConnIDs, shouldIncludeFunc, data) {
+    excludeConnIDs = excludeConnIDs || [];
+    var THIS = this,
+        excludeMap = {},
+        i, ii;
+    for(i=0, ii=excludeConnIDs.length; i<ii; i++) { excludeMap[excludeConnIDs[i]] = true; }
+    this.db.getState('connections', function(connections) {
+        _.each(connections.data, function(val, connectionID) {
+            if(excludeMap.hasOwnProperty(connectionID)) return;  // This connectionID is excluded.
+            shouldIncludeFunc(connectionID, data, function(shouldInclude) {
+                if(shouldInclude) THIS.addToReceiveQ(connectionID, data);
+            });
+        });
     });
 };
 JSync.CometServer.prototype.clientReceive = function(connectionID, onSuccess, onError) {
@@ -324,6 +364,13 @@ JSync.CometServer.prototype.clientReceive = function(connectionID, onSuccess, on
         if(connections.data[connectionID].receiveQ.length) myObj.dataIsWaiting();
     });
 };
+
+
+
+
+
+
+
 
 
 
@@ -459,45 +506,9 @@ JSync.sebwebHandler_receive = function(comet, options) {
 
 
 
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-var AP_TRUE = function(syncServer, req, connectionID, browserID, stateID) { return true; },
-    AP_FALSE = function(syncServer, req, connectionID, browserID, stateID) { return false; };
-
-JSync.AccessPolicy_WideOpen = function() {
-    if(!(this instanceof JSync.AccessPolicy_WideOpen)) return new JSync.AccessPolicy_WideOpen();
-};
-JSync.AccessPolicy_WideOpen.prototype.canCreate = AP_TRUE;
-JSync.AccessPolicy_WideOpen.prototype.canDelete = AP_TRUE;
-JSync.AccessPolicy_WideOpen.prototype.canRead   = AP_TRUE;
-JSync.AccessPolicy_WideOpen.prototype.canUpdate = AP_TRUE;
-
-JSync.AccessPolicy_NoClientEdits = function() {
-    if(!(this instanceof JSync.AccessPolicy_NoClientEdits)) return new JSync.AccessPolicy_NoClientEdits();
-};
-JSync.AccessPolicy_NoClientEdits.prototype.canCreate = AP_FALSE;
-JSync.AccessPolicy_NoClientEdits.prototype.canDelete = AP_FALSE;
-JSync.AccessPolicy_NoClientEdits.prototype.canRead   = AP_TRUE;
-JSync.AccessPolicy_NoClientEdits.prototype.canUpdate = AP_FALSE;
-
-
-
+JSync.AccessPolicy_WideOpen = function(stateID, connectionID, cb) { cb({read:true,  create:true,  remove:true,  update:true }) };
+JSync.AccessPolicy_ReadOnly = function(stateID, connectionID, cb) { cb({read:true,  create:false, remove:false, update:false}) };
+JSync.AccessPolicy_Denied =   function(stateID, connectionID, cb) { cb({read:false, create:false, remove:false, update:false}) };
 
 
 
@@ -508,9 +519,19 @@ JSync.CometDBServer = function(comet, db, accessPolicy) {
     if(!(this instanceof JSync.CometDBServer)) return new JSync.CometDBServer(comet, db, accessPolicy);
     
     this.comet = comet;
-    this.accessPolicy = accessPolicy || JSync.AccessPolicy_WideOpen();
+    this.setAccessPolicy(accessPolicy);
     this.setDB(db);
     this.installOpHandlers();
+};
+JSync.CometDBServer.prototype.setAccessPolicy = function(accessPolicy) {
+    this.accessPolicy = accessPolicy || JSync.AccessPolicy_Denied;  // 'Denied' is the only safe default.
+    var THIS = this;
+    this._shouldIncludeInBroadcast = function(connectionID, data, cb) {   // So we don't need to re-create this closure on every network operation.  (That would be expensive.)
+        THIS.accessPolicy(data.id, connectionID, function(access) { cb(access.read) });
+    };
+
+
+
 };
 JSync.CometDBServer.prototype.setDB = function(db) {
     if(!db) throw new Error('Null DB');
@@ -523,22 +544,57 @@ JSync.CometDBServer.prototype._dbEventCallback = function(a,b,c,d,e) {
 };
 JSync.CometDBServer.prototype.installOpHandlers = function() {
     var THIS = this;
-    this.comet.setOpHandler('createState', function(connectionID, data, next) {
-        THIS.db.createState(data.id,
-                            JSync.State(data.stateData),
-                            function() {
-                                console.log('State Created:',data.id,'.  Need to broadcast to all interested connections (except origin).');
-                                THIS.comet.addToReceiveQ(connectionID, {op:'REPLY', id:data.id, _cbID:data._cbID});
-                            },
-                            function(err) { THIS.comet.addToReceiveQ(connectionID, {op:'REPLY', id:data.id, error:err.message, _cbID:data._cbID}) });
-        next();
-    });
+    var reply = function(connectionID, reqData, resData) {
+            THIS.comet.addToReceiveQ(connectionID, _.extend({op:'REPLY', id:reqData.id, _cbID:reqData._cbID}, resData));
+        };
+    var errReply = function(connectionID, reqData, err) { reply(connectionID, reqData, {error:err.message}) };
     this.comet.setOpHandler('getState', function(connectionID, data, next) {
-        THIS.db.getState(data.id,
-                         function(state, id) {
-                            THIS.comet.addToReceiveQ(connectionID, {op:'REPLY', id:id, stateData:state.data, _cbID:data._cbID});
-                         }, function(err) { THIS.comet.addToReceiveQ(connectionID, {op:'REPLY', id:id, error:err.message, _cbID:data._cbID}) });
-        next();
+        THIS.accessPolicy(data.id, connectionID, function(access) {
+            if(access.read) THIS.db.getState(data.id,
+                                    function(state, id) {
+                                        reply(connectionID, data, {stateData:state.data});
+                                    }, function(err) { errReply(connectionID, data, err) });
+            else errReply(connectionID, data, new Error('Access Denied'));
+            next();
+        });
+    });
+    this.comet.setOpHandler('createState', function(connectionID, data, next) {
+        THIS.accessPolicy(data.id, connectionID, function(access) {
+            if(access.create) THIS.db.createState(data.id,
+                                    JSync.State(data.stateData),
+                                    function() {
+                                        THIS.comet.broadcast([connectionID], THIS._shouldIncludeInBroadcast, data);
+                                        reply(connectionID, data);
+                                    },
+                                    function(err) { errReply(connectionID, data, err) });
+            else errReply(connectionID, data, new Error('Access Denied'));
+            next();
+        });
+    });
+    this.comet.setOpHandler('deleteState', function(connectionID, data, next) {
+        THIS.accessPolicy(data.id, connectionID, function(access) {
+            if(access.remove) THIS.db.deleteState(data.id,
+                                    function(state, id) {
+                                        THIS.comet.broadcast([connectionID], THIS._shouldIncludeInBroadcast, data);
+                                        reply(connectionID, data);
+                                    },
+                                    function(err) { errReply(connectionID, data, err) });
+            else errReply(connectionID, data, new Error('Access Denied'));
+            next();
+        });
+    });
+    this.comet.setOpHandler('delta', function(connectionID, data, next) {
+        THIS.accessPolicy(data.id, connectionID, function(access) {
+            if(access.update) THIS.db.getState(data.id,
+                                    function(state, id) {
+                                        try { state.applyDelta(data.delta);
+                                        } catch(err) { return errReply(connectionID, data, err) };
+                                        THIS.comet.broadcast([connectionID], THIS._shouldIncludeInBroadcast, data);
+                                        reply(connectionID, data);
+                                    }, function(err) { errReply(connectionID, data, err) });
+            else errReply(connectionID, data, new Error('Access Denied'));
+            next();
+        });
     });
 };
 

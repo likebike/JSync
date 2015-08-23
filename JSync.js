@@ -9,6 +9,7 @@ var JSync = {},
     jQuery,     // Browser only.
     NOOP = function(){},  // Surprisingly useful.
     FAIL = function(err){throw err},
+    LOG_ERR = function(err){console.error(err)},
     undefined;  // So 'undefined' really is undefined.
 if(typeof exports !== 'undefined') {
     // We are in Node.
@@ -521,6 +522,9 @@ JSync.getTarget = function(o, path) {
 JSync.deepCopy = function(o) {
     return JSON.parse(JSON.stringify(o));  // There is probably a faster way to deep-copy...
 };
+JSync.deepEqual = function(o1, o2) {
+    return JSync.stringify(o1) === JSync.stringify(o2);
+};
 
 JSync._isInt = function(o) {
     return parseInt(o) === o;
@@ -543,8 +547,7 @@ JSync.edit = function(obj, operations) {
     var FAIL = function(msg) {
         console.error('Edit Failed.  Rolling back...');
         JSync.applyDelta(obj, JSync.reverseDelta({steps:steps}));
-        if(JSync.stringify(obj) === origObjStr) console.error('Rollback Successful.');
-        else console.error('Rollback Failed!');
+        if(JSync.stringify(obj) !== origObjStr) console.error('Rollback Failed!');
         throw new Error(msg);
     };
     for(i=0, ii=operations.length; i<ii; i++) {
@@ -571,6 +574,7 @@ JSync.edit = function(obj, operations) {
                 if(key === undefined) FAIL('undefined key!');
                 if(value === undefined) FAIL('undefined value!');  // If you want to set something to undefined, just delete instead.
                 if(!(key in target)) FAIL('Not in target: '+key);
+                // We do NOT check if 'before' and 'after' are equal, or try to detect NOOP operations (setting the same value that already exists, etc.).  Logical linearity is more important than saving a few steps.
                 steps[steps.length] = {op:op, path:path, key:key, before:JSync.deepCopy(target[key]), after:JSync.deepCopy(value)};
                 target[key] = value;
                 break;
@@ -692,8 +696,7 @@ JSync.applyDelta = function(obj, delta, doNotCheckStartHash, doNotCheckEndHash) 
     var FAIL = function(msg) {
         console.error('Delta Application Failed.  Rolling back...');
         JSync.applyDelta(obj, JSync.reverseDelta({startHash:delta.startHash, steps:delta.steps.slice(0,i)}));
-        if(JSync.stringify(obj) === origObjStr) console.error('Rollback Successful.');
-        else console.error('Rollback Failed!');
+        if(JSync.stringify(obj) !== origObjStr) console.error('Rollback Failed!');
         throw new Error(msg);
     };
     for(i=0, ii=steps.length; i<ii; i++) {
@@ -799,7 +802,7 @@ JSync.Dispatcher.prototype.trigger = function() {
 JSync.State = function(initialData) {
     if(!(this instanceof JSync.State)) return new JSync.State(initialData);
     this._dispatcher = JSync.Dispatcher();
-    this.data = initialData || {};
+    this.reset(initialData);
 };
 JSync.State.prototype.on = function(callback, context, data) {
     return this._dispatcher.on(callback, context, data);
@@ -807,16 +810,21 @@ JSync.State.prototype.on = function(callback, context, data) {
 JSync.State.prototype.off = function(callback, context, data) {
     return this._dispatcher.off(callback, context, data);
 };
+JSync.State.prototype.reset = function(data) {
+    this.data = data || {};
+    this._dispatcher.trigger(this, 'reset', undefined);
+};
 JSync.State.prototype.edit = function(operations) {
     if(!_.isArray(operations)) throw new Error('Expected Array operations argument.');
     if(!operations.length) return;   // Skip noops.
     var delta = JSync.edit(this.data, operations);
-    this._dispatcher.trigger(this, delta);
+    // We do NOT check whether delta.steps is empty.  We want to propagate ALL deltas, including empty ones.  This preserves logical linearity, and allows us to assume that we will always get a dispatched event out of this.
+    this._dispatcher.trigger(this, 'delta', delta);
 };
 JSync.State.prototype.applyDelta = function(delta) {
     if(!delta || !delta.steps.length) return;   // Skip noops.
     JSync.applyDelta(this.data, delta);
-    this._dispatcher.trigger(this, delta);
+    this._dispatcher.trigger(this, 'delta', delta);
 };
 
 
@@ -913,7 +921,7 @@ JSync.RamDB.prototype._importData = function(data) {
     if(!data) return this.ready.ready('RamDB._importData');
     this.ready.notReady('RamDB._importData');
     var THIS = this;
-    var create = function(id, state, cb) { THIS.createState(id, state, cb, cb, true); },  // 'true' tells createState (and therefore 'exists') not to wait for READY, otherwise we'd have a deadlock, since READY can't occur until we are done here..
+    var create = function(id, state, next) {THIS.createState(id, state, function(/*ignore args*/) {next()}, function(e) {console.error(e); next()}, true); },  // 'true' tells createState (and therefore 'exists') not to wait for READY, otherwise we'd have a deadlock, since READY can't occur until we are done here..
         steps = [],
         id;;
     for(id in data) if(data.hasOwnProperty(id)) {
@@ -937,8 +945,8 @@ JSync.RamDB.prototype.on = function(callback, context, data) {
 JSync.RamDB.prototype.off = function(callback, context, data) {
     return this._dispatcher.off(callback, context, data);
 };
-JSync.RamDB.prototype._stateCallback = function(state,delta,id) {
-    this._dispatcher.trigger(id, state, 'delta', delta);
+JSync.RamDB.prototype._stateCallback = function(state, op, data, id) {
+    this._dispatcher.trigger(id, state, op, data);
 };
 JSync.RamDB.prototype.exists = function(id, callback, doNotWaitReady) {
     callback = callback || NOOP;
@@ -983,19 +991,19 @@ JSync.RamDB.prototype.createState = function(id, state, onSuccess, onError, doNo
         THIS._states[id] = state = state || JSync.State();
         state.on(THIS._stateCallback, THIS, id);
         THIS._dispatcher.trigger(id, state, 'create', undefined);
-        return onSuccess();
+        return onSuccess(state, id);
     }, doNotWaitReady);
 };
 JSync.RamDB.prototype.deleteState = function(id, onSuccess, onError) {
     onSuccess = onSuccess || NOOP; onError = onError || FAIL;
     var THIS = this;
     this.exists(id, function(exists) {
-        if(!exists) return onError(new Error('Does not exists: '+id));
+        if(!exists) return onError(new Error('Does not exist: '+id));
         var state = THIS._states[id];
         state.off(THIS._stateCallback, THIS, id);
         delete THIS._states[id];
         THIS._dispatcher.trigger(id, state, 'delete', undefined);
-        return onSuccess();
+        return onSuccess(state, id);
     });
 };
 
@@ -1063,11 +1071,12 @@ JSync.CometClient.prototype.setOpHandler = function(name, handler) {
     this.opHandlers[name] = handler;
 };
 JSync.CometClient.prototype.getOpHandler = function(name) {
-    var h = this.opHandlers[name];
-    if(!h) h = function(data, next) {
-                   console.error('Unknown OpHandler:',(data||0).op);
-                   next();
-               };
+    var h;
+    if(this.opHandlers.hasOwnProperty(name)) h = this.opHandlers[name];
+    else h = function(data, next) {
+                 console.error('Unknown OpHandler:',name);
+                 next();
+             };
     return h;
 };
 JSync.CometClient.prototype.installOpHandlers = function() {
@@ -1318,12 +1327,13 @@ JSync.CometClient.prototype._receive = function() {
 
 JSync.CometDB = function(comet, initialData) {
     // Guard against forgetting the 'new' operator:
-    if(!(this instanceof JSync.CometDB)) return new JSync.CometDB(comet);
-    this._ramdb = JSync.RamDB(initialData);
+    if(!(this instanceof JSync.CometDB)) return new JSync.CometDB(comet, initialData);
+    this.setRamDB(JSync.RamDB(initialData));
     this._ids = {};
     this._dispatcher = JSync.Dispatcher();
     this.ready = JSync.Ready();
     this.comet = comet;
+    this._ignoreSendList = [];
     this.installOpHandlers();
     var THIS = this;
     this.comet.ready.onNotReady('CometClient.connect', function() {
@@ -1333,8 +1343,60 @@ JSync.CometDB = function(comet, initialData) {
         });
     }, true);
 };
+JSync.CometDB.prototype._addToSendQ = function(data, replyHandler) {
+    var dataStr = JSync.stringify(data),
+        i, ii;
+    for(i=0, ii=this._ignoreSendList.length; i<ii; i++) {
+        if(this._ignoreSendList[i] === dataStr) {
+            this._ignoreSendList.splice(i,1);  // Remove.
+            return replyHandler({error:'IGNORE_SEND'}, function() {});
+        }
+    }
+    this.comet.addToSendQ(data, replyHandler);
+};
+JSync.CometDB.prototype._ignoreSend = function(data) {
+    // This function helps us to avoid propagation loops (re-sending data back to the server, which we just received from the server).
+    this._ignoreSendList[this._ignoreSendList.length] = JSync.stringify(data);
+};
 JSync.CometDB.prototype.installOpHandlers = function() {
     var THIS = this;
+    this.comet.setOpHandler('createState', function(data, next) {
+        THIS._ignoreSend({op:'createState', id:data.id, stateData:data.stateData});
+        THIS.createState(data.id, JSync.State(data.stateData));
+        next();
+    });
+    this.comet.setOpHandler('deleteState', function(data, next) {
+        THIS._ignoreSend({op:'deleteState', id:data.id});
+        THIS.deleteState(data.id);
+        next();
+    });
+};
+JSync.CometDB.prototype.setRamDB = function(ramDB) {
+    if(this._ramDB) throw new Error('CometDB RamDB replacement not implemnted yet.');
+    this._ramDB = ramDB;
+    this._ramDB.on(this._ramDBCallback, this);
+};
+JSync.CometDB.prototype._ramDBCallback = function(id, state, op, data) {
+    var THIS = this;
+    if(op==='create' || op==='delete') {
+        // These events originate from this CometDB layer, not from the State layer.  So that means we already deal with these events elsewhere.
+    } else if(op === 'delta') {
+        console.log('TODO avoid propagation loop'); // Check whether this delta originally came from the server.  (Avoid propagation loop.)
+        // This delta originated here.  Propagate to server.
+        this._addToSendQ({op:'delta', id:id, delta:data}, function(reply, next) {
+            if(reply.hasOwnProperty('error')) {
+                // Something is out of sync.  Reset the state.
+                THIS.fetchState(id);
+                console.error(reply.error);
+            } else {
+            }
+            next();
+        });
+    } else if(op === 'reset') {
+        console.error('Need to implement this');
+    } else {
+        console.log('Unknown RamDBCallback Op:',op,data);
+    }
 };
 JSync.CometDB.prototype.on = function(callback, context, data) {
     return this._dispatcher.on(callback, context, data);
@@ -1355,28 +1417,83 @@ JSync.CometDB.prototype.exists = function(id, callback) {
 };
 JSync.CometDB.prototype.listIDs = function(callback) {
 };
+JSync.CometDB.prototype.fetchState = function(id, onSuccess, onError) {
+    onSuccess = onSuccess || NOOP; onError = onError || LOG_ERR;
+    var THIS = this;
+    this._addToSendQ({op:'getState', id:id}, function(reply, next) {
+        if(reply.hasOwnProperty('error')) {
+            // We were unable to get the state due to access restrictions, or because the state doesn't exist on the server.
+            THIS._ramDB.deleteState(id, function(state, id) {
+                THIS._dispatcher.trigger(id, state, 'reset', 'removed');
+            }, function(err) {
+                // If we couldn't remove the bad state, it's fine, whatever -- it just means that the state doesnt' exist, and therefore the state couldn't possibly have listeners.  So we don't need to care about sending an event.
+            });
+            onError(new Error(reply.error));
+        } else {
+            // We got the state from the server.  Save it in our RamDB:
+            THIS._ramDB.getState(id, function(state, id) {
+                // The state already exists.  Keep the existing state, but replace the data:
+                state.reset(reply.stateData);  // This will send out a 'reset' event.
+                onSuccess(state, id);
+            }, function(err) {
+                // The state does not exist locally.
+                THIS._ramDB.createState(id, JSync.State(reply.stateData), function(state, id) {
+                    THIS._dispatcher.trigger(id, state, 'reset', 'fetched');
+                    onSuccess(state, id);
+                });
+            });
+        }
+        next();
+    });
+};
 JSync.CometDB.prototype.getState = function(id, onSuccess, onError) {
     var THIS = this;
-    this._ramdb.getState(id, onSuccess, function(err) {
-        // The state was not in our RamDB.  Check the server:
-        THIS.comet.addToSendQ({op:'getState', id:id}, function(reply, next) {
-            if(reply.hasOwnProperty('error')) {
-                onError(new Error(reply.error));
-            } else {
-                // We got the state from the server.  Save it in our RamDB:
-                THIS._ramdb.createState(id, JSync.State(reply.stateData), function() {
-                    THIS._ramdb.getState(id, onSuccess, onError);
-                });
-            }
-            next();
-        });
+    this._ramDB.getState(id, onSuccess, function(err) {
+        THIS.fetchState(id, onSuccess, onError);
     });
 };
 JSync.CometDB.prototype.createState = function(id, state, onSuccess, onError) {
-    this.comet.addToSendQ({op:'createState', id:id, stateData:state.data});
+    onSuccess = onSuccess || NOOP; onError = onError || LOG_ERR;
+    var THIS = this;
+    this._ramDB.createState(id, state, function(state, id) {
+        THIS._addToSendQ({op:'createState', id:id, stateData:state.data}, function(reply, next) {
+            if(reply.hasOwnProperty('error')) {
+                if(reply.error === 'IGNORE_SEND') return next();  // This was just a propagation loop.  Nothing to worry about.
+                // An error means that we either don't have permission to create the state, or the state already exists.
+                THIS.fetchState(id);  // Re-use the fetchState() logic to properly reset the state.
+                console.error(reply.error);  // Don't use onError() because we've already called onSuccess().
+            } else {
+                // No error.  Nothing left to do.
+            }
+            next();
+        });
+        THIS._dispatcher.trigger(id, state, 'create', undefined);
+        return onSuccess(state, id);
+    }, onError);
 };
 JSync.CometDB.prototype.deleteState = function(id, onSuccess, onError) {
-    this.comet.addToSendQ({op:'deleteState', id:id});
+    onSuccess = onSuccess || NOOP; onError = onError || LOG_ERR;
+    var THIS = this;
+    this.getState(id, function(state, id) {
+        THIS._ramDB.deleteState(id, function(state, id) {
+            THIS._dispatcher.trigger(id, state, 'delete', undefined);
+            THIS._addToSendQ({op:'deleteState', id:id}, function(reply, next) {
+                if(reply.hasOwnProperty('error')) {
+                    if(reply.error === 'IGNORE_SEND') return next();  // This was just a propagation loop.  Nothing to worry about.
+                    // An error means that we either don't have permissiont delete the state, or the state didn't exist on the server.
+                    THIS.fetchState(id);  // Re-use the fetchState() logic to properly reset the state.
+                    console.error(reply.error);  // Don't use onError() because we've already called onSuccess().
+                } else {
+                    // Successful server-side delete.  Nothing left to do.
+                }
+                next();
+            });
+            return onSuccess(state, id);
+        }, function(err) { onError(new Error('I have never seen this.')) });
+    }, function(err) {
+        // This state doesn't exist, so there's nothing to delete.
+        return onError(new Error('Does not exist: '+id));
+    });
 };
 
 
