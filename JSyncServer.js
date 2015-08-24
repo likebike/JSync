@@ -168,13 +168,14 @@ JSync.CometServer.prototype.getOpHandler = function(name) {
 };
 JSync.CometServer.prototype.installOpHandlers = function() {
     var THIS = this;
-    this.setOpHandler('echoImmediate', function(connectionID, data, next) {
-        next(data);
-    });
-    this.setOpHandler('echo', function(connectionID, data, next) {
+    this.setOpHandler('echoImmediate', function(connectionID, data, reply) {
         data.op = 'REPLY';
-        THIS.addToReceiveQ(connectionID, data);
-        next();
+        reply(data);
+    });
+    this.setOpHandler('echo', function(connectionID, data, reply) {
+        data.op = 'REPLY';
+        reply();  // Send an Immediate blank reply.
+        reply(data);  // Send a Delayed reply.
     });
 };
 JSync.CometServer.prototype.browserInfo = function(browserID, callback) {
@@ -263,15 +264,39 @@ JSync.CometServer.prototype.clientSend = function(connectionID, bundle, onSucces
     this._touchConnection(connectionID);    
     var THIS = this,
         i = 0;
-    var func = function(bundleItem, _next) {
+    var func = function(bundleItem, next) {
+        bundleItem = bundleItem || {};
         var NEXT = function(result) {
             i += 1;
-            if(i%100 === 0) setTimeout(function() { _next(null, result) }, 0);  // Prevent stack overflow or blocking of server by one client.
-            else _next(null, result);
+            if(i%100 === 0) setTimeout(function() { next(null, result) }, 0);  // Prevent stack overflow or blocking of server by one client.
+            else next(null, result);
         };
-        bundleItem = bundleItem || {};
+        // We provide opHandlers with this 'reply' function.  Call it up to twice: Once as an Immediate (usually undefined) reply, or a second time for a Delayed reply.
+        var replied = false,
+            callNum = 0;
+        var reply = function(result) {
+            callNum += 1;
+            if(callNum > 2) throw new Error('Too many reply() calls!');
+            if(replied) throw new Error('Already replied!');
+            if(callNum===1 && !result) {
+                // Blank Immediate result.
+                NEXT();
+            } else if(callNum===1 && result) {
+                // Immediate result.
+                replied = true;
+                NEXT(_.extend({op:'REPLY', _cbID:bundleItem._cbID}, result));
+            } else if(callNum===2 && !result) {
+                throw new Error('Falsey Delayed reply!');
+            } else if(callNum===2 && result) {
+                // Delayed result.
+                replied = true;
+                THIS.addToReceiveQ(connectionID, _.extend({op:'REPLY', _cbID:bundleItem._cbID}, result));
+            } else {
+                throw new Error('This should never happen.');
+            }
+        };
         var handler = THIS.getOpHandler(bundleItem.op);
-        return handler(connectionID, bundleItem, NEXT);
+        return handler(connectionID, bundleItem, reply);
     };
     var chain = [],
         i, ii;
@@ -541,6 +566,7 @@ JSync.CometDBServer.prototype.setDB = function(db) {
     db.on(this._dbEventCallback, this);
 };
 JSync.CometDBServer.prototype._dbEventCallback = function(id, state, op, data) {
+    // Eventually, I will also need to add handling of the 'reset' event.  I'll get to that when I add the DirDB, and have more complex loading/unloading of data.
     if(op === 'create') {
         this._broadcast({op:'createState', id:id, stateData:state.data});
     } else if(op === 'delete') {
@@ -570,81 +596,56 @@ JSync.CometDBServer.prototype._ignoreSend = function(connectionIDs, data) {
 };
 JSync.CometDBServer.prototype.installOpHandlers = function() {
     var THIS = this;
-    var reply = function(connectionID, reqData, resData) {
-            THIS.comet.addToReceiveQ(connectionID, _.extend({op:'REPLY', id:reqData.id, _cbID:reqData._cbID}, resData));
-        };
-    var errReply = function(connectionID, reqData, err) { reply(connectionID, reqData, {error:err.message}) };
-    this.comet.setOpHandler('getState', function(connectionID, data, next) {
+//    var reply = function(connectionID, reqData, resData) {
+//            THIS.comet.addToReceiveQ(connectionID, _.extend({op:'REPLY', id:reqData.id, _cbID:reqData._cbID}, resData));
+//        };
+//    var errReply = function(connectionID, reqData, err) { reply(connectionID, reqData, {error:err.message}) };
+    this.comet.setOpHandler('getState', function(connectionID, data, reply) {
+        reply();  // Send an Immediate blank reply.
         THIS.accessPolicy(connectionID, data.id, function(access) {
             if(access.read) THIS.db.getState(data.id,
-                                    function(state, id) {
-                                        reply(connectionID, data, {stateData:state.data});
-                                    }, function(err) { errReply(connectionID, data, err) });
-            else errReply(connectionID, data, new Error('Access Denied'));
-            next();
+                                             function(state, id) { reply({id:data.id, stateData:state.data}) },
+                                             function(err) { reply({id:data.id, error:err.message}) });
+            else reply({id:data.id, error:'Access Denied'});
         });
     });
-    this.comet.setOpHandler('createState', function(connectionID, data, next) {
+    this.comet.setOpHandler('createState', function(connectionID, data, reply) {
+        reply();  // Send an Immediate blank reply.
         THIS.accessPolicy(connectionID, data.id, function(access) {
             if(access.create) {
                 THIS._ignoreSend([connectionID], {op:data.op, id:data.id, stateData:data.stateData});
                 THIS.db.createState(data.id,
                                     JSync.State(data.stateData),
-                                    function(state, id) { reply(connectionID, data); },
-                                    function(err) { errReply(connectionID, data, err) });
-            } else errReply(connectionID, data, new Error('Access Denied'));
-            next();
+                                    function(state, id) { reply({id:data.id}) },
+                                    function(err) { reply({id:data.id, error:err.message}) });
+            } else reply({id:data.id, error:'Access Denied'});
         });
     });
-    this.comet.setOpHandler('deleteState', function(connectionID, data, next) {
+    this.comet.setOpHandler('deleteState', function(connectionID, data, reply) {
+        reply();  // Send an Immediate blank reply.
         THIS.accessPolicy(connectionID, data.id, function(access) {
             if(access.remove) {
                 THIS._ignoreSend([connectionID], {op:data.op, id:data.id});
                 THIS.db.deleteState(data.id,
-                                    function(state, id) { reply(connectionID, data); },
-                                    function(err) { errReply(connectionID, data, err) });
-            } else errReply(connectionID, data, new Error('Access Denied'));
-            next();
+                                    function(state, id) { reply({id:data.id}) },
+                                    function(err) { reply({id:data.id, error:err.message}) });
+            } else reply({id:data.id, error:'Access Denied'});
         });
     });
-    this.comet.setOpHandler('delta', function(connectionID, data, next) {
+    this.comet.setOpHandler('delta', function(connectionID, data, reply) {
+        reply();  // Send an Immediate blank reply.
         THIS.accessPolicy(connectionID, data.id, function(access) {
             if(access.update) THIS.db.getState(data.id,
                                                function(state, id) {
                                                    THIS._ignoreSend([connectionID], {op:data.op, id:data.id, delta:data.delta});
                                                    try { state.applyDelta(data.delta);
-                                                   } catch(err) { return errReply(connectionID, data, err) };
-                                                   reply(connectionID, data);
-                                               }, function(err) { errReply(connectionID, data, err) });
-            else errReply(connectionID, data, new Error('Access Denied'));
-            next();
+                                                   } catch(err) { return reply({id:data.id, error:err.message}) };
+                                                   reply({id:data.id});
+                                               }, function(err) { reply({id:data.id, error:err.message}) });
+            else reply({id:data.id, error:'Access Denied'});
         });
     });
 };
-
-
-
-
-
-
-
-
-
-
-
-        
-////// HERE I AM..  I'm getting tired, so let's make some TODO notes:
-////// I am creating the server-side of 'send'.  Right now working on the sebweb adapter.
-////// I need to:
-//////     * Validate browserID, return 403 (Forbidden) error if error.
-//////     * Validate connectionID, return 401 (Unauthorized) error if error.
-//////     * After making it thru the connection validations, we finally arrive at the 'send' logic.  Once we reach this point, refactor the code to separate the above steps into a sebweb_op_wrapper function or something like that.  Then we'll re-use it from the receive function... right?  Need to check the original version to see why I didn't do that.
-////// ...blah blah blah, it's obvious how to proceed after that.  Lots to do omg.  The RiZhao trip really killed my momentum.
-////// Once you get 'send' and 'receive' working in client and server, then you can build upon them to create the higher level Sync functionality.
-//////
-////// Access Control Checks should be converted to async.  Also, rather than having a separate function for each kind of permission, there should only be
-////// one function that just returns a map of all permissions.
-        
 
 
 

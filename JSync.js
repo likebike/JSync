@@ -1417,7 +1417,8 @@ JSync.CometDB.prototype._ramDBCallback = function(id, state, op, data) {
             next();
         });
     } else if(op === 'reset') {
-        console.error('Need to implement this');
+        // Reset events should be considered to be something internal to a DB implementation (such as how states are loaded or cleared from memory).
+        // They should not be considered to be actual operations that need to be propagated.
     } else {
         console.log('Unknown RamDBCallback Op:',op,data);
     }
@@ -1523,40 +1524,7 @@ JSync.CometDB.prototype.deleteState = function(id, onSuccess, onError) {
 
 
 
-//////  See if we should apply the above pattern to anywhere else in the debounce or asyncOneAtATime codes usageses....
-
-/////////////  Here's what I was thinking before going to bed:
-///
-///  The best design is having the 'send' just deliver the command to the server and get a quick "ok, i got your command" response.
-///  Don't wait around for the actual command result.  Command results are placed in to the 'receive' queue.
-///  This enables the server to always have the best performance for a bundle of command -- one slow command won't block a bunch
-///  of fast commands.
-///
-///  I guess I must have been dreaming, but i thought I also needed to convert some [] to {} ...
-///
-///  Also, the server-side 'clientReceive' queue should also be debounced.  Don't send on the first piece of data.  Wait for
-///  a whole bundle or until the debounce time.  This will really help reduce the number of reconnects to 'receive'.
-///
-///  This new design is turning out to be so much better than the original!  The world needs this.
-
-
-
-
 
 })();
 
-
-
-
-
-
-
-/////////  I'm going to sleep now.  Here are some items to think about:
-/////////  Right now, if an onSuccess() is provided to addToSendQ/ReceiveQ, then the default opHandler will not be called.  Is that the desired behavior?  Will we ever even need onSuccess?
-/////////  I think I'm pretty much ready to add the higher level "DB" logic now.
-/////////  I like the flexibility of the CometClient/Server.
-
-
-
-/////////////////////  HERE I AM.  I still need to test server-side edits, and also the 'reset' events.  Finally, IE6 compatibility.
 
