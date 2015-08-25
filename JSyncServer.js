@@ -87,7 +87,7 @@ JSync.FileDB.prototype._save = function() {
             if(err) return onError(err);
             fs.rename(newPath, THIS._path, function(err) {
                 if(err) return onError(err);
-                console.log('FileDB Saved:',THIS._path);
+                //console.log('FileDB Saved:',THIS._path);
                 return onSuccess();
             });
         });
@@ -208,7 +208,7 @@ JSync.CometServer.prototype.connectionInfo = function(connectionID, callback) {
         var info = {connectionID:connectionID, browserID:connections.data[connectionID].browserID};
         // In the future, I might also want to fetch the 'browsers' state and inclue some info from there, but right now, it's just blank objects.
         // Might also want to include a list of other connectionIDs that have the same browserID...
-        return info;
+        return callback(info);
     });
 };
 JSync.CometServer.prototype.clientConnect = function(browserID, onSuccess, onError) {
@@ -266,11 +266,6 @@ JSync.CometServer.prototype.clientSend = function(connectionID, bundle, onSucces
         i = 0;
     var func = function(bundleItem, next) {
         bundleItem = bundleItem || {};
-        var NEXT = function(result) {
-            i += 1;
-            if(i%100 === 0) setTimeout(function() { next(null, result) }, 0);  // Prevent stack overflow or blocking of server by one client.
-            else next(null, result);
-        };
         // We provide opHandlers with this 'reply' function.  Call it up to twice: Once as an Immediate (usually undefined) reply, or a second time for a Delayed reply.
         var replied = false,
             callNum = 0;
@@ -280,11 +275,11 @@ JSync.CometServer.prototype.clientSend = function(connectionID, bundle, onSucces
             if(replied) throw new Error('Already replied!');
             if(callNum===1 && !result) {
                 // Blank Immediate result.
-                NEXT();
+                next();
             } else if(callNum===1 && result) {
                 // Immediate result.
                 replied = true;
-                NEXT(_.extend({op:'REPLY', _cbID:bundleItem._cbID}, result));
+                next(null, _.extend({op:'REPLY', _cbID:bundleItem._cbID}, result));
             } else if(callNum===2 && !result) {
                 throw new Error('Falsey Delayed reply!');
             } else if(callNum===2 && result) {
@@ -296,7 +291,7 @@ JSync.CometServer.prototype.clientSend = function(connectionID, bundle, onSucces
             }
         };
         var handler = THIS.getOpHandler(bundleItem.op);
-        return handler(connectionID, bundleItem, reply);
+        setTimeout(function() { handler(connectionID, bundleItem, reply) }, 0);  // We use a timeout to accomplish two things:  1) Prevent stack overflows, and prevent one client from hogging the server.  2) Guarantee correct order of operations, regardless of the async implementation of the handlers.  Without this timeout, it's easy for operations to become reversed depending on whether an async function is really asynchronous or whether it's synchronous with an async interface.
     };
     var chain = [],
         i, ii;
@@ -405,10 +400,10 @@ JSync.installCometServerIntoSebwebRouter = function(comet, router, baseURL, opti
     if(baseURL.charAt(0) !== '/') throw new Error("baseURL should start with '/'.");
     if(baseURL.charAt(baseURL.length-1) === '/') throw new Error("baseURL should not end with '/'.");
     router.prependRoutes([
-        {path:'^'+baseURL+'/connect$',    func:JSync.sebwebHandler_connect(comet, options)},
-        {path:'^'+baseURL+'/disconnect$', func:JSync.sebwebHandler_connect(comet, options)},
-        {path:'^'+baseURL+'/send$',       func:JSync.sebwebHandler_send(comet, options)},
-        {path:'^'+baseURL+'/receive$',    func:JSync.sebwebHandler_receive(comet, options), skipLog:true}
+        {path:'^'+baseURL+'/connect$',    func:JSync.sebwebHandler_connect(comet, options), log_level:'error'},
+        {path:'^'+baseURL+'/disconnect$', func:JSync.sebwebHandler_connect(comet, options), log_level:'error'},
+        {path:'^'+baseURL+'/send$',       func:JSync.sebwebHandler_send(comet, options), log_level:'error'},
+        {path:'^'+baseURL+'/receive$',    func:JSync.sebwebHandler_receive(comet, options), log_level:'error'}
     ]);
 };
 JSync.sebwebHandler_connect = function(comet, options) {
@@ -437,7 +432,7 @@ JSync.sebwebHandler_connect = function(comet, options) {
                     if(connectionIdArray.length !== 1) return onError(new Error('Wrong number of connectionIDs!'));
                     var connectionID = connectionIdArray[0];
                     if(!_.isString(connectionID)) return onError(new Error('non-string connectionID!'));
-                    console.log('Disconnecting: browserID='+browserID+' connectionID='+connectionID);
+                    console.log('Disconnected: browserID='+browserID+' connectionID='+connectionID);
                     comet.browserInfo(browserID, function(browserInfo) {
                         if(!browserInfo) return onError(new Error('Disconnect: browserID not found (weird!): '+browserID));  // This would be weird, since we *just* validated the browserID...
                         if(!(connectionID in browserInfo.connections)) return onError(new Error('Disconnect: Wrong browserID, or expired connection.'));
@@ -468,6 +463,15 @@ JSync.sebwebHandler_connect = function(comet, options) {
             return afterWeHaveABrowserID(browserID);
         });
     }, options.sebweb_cookie_options));
+};
+JSync.extractBrowserIDFromRequest = function(req, cookieName, cookieSecurity, cookieSecret) {
+    // It is a common requirement to access the browserID from outside the JSync framework.
+    // This convenience function allows you to extract it easily and safely.
+    var sebweb = require('sebweb');
+    var store = sebweb._cookies.extractCookie(req, cookieName, cookieSecurity, cookieSecret, true);
+    var browserID = store['JSync_BrowserID'];
+    // I could also get the 'browsers' state and verify that the browserID is in there, but that would require this function to be async, and also require access to the cometDB, so I'll wait until I have a real-world need to do this.
+    return browserID;
 };
 JSync.sebwebAuth = function(comet, options, next) {
     var sebweb = require('sebweb');
@@ -582,6 +586,7 @@ JSync.CometDBServer.prototype._broadcast = function(data) {
         ignoreConnectionIDs = [],
         i, ii;
     for(i=0, ii=this._ignoreSendList.length; i<ii; i++) {
+        if(i === 1000) console.log('ignoreSendList.length > 1000:', this._ignoreSendList[i]);
         if(this._ignoreSendList[i].dataStr === dataStr) {
             ignoreConnectionIDs = this._ignoreSendList[i].connectionIDs;
             this._ignoreSendList.splice(i,1);
@@ -596,10 +601,6 @@ JSync.CometDBServer.prototype._ignoreSend = function(connectionIDs, data) {
 };
 JSync.CometDBServer.prototype.installOpHandlers = function() {
     var THIS = this;
-//    var reply = function(connectionID, reqData, resData) {
-//            THIS.comet.addToReceiveQ(connectionID, _.extend({op:'REPLY', id:reqData.id, _cbID:reqData._cbID}, resData));
-//        };
-//    var errReply = function(connectionID, reqData, err) { reply(connectionID, reqData, {error:err.message}) };
     this.comet.setOpHandler('getState', function(connectionID, data, reply) {
         reply();  // Send an Immediate blank reply.
         THIS.accessPolicy(connectionID, data.id, function(access) {

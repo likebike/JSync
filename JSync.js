@@ -1069,6 +1069,7 @@ JSync.CometClient.prototype.setOpHandler = function(name, handler) {
     if(!this.opHandlers) this.opHandlers = {};
     if(this.opHandlers.hasOwnProperty(name)) throw new Error('OpHandler replacement not implemented yet.');
     this.opHandlers[name] = handler;
+    return handler;  // For chaining, like:  var abcFunc = comet.setOpHandler('abc', function(data, next){ ... });
 };
 JSync.CometClient.prototype.getOpHandler = function(name) {
     var h;
@@ -1347,6 +1348,7 @@ JSync.CometDB.prototype._addToSendQ = function(data, replyHandler) {
     var dataStr = JSync.stringify(data),
         i, ii;
     for(i=0, ii=this._ignoreSendList.length; i<ii; i++) {
+        if(i === 100) console.log('ignoreSendList.length > 100:', this._ignoreSendList[i]);
         if(this._ignoreSendList[i] === dataStr) {
             this._ignoreSendList.splice(i,1);  // Remove.
             return replyHandler({error:'IGNORE_SEND'}, function() {});
@@ -1477,6 +1479,7 @@ JSync.CometDB.prototype.getState = function(id, onSuccess, onError) {
         THIS.fetchState(id, onSuccess, onError);
     });
 };
+JSync.CometDB.prototype.getStateAutocreate = JSync.RamDB.prototype.getStateAutocreate;
 JSync.CometDB.prototype.createState = function(id, state, onSuccess, onError) {
     onSuccess = onSuccess || NOOP; onError = onError || LOG_ERR;
     var THIS = this;
