@@ -9,6 +9,7 @@ var JSync,  // We re-use the JSync namespace.
     PATH,
     NOOP = function(){},  // Surprisingly useful.
     FAIL = function(err){throw err},
+    LOG_ERR = function(err){console.error(err)},
     undefined;  // So 'undefined' really is undefined.
 if(typeof exports !== 'undefined') {
     // We are in Node.
@@ -77,7 +78,7 @@ JSync.FileDB.prototype._exportData = JSync.RamDB.prototype._exportData;
 JSync.FileDB.prototype._save = function() {
     var THIS = this;
     if(!this.__save_raw) this.__save_raw = _.debounce(function(onSuccess, onError) {  // Notice that right now, there is no way to pass in 'onSuccess' or 'onError' parameters.  I do this intentionally, due to the debounced design.  If I really want to support these callbacks, I need to design an 'asyncDebounce'.
-        onSuccess = onSuccess || NOOP; onError = onError || FAIL;
+        onSuccess = onSuccess || NOOP; onError = onError || LOG_ERR;
         if(!this._path) return onError(new Error('Missing _path!'));
         var THIS = this,
             newPath = this._path + '.new',
@@ -142,7 +143,7 @@ JSync.CometServer = function(db) {
     this.setDB(db);
     this.installOpHandlers();
 
-    this._removeStaleConnectionsInterval = setInterval(_.bind(this._removeStaleConnections, this), 10000);
+    this._removeStaleClientsInterval = setInterval(_.bind(this._removeStaleClients, this), 10000);
 };
 JSync.CometServer.prototype.setDB = function(db) {
     if(!db) throw new Error('Null DB');
@@ -151,7 +152,7 @@ JSync.CometServer.prototype.setDB = function(db) {
     //db.on(this._dbEventCallback, this);  // For now, I don't actually have a need for these callbacks.
     // Define some states that definitely need to be there:
     db.getStateAutocreate('browsers');
-    db.getStateAutocreate('connections');
+    db.getStateAutocreate('clients');
 };
 JSync.CometServer.prototype._dbEventCallback = function(id,state,op,data) {
     console.log('CometServer dbEventCallback:',id,state,op,data);
@@ -160,19 +161,19 @@ JSync.CometServer.prototype.setOpHandler = JSync.CometClient.prototype.setOpHand
 JSync.CometServer.prototype.getOpHandler = function(name) {
     var h;
     if(this.opHandlers.hasOwnProperty(name)) h = this.opHandlers[name];
-    else h = function(connectionID, data, next) {
+    else h = function(clientID, data, next) {
                  console.error('Unknown OpHandler:',name);
-                 next({op:'REPLY', error:'Unknown Server OpHandler', _cbID:data._cbID});
+                 next({op:'REPLY', error:'Unknown Server OpHandler', cbID:data.cbID});
              };
     return h;
 };
 JSync.CometServer.prototype.installOpHandlers = function() {
     var THIS = this;
-    this.setOpHandler('echoImmediate', function(connectionID, data, reply) {
+    this.setOpHandler('echoImmediate', function(clientID, data, reply) {
         data.op = 'REPLY';
         reply(data);
     });
-    this.setOpHandler('echo', function(connectionID, data, reply) {
+    this.setOpHandler('echo', function(clientID, data, reply) {
         data.op = 'REPLY';
         reply();  // Send an Immediate blank reply.
         reply(data);  // Send a Delayed reply.
@@ -186,84 +187,90 @@ JSync.CometServer.prototype.browserInfo = function(browserID, callback) {
         if(!browsers.data.hasOwnProperty(browserID)) return callback(null);
         var info = JSync.deepCopy(browsers.data[browserID]);  // Prevent external mutation.
         info.browserID = browserID;
-        info.connections = {};
-        THIS.db.getState('connections', function(connections) {
-            var connectionInfo, connectionID;
-            for(connectionID in connections.data) if(connections.data.hasOwnProperty(connectionID)) {
-                connectionInfo = connections.data[connectionID];
-                if(connectionInfo.browserID === browserID) {
-                    info.connections[connectionID] = true;
-                }
+        info.clients = {};  // I'm using an object instead of a list mostly for future expansion ability.  I might want to start including some extra info per connection.
+        THIS.db.getState('clients', function(clients) {
+            var clientID;
+            for(clientID in clients.data) if(clients.data.hasOwnProperty(clientID)) {
+                if(clients.data[clientID].browserID === browserID) info.clients[clientID] = true;
             }
-            return callback(info);
+            callback(info);
         });
     });
 };
-JSync.CometServer.prototype.connectionInfo = function(connectionID, callback) {
+JSync.CometServer.prototype.clientInfoSync = function(clientID, clientsState) {
+    if(!clientID) return null;
+    if(!clientsState.data.hasOwnProperty(clientID)) return null;
+    var info = {clientID:clientID, browserID:clientsState.data[clientID].browserID};
+    // In the future, I might also want to fetch the 'browsers' state and inclue some info from there, but right now, it's just blank objects.
+    // Might also want to include a list of other clientIDs that have the same browserID...
+    return info;
+};
+JSync.CometServer.prototype.clientInfo = function(clientID, callback) {
     callback = callback || NOOP;
     var THIS = this;
-    if(!connectionID) return callback(null);
-    this.db.getState('connections', function(connections) {
-        if(!connections.data.hasOwnProperty(connectionID)) return callback(null);
-        var info = {connectionID:connectionID, browserID:connections.data[connectionID].browserID};
-        // In the future, I might also want to fetch the 'browsers' state and inclue some info from there, but right now, it's just blank objects.
-        // Might also want to include a list of other connectionIDs that have the same browserID...
-        return callback(info);
+    this.db.getState('clients', function(clients) { callback(THIS.clientInfoSync(clientID, clients)) });
+};
+JSync.CometServer.prototype.clientConnect = function(browserID, requestedClientID, onSuccess, onError) {
+    onSuccess = onSuccess || NOOP; onError = onError || LOG_ERR;
+    var THIS = this;
+    this.db.getState('clients', function(clients) {
+        var clientID = (function() {
+            if(!requestedClientID) return null;
+            if(!JSync.ID_REGEX.test(requestedClientID)) return null;
+            var cInfo = THIS.clientInfoSync(requestedClientID, clients);
+            if(!cInfo) return null;
+            if(cInfo.browserID !== browserID) return null;
+            return requestedClientID;
+        })();
+        if(!clientID) clientID = JSync.newID(null, clients.data);
+        (THIS._receives[clientID] || {shutdown:NOOP}).shutdown(true);  // Check for an existing connection with the same clientID and hijack it ('true').
+        console.log('Connected: browserID='+browserID+' clientID='+clientID);
+        if(!clients.data.hasOwnProperty(clientID)) clients.edit([{op:'create', key:clientID, value:{browserID:browserID, receiveQ:[]}}]);
+        THIS._touchClient(clientID, function() { onSuccess({browserID:browserID, clientID:clientID}) }, onError);
     });
 };
-JSync.CometServer.prototype.clientConnect = function(browserID, onSuccess, onError) {
-    onSuccess = onSuccess || NOOP; onError = onError || FAIL;
+JSync.CometServer.prototype.clientDisconnect = function(clientID, onSuccess, onError) {
+    onSuccess = onSuccess || NOOP; onError = onError || LOG_ERR;
     var THIS = this;
-    this.db.getState('connections', function(connections) {
-        var connectionID = JSync.newID(null, connections.data);
-        console.log('Connected: browserID='+browserID+' connectionID='+connectionID);
-        connections.edit([{op:'create', key:connectionID, value:{browserID:browserID, receiveQ:[]}}]);
-        THIS._touchConnection(connectionID, function() { onSuccess({browserID:browserID, connectionID:connectionID}) }, onError);
-    });
-};
-JSync.CometServer.prototype.clientDisconnect = function(connectionID, onSuccess, onError) {
-    onSuccess = onSuccess || NOOP; onError = onError || FAIL;
-    var THIS = this;
-    this.db.getState('connections', function(connections) {
-        if(!connections.data.hasOwnProperty(connectionID)) return onError(new Error('connectionID not found: '+connectionID));
-        THIS._removeConnection(connections, connectionID);
+    this.db.getState('clients', function(clients) {
+        if(!clients.data.hasOwnProperty(clientID)) return onError(new Error('clientID not found: '+clientID));
+        THIS._removeClient(clients, clientID);
         return onSuccess();
     });
 };
-JSync.CometServer.prototype._removeConnection = function(connectionsState, connectionID) {
-    (this._receives[connectionID] || {shutdown:NOOP}).shutdown();  // The shutdown() will remove the entry from _receives.
-    if(this._receives.hasOwnProperty(connectionID)) console.log('CometServer shutdown() did not remove _receives[connectionID] !');
-    connectionsState.edit([{op:'delete', key:connectionID}]);
+JSync.CometServer.prototype._removeClient = function(clientsState, clientID) {
+    (this._receives[clientID] || {shutdown:NOOP}).shutdown();  // The shutdown() will remove the entry from _receives.
+    if(this._receives.hasOwnProperty(clientID)) console.log('CometServer shutdown() did not remove _receives[clientID] !');
+    clientsState.edit([{op:'delete', key:clientID}]);
 };
-JSync.CometServer.prototype._removeStaleConnections = function() {
+JSync.CometServer.prototype._removeStaleClients = function() {
     var THIS = this;
-    this.db.getState('connections', function(connections) {
+    this.db.getState('clients', function(clients) {
         var curTime = new Date().getTime(),
-            connectionID;
-        for(connectionID in connections.data) if(connections.data.hasOwnProperty(connectionID)) {
-            if(curTime-connections.data[connectionID].atime > THIS.connectionStaleTime) {
-                console.log('Removing Stale Connection:', connectionID);
-                THIS._removeConnection(connections, connectionID);
+            clientID;
+        for(clientID in clients.data) if(clients.data.hasOwnProperty(clientID)) {
+            if(curTime-clients.data[clientID].atime > THIS.connectionStaleTime) {
+                console.log('Removing Stale Client:', clientID);
+                THIS._removeClient(clients, clientID);
             }
         }
     });
 };
-JSync.CometServer.prototype._touchConnection = function(connectionID, onSuccess, onError) {
-    onSuccess = onSuccess || NOOP; onError = onError || FAIL;
+JSync.CometServer.prototype._touchClient = function(clientID, onSuccess, onError) {
+    onSuccess = onSuccess || NOOP; onError = onError || LOG_ERR;
     var THIS = this;
-    this.db.getState('connections', function(connections) {
+    this.db.getState('clients', function(clients) {
         var now = new Date().getTime();
-        connections.edit([{op:'update!', path:[connectionID], key:'atime', value:now}]);
+        clients.edit([{op:'update!', path:[clientID], key:'atime', value:now}]);
         THIS.db.getState('browsers', function(browsers) {
-            browsers.edit([{op:'update!', path:[connections.data[connectionID].browserID], key:'atime', value:now}]);
+            browsers.edit([{op:'update!', path:[clients.data[clientID].browserID], key:'atime', value:now}]);
             return onSuccess();
         }, onError);
     }, onError);
 };
-JSync.CometServer.prototype.clientSend = function(connectionID, bundle, onSuccess, onError) {
-    this._touchConnection(connectionID);    
-    var THIS = this,
-        i = 0;
+JSync.CometServer.prototype.clientSend = function(clientID, bundle, onSuccess, onError) {
+    this._touchClient(clientID);    
+    var THIS = this;
     var func = function(bundleItem, next) {
         bundleItem = bundleItem || {};
         // We provide opHandlers with this 'reply' function.  Call it up to twice: Once as an Immediate (usually undefined) reply, or a second time for a Delayed reply.
@@ -279,19 +286,19 @@ JSync.CometServer.prototype.clientSend = function(connectionID, bundle, onSucces
             } else if(callNum===1 && result) {
                 // Immediate result.
                 replied = true;
-                next(null, _.extend({op:'REPLY', _cbID:bundleItem._cbID}, result));
+                next(null, _.extend({op:'REPLY', cbID:bundleItem.cbID}, result));
             } else if(callNum===2 && !result) {
                 throw new Error('Falsey Delayed reply!');
             } else if(callNum===2 && result) {
                 // Delayed result.
                 replied = true;
-                THIS.addToReceiveQ(connectionID, _.extend({op:'REPLY', _cbID:bundleItem._cbID}, result));
+                THIS.addToReceiveQ(clientID, _.extend({op:'REPLY', cbID:bundleItem.cbID}, result));
             } else {
                 throw new Error('This should never happen.');
             }
         };
         var handler = THIS.getOpHandler(bundleItem.op);
-        setTimeout(function() { handler(connectionID, bundleItem, reply) }, 0);  // We use a timeout to accomplish two things:  1) Prevent stack overflows, and prevent one client from hogging the server.  2) Guarantee correct order of operations, regardless of the async implementation of the handlers.  Without this timeout, it's easy for operations to become reversed depending on whether an async function is really asynchronous or whether it's synchronous with an async interface.
+        setTimeout(function() { handler(clientID, bundleItem, reply) }, 0);  // We use a timeout to accomplish two things:  1) Prevent stack overflows, and prevent one client from hogging the server.  2) Guarantee correct order of operations, regardless of the async implementation of the handlers.  Without this timeout, it's easy for operations to become reversed depending on whether an async function is really asynchronous or whether it's synchronous with an async interface.
     };
     var chain = [],
         i, ii;
@@ -309,64 +316,69 @@ JSync.CometServer.prototype.clientSend = function(connectionID, bundle, onSucces
     });
 };
 // Example usage:  cometServer.addToReceiveQ('0x1245678', {op:'myOp', a:1, b:2, _disposable:true})
-JSync.CometServer.prototype.addToReceiveQ = function(connectionID, data) {
+JSync.CometServer.prototype.addToReceiveQ = function(clientID, data) {
     var THIS = this;
-    this.db.getState('connections', function(connections) {
-        if(!connections.data.hasOwnProperty(connectionID)) return; // The client disconnected while we were sending data to them.  Discard the data.
+    this.db.getState('clients', function(clients) {
+        if(!clients.data.hasOwnProperty(clientID)) return; // The client disconnected while we were sending data to them.  Discard the data.
         if((data||0)._disposable) {
             console.log('Oooooooh, great!  A disposable item.  I still need to test these out.');
             // This data is disposable.  Throw it out if the queue is already too long:
-            if(connections.data[connectionID].receiveQ.length > THIS.disposableQueueSizeLimit) return;
+            if(clients.data[clientID].receiveQ.length > THIS.disposableQueueSizeLimit) return;
             delete data['_disposable'];  // Save some bandwidth.
         }
-        connections.edit([{op:'arrayPush', path:[connectionID, 'receiveQ'], value:data}]);
-        (THIS._receives[connectionID] || {dataIsWaiting:NOOP}).dataIsWaiting();
+        clients.edit([{op:'arrayPush', path:[clientID, 'receiveQ'], value:data}]);
+        (THIS._receives[clientID] || {dataIsWaiting:NOOP}).dataIsWaiting();
     });
 };
-// Example usage:  cometServer.broadcast(['0x12345678'], function(connectionID, data, cb) {cb(true)}, data)
+// Example usage:  cometServer.broadcast(['0x12345678'], function(clientID, data, cb) {cb(true)}, data)
 JSync.CometServer.prototype.broadcast = function(excludeConnIDs, shouldIncludeFunc, data) {
     excludeConnIDs = excludeConnIDs || [];
     var THIS = this,
         excludeMap = {},
         i, ii;
     for(i=0, ii=excludeConnIDs.length; i<ii; i++) { excludeMap[excludeConnIDs[i]] = true; }
-    this.db.getState('connections', function(connections) {
-        _.each(connections.data, function(val, connectionID) {
-            if(excludeMap.hasOwnProperty(connectionID)) return;  // This connectionID is excluded.
-            shouldIncludeFunc(connectionID, data, function(shouldInclude) {
-                if(shouldInclude) THIS.addToReceiveQ(connectionID, data);
+    this.db.getState('clients', function(clients) {
+        _.each(clients.data, function(val, clientID) {
+            if(excludeMap.hasOwnProperty(clientID)) return;  // This clientID is excluded.
+            shouldIncludeFunc(clientID, data, function(shouldInclude) {
+                if(shouldInclude) THIS.addToReceiveQ(clientID, data);
             });
         });
     });
 };
-JSync.CometServer.prototype.clientReceive = function(connectionID, onSuccess, onError) {
-    this._touchConnection(connectionID);
+JSync.CometServer.prototype.clientReceive = function(clientID, onSuccess, onError) {
+    this._touchClient(clientID);
 
-    // First, does a long poll already exist for this connectionID?  If so, kill the old one before proceeding:
-    (this._receives[connectionID] || {shutdown:NOOP}).shutdown();
+    // First, does a long poll already exist for this clientID?  If so, kill the old one before proceeding:
+    (this._receives[clientID] || {shutdown:NOOP}).shutdown();
 
     var THIS = this,
         out = [],
         myObj = {dataIsWaiting:null, shutdown:null};
-    this._receives[connectionID] = myObj;
-    myObj.shutdown = function() {
-        if(THIS._receives[connectionID] !== myObj) {   // The connection was already shut down.
+    this._receives[clientID] = myObj;
+    myObj.shutdown = function(hijacked) {
+        if(THIS._receives[clientID] !== myObj) {   // The connection was already shut down.
             if(out.length) throw new Error('Connection is already shutdown, but output is still in queue!  This should never happen.');
             return;
         }
-        var r = THIS._receives[connectionID];
-        delete THIS._receives[connectionID];
+        var r = THIS._receives[clientID];
+        delete THIS._receives[clientID];
         var myOut = out;
         out = [];  // So subsequent shutdown() calls don't freak out about data in 'out'.
+        if(hijacked) {
+            var err = new Error('clientID was hijacked!');
+            err.statusCode = 452;  // The sebweb router will use this as the response status code.
+            return onError(err);
+        }
         // Shut down the socket, etc...
         return onSuccess(myOut);
     };
     var send = function() {
-        THIS.db.getState('connections', function(connections) {
-            if(THIS._receives[connectionID] !== myObj) return;  // The connection was already shut down.
-            if(!connections.data.hasOwnProperty(connectionID)) return myObj.shutdown(); // The client disconnected.  There's no point to send any data.  (Also, it would cause a "Path not found" exception in edit() below.)  Just shut down the socket and stuff like that.
-            out = connections.data[connectionID].receiveQ;
-            connections.edit([{op:'update', path:[connectionID], key:'receiveQ', value:[]}]);
+        THIS.db.getState('clients', function(clients) {
+            if(THIS._receives[clientID] !== myObj) return;  // The connection was already shut down.
+            if(!clients.data.hasOwnProperty(clientID)) return myObj.shutdown(); // The client disconnected.  There's no point to send any data.  (Also, it would cause a "Path not found" exception in edit() below.)  Just shut down the socket and stuff like that.
+            out = clients.data[clientID].receiveQ;
+            clients.edit([{op:'update', path:[clientID], key:'receiveQ', value:[]}]);
             myObj.shutdown();
         });
     };
@@ -380,8 +392,8 @@ JSync.CometServer.prototype.clientReceive = function(connectionID, onSuccess, on
     setTimeout(myObj.shutdown, this.longPollTimeout); // Force the long-poll to execute before the server or filewalls close our connection.  The reason we need to do this from the server is becasue Chrome does not support the ajax 'timeout' option.
 
     // Finally, if there is data already waiting, initiate the process:
-    this.db.getState('connections', function(connections) {
-        if(connections.data[connectionID].receiveQ.length) myObj.dataIsWaiting();
+    this.db.getState('clients', function(clients) {
+        if(clients.data[clientID].receiveQ.length) myObj.dataIsWaiting();
     });
 };
 
@@ -417,26 +429,26 @@ JSync.sebwebHandler_connect = function(comet, options) {
             if(opArray.length !== 1) return onError(new Error('Wrong number of ops!'));
             var op = opArray[0];
             if(!_.isString(op)) return onError(new Error('non-string op!'));
+            var clientIdArray = req.formidable.fields.clientID || req.formidable.fields._clientID;  // '_clientID' is used by 'connect' to prevent 'ajax()' from waiting for connection.
+            if(!_.isArray(clientIdArray)) return onError(new Error('no clientID!'));
+            if(clientIdArray.length !== 1) return onError(new Error('Wrong number of clientIDs!'));
+            var clientID = clientIdArray[0];
+            if(clientID  &&  !_.isString(clientID)) return onError(new Error('Invalid clientID!'));  // Here, clientID can be null (for auto-id-assignment during connect) or a string.
             switch(op) {
                 case 'connect':
-                    comet.clientConnect(browserID, function(connectionInfo) {
+                    comet.clientConnect(browserID, clientID, function(clientInfo) {
                         JSync._setJsonResponseHeaders(res);
-                        res.end(JSON.stringify(connectionInfo));
+                        res.end(JSON.stringify(clientInfo));
                         return onSuccess();
                     }, onError);    
                     break;
 
                 case 'disconnect':
-                    var connectionIdArray = req.formidable.fields._connectionID;  // The 'disconnect' command uses '_connectionID' (_ prefix) to avoid magic ajax() wait-for-connection logic.
-                    if(!_.isArray(connectionIdArray)) return onError(new Error('no connectionID!'));
-                    if(connectionIdArray.length !== 1) return onError(new Error('Wrong number of connectionIDs!'));
-                    var connectionID = connectionIdArray[0];
-                    if(!_.isString(connectionID)) return onError(new Error('non-string connectionID!'));
-                    console.log('Disconnected: browserID='+browserID+' connectionID='+connectionID);
+                    console.log('Disconnected: browserID='+browserID+' clientID='+clientID);
                     comet.browserInfo(browserID, function(browserInfo) {
                         if(!browserInfo) return onError(new Error('Disconnect: browserID not found (weird!): '+browserID));  // This would be weird, since we *just* validated the browserID...
-                        if(!(connectionID in browserInfo.connections)) return onError(new Error('Disconnect: Wrong browserID, or expired connection.'));
-                        comet.clientDisconnect(connectionID, function() {
+                        if(!(clientID in browserInfo.clients)) return onError(new Error('Disconnect: Wrong browserID, or expired client.'));
+                        comet.clientDisconnect(clientID, function() {
                             JSync._setJsonResponseHeaders(res);
                             res.end('{}');
                             onSuccess();
@@ -477,32 +489,37 @@ JSync.sebwebAuth = function(comet, options, next) {
     var sebweb = require('sebweb');
     return sebweb.BodyParser(sebweb.CookieStore(options.sebweb_cookie_secret, function(req, res, onSuccess, onError) {
         JSync._setCorsHeaders(req, res, options);
-        var connectionIDArray = req.formidable.fields.connectionID;
-        if(!_.isArray(connectionIDArray)) return onError(new Error('No connectionID!'));
-        if(connectionIDArray.length !== 1) return onError(new Error('Wrong number of connectionIDs!'));
-        var connectionID = connectionIDArray[0];
-        if(!_.isString(connectionID)) return onError(new Error('connectionID is not a string!'));
+        var clientIDArray = req.formidable.fields.clientID;
+        if(!_.isArray(clientIDArray)) return onError(new Error('No clientID!'));
+        if(clientIDArray.length !== 1) return onError(new Error('Wrong number of clientIDs!'));
+        var clientID = clientIDArray[0];
+        if(!_.isString(clientID)) return onError(new Error('clientID is not a string!'));
         // First, check the browserID:
         var browserID = res.SWCS_get('JSync_BrowserID');
         comet.browserInfo(browserID, function(browserInfo) {
             if(!browserInfo) {
                 // This occurs when a client IP address changes, or if a cookie gets hijacked.  The user should log back in and re-authenticate.
-                res.statusCode = 403;  // Forbidden.
-                return onError(new Error('Forbidden browserID: '+browserID));
+                var err = new Error('Unknown browserID: '+browserID);
+                err.statusCode = 450;
+                return onError(err);
             }
-            // Now that the browserID is checked, make sure the connectionID matches:
-            if(!browserInfo.connections.hasOwnProperty(connectionID)) {
+            // Now that the browserID is checked, make sure the clientID matches:
+            if(!browserInfo.clients.hasOwnProperty(clientID)) {
                 // This occurs when a client goes to sleep for a long time and then wakes up again (after their stale connection has already been cleared).  It is safe to allow the user to connect() again and resume where they left off.
-                res.statusCode = 401;  // Unauthorized.
-                return onError(new Error('connectionID not found: '+connectionID));
+                var err = new Error('Unknown clientID: '+clientID);
+                err.statusCode = 451;
+                return onError(err);
             }
+
+            // Note that status code 452 (client hijacked) is managed by the clientReceive shutdown() function.
+
             // Authentication complete.  Continue on to the next step:
-            return next(browserID, connectionID, req, res, onSuccess, onError);
+            return next(browserID, clientID, req, res, onSuccess, onError);
         });
     }, options.sebweb_cookie_options));
 };
 JSync.sebwebHandler_send = function(comet, options) {
-    return JSync.sebwebAuth(comet, options, function(browserID, connectionID, req, res, onSuccess, onError) {
+    return JSync.sebwebAuth(comet, options, function(browserID, clientID, req, res, onSuccess, onError) {
         var bundleArray = req.formidable.fields.bundle;
         if(!_.isArray(bundleArray)) return onError(new Error('No Bundle!'));
         if(bundleArray.length !== 1) return onError(new Error('Wrong Bundle Length!'));
@@ -510,7 +527,7 @@ JSync.sebwebHandler_send = function(comet, options) {
         if(!bundleStr) return onError(new Error('Blank Bundle!'));
         if(bundleStr.charAt(0) !== '['  ||  bundleStr.charAt(bundleStr.length-1) !== ']') return onError(new Error('Bundle missing [] chars!'));
         var bundle = JSON.parse(bundleStr);
-        comet.clientSend(connectionID, bundle, function(result) {
+        comet.clientSend(clientID, bundle, function(result) {
             res.setHeader('Content-Type', 'application/json');
             res.setHeader('Cache-Control', 'no-cache, must-revalidate');
             res.end(JSON.stringify(result));
@@ -519,8 +536,8 @@ JSync.sebwebHandler_send = function(comet, options) {
     });
 };
 JSync.sebwebHandler_receive = function(comet, options) {
-    return JSync.sebwebAuth(comet, options, function(browserID, connectionID, req, res, onSuccess, onError) {
-        comet.clientReceive(connectionID, function(result) {
+    return JSync.sebwebAuth(comet, options, function(browserID, clientID, req, res, onSuccess, onError) {
+        comet.clientReceive(clientID, function(result) {
             res.setHeader('Content-Type', 'application/json');
             res.setHeader('Cache-Control', 'no-cache, must-revalidate');
             res.end(JSON.stringify(result));
@@ -535,9 +552,9 @@ JSync.sebwebHandler_receive = function(comet, options) {
 
 
 
-JSync.AccessPolicy_WideOpen = function(connectionID, stateID, cb) { cb({read:true,  create:true,  remove:true,  update:true }) };
-JSync.AccessPolicy_ReadOnly = function(connectionID, stateID, cb) { cb({read:true,  create:false, remove:false, update:false}) };
-JSync.AccessPolicy_Denied =   function(connectionID, stateID, cb) { cb({read:false, create:false, remove:false, update:false}) };
+JSync.AccessPolicy_WideOpen = function(clientID, stateID, cb) { cb({read:true,  create:true,  remove:true,  update:true }) };
+JSync.AccessPolicy_ReadOnly = function(clientID, stateID, cb) { cb({read:true,  create:false, remove:false, update:false}) };
+JSync.AccessPolicy_Denied =   function(clientID, stateID, cb) { cb({read:false, create:false, remove:false, update:false}) };
 
 
 
@@ -556,8 +573,8 @@ JSync.CometDBServer = function(comet, db, accessPolicy) {
 JSync.CometDBServer.prototype.setAccessPolicy = function(accessPolicy) {
     this.accessPolicy = accessPolicy || JSync.AccessPolicy_Denied;  // 'Denied' is the only safe default.
     var THIS = this;
-    this._shouldIncludeInBroadcast = function(connectionID, data, cb) {   // So we don't need to re-create this closure on every network operation.  (That would be expensive.)
-        THIS.accessPolicy(connectionID, data.id, function(access) { cb(access.read) });
+    this._shouldIncludeInBroadcast = function(clientID, data, cb) {   // So we don't need to re-create this closure on every network operation.  (That would be expensive.)
+        THIS.accessPolicy(clientID, data.id, function(access) { cb(access.read) });
     };
 
 
@@ -583,38 +600,38 @@ JSync.CometDBServer.prototype._dbEventCallback = function(id, state, op, data) {
 };
 JSync.CometDBServer.prototype._broadcast = function(data) {
     var dataStr = JSync.stringify(data),
-        ignoreConnectionIDs = [],
+        ignoreClientIDs = [],
         i, ii;
     for(i=0, ii=this._ignoreSendList.length; i<ii; i++) {
         if(i === 1000) console.log('ignoreSendList.length > 1000:', this._ignoreSendList[i]);
         if(this._ignoreSendList[i].dataStr === dataStr) {
-            ignoreConnectionIDs = this._ignoreSendList[i].connectionIDs;
+            ignoreClientIDs = this._ignoreSendList[i].clientIDs;
             this._ignoreSendList.splice(i,1);
             break;
         }
     }
-    this.comet.broadcast(ignoreConnectionIDs, this._shouldIncludeInBroadcast, data);
+    this.comet.broadcast(ignoreClientIDs, this._shouldIncludeInBroadcast, data);
 };
-JSync.CometDBServer.prototype._ignoreSend = function(connectionIDs, data) {
+JSync.CometDBServer.prototype._ignoreSend = function(clientIDs, data) {
     // This function helps us to be able to propagate server-side state operations, while also being able to handle client-generated ops.
-    this._ignoreSendList[this._ignoreSendList.length] = {dataStr:JSync.stringify(data), connectionIDs:connectionIDs};
+    this._ignoreSendList[this._ignoreSendList.length] = {dataStr:JSync.stringify(data), clientIDs:clientIDs};
 };
 JSync.CometDBServer.prototype.installOpHandlers = function() {
     var THIS = this;
-    this.comet.setOpHandler('getState', function(connectionID, data, reply) {
+    this.comet.setOpHandler('getState', function(clientID, data, reply) {
         reply();  // Send an Immediate blank reply.
-        THIS.accessPolicy(connectionID, data.id, function(access) {
+        THIS.accessPolicy(clientID, data.id, function(access) {
             if(access.read) THIS.db.getState(data.id,
                                              function(state, id) { reply({id:data.id, stateData:state.data}) },
                                              function(err) { reply({id:data.id, error:err.message}) });
             else reply({id:data.id, error:'Access Denied'});
         });
     });
-    this.comet.setOpHandler('createState', function(connectionID, data, reply) {
+    this.comet.setOpHandler('createState', function(clientID, data, reply) {
         reply();  // Send an Immediate blank reply.
-        THIS.accessPolicy(connectionID, data.id, function(access) {
+        THIS.accessPolicy(clientID, data.id, function(access) {
             if(access.create) {
-                THIS._ignoreSend([connectionID], {op:data.op, id:data.id, stateData:data.stateData});
+                THIS._ignoreSend([clientID], {op:data.op, id:data.id, stateData:data.stateData});
                 THIS.db.createState(data.id,
                                     JSync.State(data.stateData),
                                     function(state, id) { reply({id:data.id}) },
@@ -622,23 +639,23 @@ JSync.CometDBServer.prototype.installOpHandlers = function() {
             } else reply({id:data.id, error:'Access Denied'});
         });
     });
-    this.comet.setOpHandler('deleteState', function(connectionID, data, reply) {
+    this.comet.setOpHandler('deleteState', function(clientID, data, reply) {
         reply();  // Send an Immediate blank reply.
-        THIS.accessPolicy(connectionID, data.id, function(access) {
+        THIS.accessPolicy(clientID, data.id, function(access) {
             if(access.remove) {
-                THIS._ignoreSend([connectionID], {op:data.op, id:data.id});
+                THIS._ignoreSend([clientID], {op:data.op, id:data.id});
                 THIS.db.deleteState(data.id,
                                     function(state, id) { reply({id:data.id}) },
                                     function(err) { reply({id:data.id, error:err.message}) });
             } else reply({id:data.id, error:'Access Denied'});
         });
     });
-    this.comet.setOpHandler('delta', function(connectionID, data, reply) {
+    this.comet.setOpHandler('delta', function(clientID, data, reply) {
         reply();  // Send an Immediate blank reply.
-        THIS.accessPolicy(connectionID, data.id, function(access) {
+        THIS.accessPolicy(clientID, data.id, function(access) {
             if(access.update) THIS.db.getState(data.id,
                                                function(state, id) {
-                                                   THIS._ignoreSend([connectionID], {op:data.op, id:data.id, delta:data.delta});
+                                                   THIS._ignoreSend([clientID], {op:data.op, id:data.id, delta:data.delta});
                                                    try { state.applyDelta(data.delta);
                                                    } catch(err) { return reply({id:data.id, error:err.message}) };
                                                    reply({id:data.id});

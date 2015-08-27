@@ -430,13 +430,14 @@ JSync.pad = function(s, p, n) {
     return s;
 };
 
-var ID_CHARS = '0123456789abcdefghijkmnopqrstuvwxyzABCDEFGHIJKLMNPQRSTUVWXYZ';  // Removed l and O because they are easily confused with 1 and 0.
+JSync.ID_CHARS = '0123456789abcdefghijkmnopqrstuvwxyzABCDEFGHIJKLMNPQRSTUVWXYZ';  // Removed l and O because they are easily confused with 1 and 0.
+JSync.ID_REGEX = new RegExp('^['+JSync.ID_CHARS+']+$');
 JSync._generateID = function(len) {
     if(len===undefined  ||  len===null) len = 8;
-    var id = [];
-    while(len--) {
-        id[id.length] = ID_CHARS.charAt(Math.floor(Math.random()*ID_CHARS.length));
-    }
+    if(len <= 0) throw new Error('ID len <= 0');
+    var id = [],
+        Cs = JSync.ID_CHARS;
+    while(len--) id[id.length] = Cs.charAt(Math.floor(Math.random()*Cs.length));
     return id.join('');
     //var hexStr = Math.floor(Math.random()*0xffffffff).toString(16);
     //while(hexStr.length < 8) hexStr = '0'+hexStr;
@@ -1019,7 +1020,7 @@ JSync.RamDB.prototype.deleteState = function(id, onSuccess, onError) {
 // All those access-control details are dealt with on the server-side.
 // "Logging in" and similar operations must be defined on a per-app basis.  They can't be defined in a
 // simple-enough-yet-general-enough way, so I'm just leaving it out of this framework.
-// At this level, we only care about the ConnectionID and BrowserID.
+// At this level, we only care about the ClientID and BrowserID.
 
 
 JSync.extraAjaxOptions = { xhrFields: {withCredentials:true} };    // Enable CORS cookies.
@@ -1049,7 +1050,7 @@ JSync.CometClient = function(url) {
     this.maxSendBundleBytes = 10*1024;
     if(!_.isString(url)) throw new Error('You must provide a CometServer url.');
     this.url = url;
-    this.connectionID = null;
+    this.clientID = null;
     this.browserID = null;
     this.ajaxSingletons = {};
     this.activeAJAX = [];
@@ -1087,7 +1088,7 @@ JSync.CometClient.prototype.installOpHandlers = function() {
         // An alternate way to handle this cornercase is to have popGlobal() keep the data there for a while before removing it, that way it can be double-popped.
         var replyHandler;
         try {
-            replyHandler = JSync.popGlobal(reply._cbID);
+            replyHandler = JSync.popGlobal(reply.cbID);
         } catch(err) {
             console.error(err, reply);
             return next();
@@ -1096,21 +1097,23 @@ JSync.CometClient.prototype.installOpHandlers = function() {
     });
 };
 JSync.CometClient.prototype.handleAjaxErrorCodes = function(jqXHR) {
-    // If jqXHR.status is 0, it means there is a problem with cross-domain communication, and Javascript has been dis-allowed access to the XHR object.
-    if(jqXHR.status === 401) {
-        // Our connectionID has been deleted because it was idle.
-        // We need to login again.
-        if(typeof console !== 'undefined') console.log('connectionID Lost.  Reconnecting...');
-        this.reconnect();
-        return true;
-    } else if(jqXHR.status === 403) {
-        // Our IP has changed, our cookie has been changed, or the server cometDB got cleared.
-        // We need to login and re-join again.
+console.log('handleAjaxErrorCodes jqXHR:',jqXHR);
+    if(!jqXHR.status) {
+        if(typeof console !== 'undefined') console.log('JSync AJAX is unable to get a response from the server, either because the server is down, or because of cross-domain security limitations.');
+        // Do not try to reconnect -- just allow our framework to re-attempt the connection normally.
+    } else if(jqXHR.status === 450) {
+        // Our IP has changed, our cookie has been tampered, or the server cometDB got cleared.
         if(typeof console !== 'undefined') console.log('browserID Lost.  Reconnecting...');
         this.reconnect();
-        return true;
+    } else if(jqXHR.status === 451) {
+        // Our clientID has been deleted because it was idle.
+        if(typeof console !== 'undefined') console.log('clientID Lost.  Reconnecting...');
+        this.reconnect();
+    } else if(jqXHR.status === 452) {
+        // Our clientID has been hijacked by another client.
+        if(typeof console !== 'undefined') console.error('clientID was hijacked!');
+        this.reconnect(true);  // 'true' = force a new clientID.
     }
-    return false;
 };
 JSync.CometClient.prototype.ajax = function(options) {
     // A robust, commonly-used convenience function.
@@ -1118,9 +1121,6 @@ JSync.CometClient.prototype.ajax = function(options) {
         errRetryMS = options.errRetryMS || 1000,
         errRetryMaxMS = options.errRetryMaxMS || 120000;
     var afterConnection = function() {
-        // If 'data' contains 'connectionID', make sure it's up to date ( in case we are in a retry loop and had to reconnect ):
-        if(options.data.hasOwnProperty('connectionID')) options.data.connectionID = THIS.connectionID;
-
         if(options.singleton) {
             if(THIS.ajaxSingletons[options.singleton]) return;
             THIS.ajaxSingletons[options.singleton] = true;
@@ -1163,8 +1163,8 @@ JSync.CometClient.prototype.ajax = function(options) {
         }, JSync.extraAjaxOptions, options.ajaxOpts));
     };
     var DOIT = function() {
-        // We treat the presence of data.connectionID as a signal that we should expect to be connected.
-        if(options.data.hasOwnProperty('connectionID')) THIS.ready.waitReady('CometClient.connect', afterConnection);
+        // We treat the presence of data.clientID as a signal that we should expect to be connected.
+        if(options.data.hasOwnProperty('clientID')) THIS.ready.waitReady('CometClient.connect', afterConnection);
         else afterConnection();
     };
     DOIT();
@@ -1173,13 +1173,14 @@ JSync.CometClient.prototype.connect = function() {
     var THIS = this;
     this.ready.notReady('CometClient.connect');
     this.ajax({
+        singleton:'connect',
         errRetryMaxMS:30000,
         url:THIS.url+'/connect',
         type:'POST',
-        data:{op:'connect'},
+        data:{op:'connect', _clientID:this.clientID},  // We send in the clientID we want to be assigned.  By sending in this.clientID, we will be able to resume our work after reconnects.  Use '_clientID' to prevent ajax() from waiting for connection.
         onSuccess:function(data, retCodeStr, jqXHR) {
             if(!_.isObject(data)) throw new Error('Expected object from server!');
-            THIS.connectionID = data.connectionID;
+            THIS.clientID = data.clientID;
             THIS.browserID = data.browserID;
             THIS.ready.ready('CometClient.connect');
         }
@@ -1188,7 +1189,7 @@ JSync.CometClient.prototype.connect = function() {
 JSync.CometClient.prototype.disconnect = function(callback, sync) {
     callback = callback || NOOP;
     var THIS = this;
-    if(!this.connectionID) return callback(this); // Already logged out.
+    if(!this.clientID) return callback(this); // Not connected.
     this.ready.notReady('CometClient.connect');
     this.ajax({
         doNotRetry:true,
@@ -1196,10 +1197,10 @@ JSync.CometClient.prototype.disconnect = function(callback, sync) {
         url:THIS.url+'/disconnect',
         type:'POST',
         data:{op:'disconnect',
-              _connectionID:THIS.connectionID},  // We prefix 'connectionID' with '_' to avoid triggering ajax() wait-for-connection logic.
+              clientID:THIS.clientID},
         onSuccess:function(data, retCodeStr, jqXHR) {
             if(!_.isObject(data)) throw new Error('Expected object from server!');
-            THIS.connectionID = null;
+            THIS.clientID = null;
             for(var i=THIS.activeAJAX.length-1; i>=0; i--) {
                 try { THIS.activeAJAX[i].abort();  // This actually *runs* the error handlers and thrown exceptions will pop thru our stack if we don't try...catch this.
                 } catch(e) { console.error(e); }
@@ -1208,16 +1209,15 @@ JSync.CometClient.prototype.disconnect = function(callback, sync) {
             return callback();
         },
         onError:function(jqXHR, retCodeStr, exceptionObj) {
-            console.log('Error logging out:', exceptionObj);
+            console.log('Error disconnecting:', exceptionObj);
             return callback();
         }
     });
 };
-JSync.CometClient.prototype.reconnect = function() {
-    var THIS = this;
-    this.disconnect(function() {
-        THIS.connect();
-    });
+JSync.CometClient.prototype.reconnect = function(forceNewClientID) {
+    this.ready.notReady('CometClient.connect');
+    if(forceNewClientID) this.clientID = null;
+    setTimeout(_.bind(this.connect, this), 10);   // Use a timeout to prevent infinite JS loops, which can freeze a browser.
 };
 JSync.CometClient.prototype.installAutoUnloader = function() {
     if(typeof window === 'undefined') return;
@@ -1228,7 +1228,7 @@ JSync.CometClient.prototype.installAutoUnloader = function() {
             // Firefox does not support "withCredentials" for cross-domain synchronous AJAX... and can therefore not pass the cookie unless we use async.   (This might just be the most arbitrary restriction of all time.)
             THIS.disconnect();
             var startTime = new Date().getTime();
-            while(THIS.connectionID  &&  (new Date().getTime()-startTime)<3000) {  // We must loop a few times for older versions of FF because they first issue preflighted CORS requests, which take extra time.
+            while(THIS.clientID  &&  (new Date().getTime()-startTime)<3000) {  // We must loop a few times for older versions of FF because they first issue preflighted CORS requests, which take extra time.
                 // Issue a synchronouse request to give the above async some time to get to the server.
                 jQuery.ajax({url:'/jsync_gettime',
                              cache:false,
@@ -1251,7 +1251,7 @@ JSync.CometClient.prototype.addToSendQ = function(data, replyHandler) {
         if(this.sendQ.length > this.disposableQueueSizeLimit) return console.log('SendQ too long, disposing data:',data);
         delete data['_disposable'];  // Save some bandwidth.
     }
-    if(replyHandler) data._cbID = JSync.newGlobal(replyHandler);
+    if(replyHandler) data.cbID = JSync.newGlobal(replyHandler);
     this.sendQ[this.sendQ.length] = data;
     this._send();
 };
@@ -1274,7 +1274,7 @@ JSync.CometClient.prototype._send = function() {
         THIS.ajax({
             url:THIS.url+'/send',
             type:'POST',
-            data:{connectionID:THIS.connectionID,
+            data:{clientID:THIS.clientID,
                   bundle:JSON.stringify(bundle)},
             onSuccess:function(data, retCodeStr, jqXHR) {
                 if(!_.isArray(data)) return FAIL(new Error('Expected array from server!'));
@@ -1285,7 +1285,7 @@ JSync.CometClient.prototype._send = function() {
                         return next();
                     }
                     var reply = data.shift();  // These are "immediate" replies.  We can also receive async replies in receive().
-                    if(reply.hasOwnProperty('_cbID')) return JSync.popGlobal(reply._cbID)(reply, LOOP);
+                    if(reply.hasOwnProperty('cbID')) return JSync.popGlobal(reply.cbID)(reply, LOOP);
                 };
                 return LOOP();
             }
@@ -1303,7 +1303,7 @@ JSync.CometClient.prototype._receive = function() {
         THIS.ajax({
             url:THIS.url+'/receive',
             type:'POST',
-            data:{connectionID:THIS.connectionID},
+            data:{clientID:THIS.clientID},
             onSuccess:function(data, retCodeStr, jqXHR) {
                 if(!_.isArray(data)) return FAIL(new Error('Expected array from server!'));
                 var LOOP = function() {
