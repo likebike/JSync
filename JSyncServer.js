@@ -321,13 +321,12 @@ JSync.CometServer.prototype.addToReceiveQ = function(clientID, data) {
     this.db.getState('clients', function(clients) {
         if(!clients.data.hasOwnProperty(clientID)) return; // The client disconnected while we were sending data to them.  Discard the data.
         if((data||0)._disposable) {
-            console.log('Oooooooh, great!  A disposable item.  I still need to test these out.');
             // This data is disposable.  Throw it out if the queue is already too long:
             if(clients.data[clientID].receiveQ.length > THIS.disposableQueueSizeLimit) return;
             delete data['_disposable'];  // Save some bandwidth.
         }
         clients.edit([{op:'arrayPush', path:[clientID, 'receiveQ'], value:data}]);
-        (THIS._receives[clientID] || {dataIsWaiting:NOOP}).dataIsWaiting();
+        (THIS._receives[clientID] || {dataIsWaiting:NOOP}).dataIsWaiting(clients.data[clientID].receiveQ.length);
     });
 };
 // Example usage:  cometServer.broadcast(['0x12345678'], function(clientID, data, cb) {cb(true)}, data)
@@ -383,9 +382,12 @@ JSync.CometServer.prototype.clientReceive = function(clientID, onSuccess, onErro
         });
     };
     var debounced_send = _.debounce(send, 10);
-    var callCount = 0;
-    myObj.dataIsWaiting = function() {
-        callCount += 1; if(callCount > 100) return send(); // No need to wait any longer.  Enough data has accumulated.  We want to send chunks out periodically to reduce stress on the server, in case a client submits huge bundles.  Also helps the server to service multiple clients while dealing with an abusive client.
+    myObj.dataIsWaiting = function(waitingCount) {
+        waitingCount = waitingCount || 0;
+        if(waitingCount > 100) {
+console.log('Forcing send due to waitingCount');
+            return send(); // No need to wait any longer.  Enough data has accumulated.  We want to send chunks out periodically to reduce stress on the server, in case a client submits huge bundles.  Also helps the server to service multiple clients while dealing with an abusive client.
+        } 
         return debounced_send();
     };
 

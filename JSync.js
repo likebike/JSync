@@ -70,7 +70,7 @@ JSync._test = function() {
         out2 = {};
     d.on(function(val) {out1 = val});
     d.on(function(val) {this.x = val}, out2);
-    d.trigger(123);
+    d.fire(123);
     eq(out1, 123);
     eq(JSync.stringify(out2), '{"x":123}');
     var s = JSync.State({a:111});
@@ -788,7 +788,7 @@ JSync.Dispatcher.prototype.off = function(callback, context, data) {
             this.listeners.splice(i, 1);  // Remove.
     }
 };
-JSync.Dispatcher.prototype.trigger = function() {
+JSync.Dispatcher.prototype.fire = function() {
     var args = Array.prototype.slice.call(arguments);
     var Ls = this.listeners.slice(),  // Make a copy because listeners can be modified from the event handlers (like removing the handlers for one-shot handlers).
         el, i, ii;
@@ -813,19 +813,19 @@ JSync.State.prototype.off = function(callback, context, data) {
 };
 JSync.State.prototype.reset = function(data) {
     this.data = data || {};
-    this._dispatcher.trigger(this, 'reset', undefined);
+    this._dispatcher.fire(this, 'reset', undefined);
 };
 JSync.State.prototype.edit = function(operations) {
     if(!_.isArray(operations)) throw new Error('Expected Array operations argument.');
     if(!operations.length) return;   // Skip noops.
     var delta = JSync.edit(this.data, operations);
     // We do NOT check whether delta.steps is empty.  We want to propagate ALL deltas, including empty ones.  This preserves logical linearity, and allows us to assume that we will always get a dispatched event out of this.
-    this._dispatcher.trigger(this, 'delta', delta);
+    this._dispatcher.fire(this, 'delta', delta);
 };
 JSync.State.prototype.applyDelta = function(delta) {
     if(!delta || !delta.steps.length) return;   // Skip noops.
     JSync.applyDelta(this.data, delta);
-    this._dispatcher.trigger(this, 'delta', delta);
+    this._dispatcher.fire(this, 'delta', delta);
 };
 
 
@@ -947,7 +947,7 @@ JSync.RamDB.prototype.off = function(callback, context, data) {
     return this._dispatcher.off(callback, context, data);
 };
 JSync.RamDB.prototype._stateCallback = function(state, op, data, id) {
-    this._dispatcher.trigger(id, state, op, data);
+    this._dispatcher.fire(id, state, op, data);
 };
 JSync.RamDB.prototype.exists = function(id, callback, doNotWaitReady) {
     callback = callback || NOOP;
@@ -991,7 +991,7 @@ JSync.RamDB.prototype.createState = function(id, state, onSuccess, onError, doNo
         if(exists) return onError(new Error('Already exists: '+id));
         THIS._states[id] = state = state || JSync.State();
         state.on(THIS._stateCallback, THIS, id);
-        if(!doNotWaitReady) THIS._dispatcher.trigger(id, state, 'create', undefined);  // Do not trigger events and broadcasts during loads.
+        if(!doNotWaitReady) THIS._dispatcher.fire(id, state, 'create', undefined);  // Do not fire events and broadcasts during loads.
         return onSuccess(state, id);
     }, doNotWaitReady);
 };
@@ -1003,7 +1003,7 @@ JSync.RamDB.prototype.deleteState = function(id, onSuccess, onError) {
         var state = THIS._states[id];
         state.off(THIS._stateCallback, THIS, id);
         delete THIS._states[id];
-        THIS._dispatcher.trigger(id, state, 'delete', undefined);
+        THIS._dispatcher.fire(id, state, 'delete', undefined);
         return onSuccess(state, id);
     });
 };
@@ -1125,6 +1125,7 @@ JSync.CometClient.prototype.ajax = function(options) {
             if(THIS.ajaxSingletons[options.singleton]) return;
             THIS.ajaxSingletons[options.singleton] = true;
         }
+        if(options.data.hasOwnProperty('clientID')) options.data.clientID = THIS.clientID;  // Automatically keep 'clientID' parameters up to date regardless of reconnections.
         var myRequest = [null];
         var cleanup = function() {
             for(var i=THIS.activeAJAX.length-1; i>=0; i--) {
@@ -1152,8 +1153,7 @@ JSync.CometClient.prototype.ajax = function(options) {
                     setTimeout(DOIT, errRetryMS);
                 }
                 errRetryMS *= 1.62; if(errRetryMS > errRetryMaxMS) errRetryMS = errRetryMaxMS;
-                if(options.onError) options.onError.call(options, jqXHR, retCodeStr, exceptionObj);
-                else throw exceptionObj;  // Occurs when there is a problem connecting to the server.
+                (options.onError || LOG_ERR).call(options, jqXHR, retCodeStr, exceptionObj);
             }//,
             //// The COMPLETE function is always called after success and error, so for us it's redundant:
             //complete:function(jqXHR, retCodeStr) {
@@ -1237,10 +1237,10 @@ JSync.CometClient.prototype.installAutoUnloader = function() {
         } else {
             THIS.disconnect(null, true);  // Use a synchronous request.
             // IE likes to fire this event A LOT!!!  Every time you click a link that does not start with '#', this gets
-            // triggered, even if you have overridden the click() event, or specified a 'javascript:' href.
+            // fired, even if you have overridden the click() event, or specified a 'javascript:' href.
             // The best solution to this problem is the set your hrefs to "#" and then return false from your click handler.
             // Here is a console message to help me to understand this issue when it occurs:
-            setTimeout(function() {console.log('Note: window.onbeforeunload has been triggered.  This occurs in IE when you click a link that does not have a # href.')}, 5000);
+            setTimeout(function() {console.log('Note: window.onbeforeunload has been fired.  This occurs in IE when you click a link that does not have a # href.')}, 5000);
         }
     };
 };
@@ -1451,7 +1451,7 @@ JSync.CometDB.prototype.fetchState = function(id, onSuccess, onError) {
         if(reply.hasOwnProperty('error')) {
             // We were unable to get the state due to access restrictions, or because the state doesn't exist on the server.
             THIS._ramDB.deleteState(id, function(state, id) {
-                THIS._dispatcher.trigger(id, state, 'reset', 'removed');
+                THIS._dispatcher.fire(id, state, 'reset', 'removed');
             }, function(err) {
                 // If we couldn't remove the bad state, it's fine, whatever -- it just means that the state doesnt' exist, and therefore the state couldn't possibly have listeners.  So we don't need to care about sending an event.
             });
@@ -1465,7 +1465,7 @@ JSync.CometDB.prototype.fetchState = function(id, onSuccess, onError) {
             }, function(err) {
                 // The state does not exist locally.
                 THIS._ramDB.createState(id, JSync.State(reply.stateData), function(state, id) {
-                    THIS._dispatcher.trigger(id, state, 'reset', 'fetched');
+                    THIS._dispatcher.fire(id, state, 'reset', 'fetched');
                     onSuccess(state, id);
                 });
             });
@@ -1495,7 +1495,7 @@ JSync.CometDB.prototype.createState = function(id, state, onSuccess, onError) {
             }
             next();
         });
-        THIS._dispatcher.trigger(id, state, 'create', undefined);
+        THIS._dispatcher.fire(id, state, 'create', undefined);
         return onSuccess(state, id);
     }, onError);
 };
@@ -1504,7 +1504,7 @@ JSync.CometDB.prototype.deleteState = function(id, onSuccess, onError) {
     var THIS = this;
     this.getState(id, function(state, id) {
         THIS._ramDB.deleteState(id, function(state, id) {
-            THIS._dispatcher.trigger(id, state, 'delete', undefined);
+            THIS._dispatcher.fire(id, state, 'delete', undefined);
             THIS._addToSendQ({op:'deleteState', id:id}, function(reply, next) {
                 if(reply.hasOwnProperty('error')) {
                     if(reply.error === 'IGNORE_SEND') return next();  // This was just a propagation loop.  Nothing to worry about.
