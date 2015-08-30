@@ -381,7 +381,7 @@ JSync.CometServer.prototype.clientReceive = function(clientID, onSuccess, onErro
             myObj.shutdown();
         });
     };
-    var debounced_send = _.debounce(send, 10);
+    var debounced_send = _.debounce(send, 4);
     myObj.dataIsWaiting = function(waitingCount) {
         waitingCount = waitingCount || 0;
         if(waitingCount > 100) {
