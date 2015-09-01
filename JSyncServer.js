@@ -329,7 +329,8 @@ JSync.CometServer.prototype.addToReceiveQ = function(clientID, data) {
         (THIS._receives[clientID] || {dataIsWaiting:NOOP}).dataIsWaiting(clients.data[clientID].receiveQ.length);
     });
 };
-// Example usage:  cometServer.broadcast(['0x12345678'], function(clientID, data, cb) {cb(true)}, data)
+// Example usage:  cometServer.broadcast(['0x12345678'], JSync.CometServer.broadcast_includeAll, data)
+JSync.CometServer.broadcast_includeAll = function(clientID, data, cb) { cb(true) };  // So I don't need to re-invest this everywhere.
 JSync.CometServer.prototype.broadcast = function(excludeConnIDs, shouldIncludeFunc, data) {
     excludeConnIDs = excludeConnIDs || [];
     var THIS = this,

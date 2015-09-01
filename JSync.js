@@ -778,7 +778,19 @@ JSync.Dispatcher = function() {
     this.listeners = [];
 };
 JSync.Dispatcher.prototype.on = function(callback, context, data) {
-    this.listeners[this.listeners.length] = {callback:callback, context:context, data:data};
+    return this.onUniq({}, callback, context, data);  // '{}' is a globally unique ID that can't possibly match anything else.
+};
+JSync.Dispatcher.prototype.onUniq = function(id, callback, context, data) {
+    // Enable registration of callback many times, but each ID will only be called once.
+    this.offUniq(id);
+    this.listeners[this.listeners.length] = {id:id, callback:callback, context:context, data:data};
+};
+JSync.Dispatcher.prototype.isOn = function(id) {
+    var i, ii;
+    for(i=0, ii=this.listeners.length; i<ii; i++) {
+        if(this.listeners[i].id === id) return true;
+    }
+    return false;
 };
 JSync.Dispatcher.prototype.off = function(callback, context, data) {
     var i, l;
@@ -788,13 +800,20 @@ JSync.Dispatcher.prototype.off = function(callback, context, data) {
             this.listeners.splice(i, 1);  // Remove.
     }
 };
+JSync.Dispatcher.prototype.offUniq = function(id) {
+    var i;
+    for(i=this.listeners.length-1; i>=0; i--) {
+        if(this.listeners[i].id === id) this.listeners.splice(i, 1);
+    }
+};
+JSync.Dispatcher.prototype.offAll = function() { this.listeners.splice(0, this.listeners.length); };
 JSync.Dispatcher.prototype.fire = function() {
     var args = Array.prototype.slice.call(arguments);
     var Ls = this.listeners.slice(),  // Make a copy because listeners can be modified from the event handlers (like removing the handlers for one-shot handlers).
-        el, i, ii;
+        l, i, ii;
     for(i=0, ii=Ls.length; i<ii; i++) {
-        el = Ls[i];
-        el.callback.apply(el.context, args.concat(el.data));
+        l = Ls[i];
+        l.callback.apply(l.context, args.concat(l.data));
     }
 };
 
