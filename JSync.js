@@ -24,7 +24,7 @@ if(typeof exports !== 'undefined') {
     jQuery = window.jQuery || window.$;
 } else throw new Error('This environment is not yet supported.');
 
-JSync.VERSION = '201508012330';
+JSync.VERSION = '201802241630';
 
 JSync._test = function() {
     var testNum = 0;
