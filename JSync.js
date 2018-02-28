@@ -487,7 +487,7 @@ JSync.dsHash = function(s) {
         i, ii, charCode, shifts;
     for(i=0, ii=s.length; i<ii; i++) {
         charCode = s.charCodeAt(i);
-        hash += (charCode+1) * (i+1)
+        hash += (charCode+1) * (i+1);
         hash = hash % 0xffffffff;
         shifts = (charCode+1)%32;
         hash = (hash << shifts) | (hash >>> (32-shifts));
@@ -555,7 +555,7 @@ JSync.edit = function(obj, operations) {
         step = operations[i];
         if(step === undefined) {
             console.log(operations);
-            FAIL('STEP IS UNDEFINED!  Occurs on Internet Explorer when you have a trailing comma in one of your data structures.');
+            FAIL('STEP IS UNDEFINED!  Occurs in Internet Explorer when you have a trailing comma in one of your data structures.');
         }
         op = step.op;
         path = step.path  ||  [];
@@ -604,6 +604,7 @@ JSync.edit = function(obj, operations) {
                 key = target.length;
             case 'arrayInsert':
                 if(key === undefined) FAIL('undefined key!');
+                if(value === undefined) FAIL('undefined value!');
                 if(!JSync._isInt(key)) FAIL('Expected an integer key!');
                 if(!_.isArray(target)) FAIL('arrayInsert: Expected an Array target!');
                 if(key<0  ||  key>target.length) FAIL('IndexError');
@@ -617,6 +618,7 @@ JSync.edit = function(obj, operations) {
                 key = target.length-1;
             case 'arrayRemove':
                 if(key === undefined) FAIL('undefined key!');
+                if(value !== undefined) FAIL('Unexpected value!');
                 if(!JSync._isInt(key)) FAIL('Expected an integer key!');
                 if(!_.isArray(target)) FAIL('arrayRemove: Expected an Array target!');
                 if(key<0  ||  key>=target.length) FAIL('IndexError');
@@ -674,7 +676,7 @@ JSync.reverseDelta = function(delta) {
                 rstep.after = fstep.before;
                 break;
             default:
-                throw new Error('Illegal operation: '+op);
+                throw new Error('Illegal operation: '+fstep.op);
         }
         reversedSteps[reversedSteps.length] = rstep;
     }
