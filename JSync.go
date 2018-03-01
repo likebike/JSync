@@ -16,6 +16,7 @@ import (
     "os"
     "runtime"
     "runtime/debug"
+    "errors"
 )
 
 func init() { rand.Seed(time.Now().UnixNano()) }  // The math/rand uses a constant seed by default.
@@ -106,7 +107,10 @@ func DSHash(s string) string { // The Down Syndrome Hash algorithm, translated f
 
 
 type G reflect.Value   // 'G' for Generic.  I choose this type definition instead of struct embedding because casting has no runtime cost, and (to me) it's easier for this situation.
-func (g G) GetOrPanic(key interface{}) reflect.Value {
+func (g G) GetOrPanic(key interface{}) (val interface{}) {
+    return g.GetVOrPanic(key).Interface()   // I think it's still possible for nil values to sneak thru.  Waiting for a real-life example so I can improve this...
+}
+func (g G) GetVOrPanic(key interface{}) reflect.Value {
     switch reflect.Value(g).Kind() {
     case reflect.Slice, reflect.Array, reflect.String: return reflect.Value(g).Index(key.(int))
     case reflect.Struct:
@@ -120,10 +124,14 @@ func (g G) GetOrPanic(key interface{}) reflect.Value {
     default: panic("Unknown kind: "+reflect.Value(g).Kind().String())
     }
 }
-func (g G) Get(key interface{}) (val reflect.Value, has bool) {
+func (g G) Get(key interface{}) (val interface{}, has bool) {
+    V,has:=g.GetV(key); if has { val=V.Interface() }
+    return
+}
+func (g G) GetV(key interface{}) (val reflect.Value, has bool) {
     // I foresee a problem when using Index() on a struct: A field will have 'has=true' even when the value is nil or Zero... But on the JS side it would have 'has=false'.  I'll need a real-life test case to know how to handle this scenario.  I guess the "easy answer" is to just use maps for those situations.
     defer func(){ e:=recover(); if e!=nil { val,has=reflect.ValueOf(0),false } }()
-    return g.GetOrPanic(key),true
+    return g.GetVOrPanic(key),true
 }
 func (g G) Keys() (keys []interface{}) {
     switch reflect.Value(g).Kind() {
@@ -139,7 +147,7 @@ func (g G) Keys() (keys []interface{}) {
     return
 }
 func (g G) Set(key,value interface{}) {
-    V,has:=g.Get(key)
+    V,has:=g.GetV(key)
     switch reflect.Value(g).Kind() {
     case reflect.Array,reflect.Struct:
         if !has { panic("Immutable structure!") }
@@ -173,7 +181,7 @@ func (g G) SliceInsert(key,value interface{}) {
     V:=reflect.ValueOf(value)
     reflect.Value(g).Set(reflect.Append(reflect.Value(g),V))  // Just use 'V' since it's more convenient than creating a Zero.
     reflect.Copy( reflect.Value(g).Slice(keyI+1,reflect.Value(g).Len()) , reflect.Value(g).Slice(keyI,reflect.Value(g).Len()) )
-    g.GetOrPanic(key).Set(V)
+    g.GetVOrPanic(key).Set(V)
 }
 func (g G) SliceRemove(key interface{}) {
     if reflect.Value(g).Kind()!=reflect.Slice { panic("Expected a Slice!") }
@@ -197,6 +205,7 @@ func CallV(fn interface{}, args ...reflect.Value) []reflect.Value {
     fnArgs:=make([]reflect.Value, numArgs)
     for i:=range fnArgs {
         if i<len(args) { fnArgs[i]=args[i]
+
         } else { fnArgs[i]=reflect.Zero(fnType.In(i)) }
     }
     return fnValue.Call(fnArgs)
@@ -211,7 +220,7 @@ func Deref(o reflect.Value) reflect.Value {
 }
 func TargetV(o reflect.Value, path []interface{}) reflect.Value {
     o=Deref(o)
-    for _,p:=range path { o=Deref(G(o).GetOrPanic(p)) }
+    for _,p:=range path { o=Deref(G(o).GetVOrPanic(p)) }
     return o
 }
 func Target(o interface{}, path []interface{}) interface{} { return TargetV(reflect.ValueOf(o), path).Interface() }
@@ -273,7 +282,7 @@ func Edit(obj interface{}, operations Operations) Delta {  // racey!  You need t
         case "create","update","update!":
             if key==nil { panic("nil key!") }
             if value==nil { panic("nil value!") }  // If you want to set something to undefined, just delete instead.
-            V,has:=G(target).Get(key)
+            V,has:=G(target).GetV(key)
             if op=="update!" {
                 if has { op="update" } else { op="create" }
             }
@@ -291,7 +300,7 @@ func Edit(obj interface{}, operations Operations) Delta {  // racey!  You need t
             } else { panic("Inconceivable!") }
         case "delete":
             if key==nil { panic("nil key!") }
-            V,has:=G(target).Get(key); if !has { panic(fmt.Sprintf("Not in target: %#v",key)) }
+            V,has:=G(target).GetV(key); if !has { panic(fmt.Sprintf("Not in target: %#v",key)) }
             before:=DeepCopy(V.Interface())
             G(target).Del(key)
             steps=append(steps,DeltaStep{Op:op, Path:path, Key:key, Before:before})
@@ -317,7 +326,7 @@ func Edit(obj interface{}, operations Operations) Delta {  // racey!  You need t
             if key==nil { panic("nil key!") }
             if value!=nil { panic("non-nil value!") }
             if !isInt(key) { panic("Expected an int key!") }
-            before:=DeepCopy(G(target).GetOrPanic(key).Interface())
+            before:=DeepCopy(G(target).GetOrPanic(key))
             G(target).SliceRemove(key)
             steps=append(steps,DeltaStep{Op:op, Path:path, Key:key, Before:before})
         default: panic("Illegal operation: "+op)
@@ -380,7 +389,7 @@ func ApplyDeltaBB(obj interface{}, delta Delta, doNotCheckStartHash,doNotCheckEn
         target:=TargetV(reflect.ValueOf(obj), step.Path)
         switch step.Op {
         case "create","update","delete":
-            V,has:=G(target).Get(step.Key)
+            V,has:=G(target).GetV(step.Key)
             if step.Before!=nil {
                 if !has { panic(fmt.Sprintf("Not in target: %#v",step.Key)) }
                 if Stringify(V.Interface())!=Stringify(step.Before) { panic("Before value did not match!") }
@@ -399,7 +408,7 @@ func ApplyDeltaBB(obj interface{}, delta Delta, doNotCheckStartHash,doNotCheckEn
             if step.After==nil { panic("Undefined After!") }
             G(target).SliceInsert(step.Key,step.After)
         case "arrayRemove":
-            V:=G(target).GetOrPanic(step.Key)
+            V:=G(target).GetVOrPanic(step.Key)
             if Stringify(V)!=Stringify(step.Before) { panic("Slice Before value mismatch!") }
             G(target).SliceRemove(step.Key)
         default: panic("Illegal operation: "+step.Op)
@@ -463,7 +472,7 @@ func (d *Dispatcher) Fire(args ...interface{}) {
 
 
 type State struct {
-    sync.Mutex
+    //sync.Mutex   /////////  This would cause deadlock.  Instead, always operate on states from a Soloroutine.
     Disp  *Dispatcher
     Data  interface{}
 }
@@ -477,19 +486,19 @@ func (s *State) OnD(callback,data interface{}) { s.Disp.OnD(callback,data) }
 func (s *State) Off(callback interface{}) { s.OffD(callback,nil) }
 func (s *State) OffD(callback,data interface{}) { s.Disp.OffD(callback,data) }
 func (s *State) Reset(data interface{}) {
-    s.Lock(); defer s.Unlock()
+    //s.Lock(); defer s.Unlock()
     if data!=nil { s.Data=data
     } else { s.Data=make(map[interface{}]interface{}) }
     s.Disp.Fire(s,"reset")
 }
 func (s *State) Edit(operations Operations) {
-    s.Lock(); defer s.Unlock()
+    //s.Lock(); defer s.Unlock()
     if len(operations)==0 { return }  // Skip noops.
     delta:=Edit(s.Data,operations)
     s.Disp.Fire(s,"delta",delta)
 }
 func (s *State) ApplyDelta(delta Delta) {
-    s.Lock(); defer s.Unlock()
+    //s.Lock(); defer s.Unlock()
     if len(delta.Steps)==0 { return }  // Skip noops.
     ApplyDelta(s.Data,delta)
     s.Disp.Fire(s,"delta",delta)
@@ -503,6 +512,8 @@ func (s *State) ApplyDelta(delta Delta) {
 // Third Layer deals with groups of States.  This is where we begin to be aware of creation/deletion events and IDs.
 // 
 
+
+// You MUST only use Ready stuff from Soloroutine!  I don't have any locks to prevent data races -- I took them out because they were causing deadlock.
 type ReadyCB func()
 type readyListener struct { callback ReadyCB; ctime time.Time }
 type readyItem struct {
@@ -528,17 +539,16 @@ func (R *ReadyT) getNotReady(name string) *[]ReadyCB {
     return ls
 }
 func (R *ReadyT) NotReady(name string) {
-    R.Lock(); defer R.Unlock()
+    //R.Lock(); locked:=true; Unlock:=func(){ if locked { locked=false; R.Unlock() } }; defer Unlock()  //// Locking code kept for reference.
     r:=R.getReady(name)
     if r.isReady {
         r.isReady=false
-        for _,l:=range append([]ReadyCB{},*R.getNotReady(name)...) { // Make a copy because the list can change while we iterate.
-            l()
-        }
+        ls:=append([]ReadyCB{},*R.getNotReady(name)...)  // Make a copy because the list can change while we iterate.
+        //Unlock()
+        for _,l:=range ls { l() }
     }
 }
 func (R *ReadyT) Ready(name string) {
-    R.Lock(); defer R.Unlock()
     r:=R.getReady(name)
     if !r.isReady {
         r.isReady=true
@@ -549,7 +559,6 @@ func (R *ReadyT) Ready(name string) {
     }
 }
 func (R *ReadyT) OnReady(name string, callback ReadyCB) {
-    R.Lock(); defer R.Unlock()
     r:=R.getReady(name)
     if r.isReady { callback(); return }
     r.listeners=append(r.listeners, readyListener{ callback:callback, ctime:time.Now() })
@@ -561,7 +570,6 @@ func (R *ReadyT) WaitReady(name string) {  // Synchronous
     close(ch)
 }
 func (R *ReadyT) OnNotReady(name string, callback ReadyCB, checkCurValue bool) {
-    R.Lock(); defer R.Unlock()
     ls:=R.getNotReady(name)
     *ls=append(*ls,callback)
     if checkCurValue {
@@ -569,7 +577,6 @@ func (R *ReadyT) OnNotReady(name string, callback ReadyCB, checkCurValue bool) {
     }
 }
 func (R *ReadyT) OffNotReady(name string, callback ReadyCB) {
-    R.Lock(); defer R.Unlock()
     ls:=R.getNotReady(name)
     for i:=len(*ls)-1; i>=0; i-- {
         panic("I can't compare callbacks, so how should i actually do this?  I need to see a real-life scenario.")
@@ -581,14 +588,17 @@ func (R *ReadyT) OffNotReady(name string, callback ReadyCB) {
 
 // Note, i could improve the performance of the initial "entry call" (no improvement for recursive calls) by converting the whole infrastructure to a async-callback thing.  Basically, i'd get rid of the central goroutine, and instead structure the thing so that it would use whatever goroutine calls it.  The lucky caller would suddenly become the master goroutine until all the work was processesed, then it would be free to go back to its normal life.  This would require a complete consistent structure thru all users.  It's a high price, but it would get me very close to native speeds, while supporting advanced cool stuff like bidirectional generators that are nearly as fast as a normal function call.
 
+var GSolo *Soloroutine  // Global Soloroutine
+func init() { GSolo=NewSoloroutine() }
+
 type Caller interface { Call() }
-type Uniroutine struct {
+type Soloroutine struct {
     inCh    chan Caller
     goid    int64
     stopped bool
 }
-func NewUniroutine() *Uniroutine {
-    u:=&Uniroutine{inCh:make(chan Caller), goid:-1}
+func NewSoloroutine() *Soloroutine {
+    u:=&Soloroutine{inCh:make(chan Caller), goid:-1}
     go func() {
         u.goid=runtime.getg().goid
         for {
@@ -601,16 +611,16 @@ func NewUniroutine() *Uniroutine {
     }()
     return u
 }
-func (u *Uniroutine) Stop() { close(u.inCh) }
+func (u *Soloroutine) Stop() { close(u.inCh) }
 
-type uniroutineCall struct {
+type soloroutineCall struct {
     fn       interface{}
     args     []interface{}
     done     sync.Mutex  // Use a mutex instead of a chanel for performance (turns out to be only very minor improvement).  Requires some very special handling.
     returned []interface{}
     paniced  interface{}
 }
-func (c *uniroutineCall) Call() {
+func (c *soloroutineCall) Call() {
     defer func(){
         if e:=recover(); e!=nil {
             os.Stderr.Write(debug.Stack())  // Print the stack because we lose it by passing the result over the chanel.
@@ -620,9 +630,9 @@ func (c *uniroutineCall) Call() {
     }()
     c.returned=Call(c.fn, c.args...)
 }
-func (u *Uniroutine) Call(fn interface{}, args ...interface{}) []interface{} {  // 1000x slower than a direct function call.
+func (u *Soloroutine) Call(fn interface{}, args ...interface{}) []interface{} {  // 1000x slower than a direct function call.
     if runtime.getg().goid==u.goid { return Call(fn, args...) }  // Allow recursion without deadlock.
-    uc:=&uniroutineCall{fn:fn, args:args}
+    uc:=&soloroutineCall{fn:fn, args:args}
     uc.done.Lock()
     u.inCh<-uc
     uc.done.Lock()//; uc.done.Unlock()  // I never re-use 'done', so don't bother to Unlock.
@@ -630,12 +640,12 @@ func (u *Uniroutine) Call(fn interface{}, args ...interface{}) []interface{} {  
     return uc.returned
 }
 
-type uniroutineCall0 struct {
+type soloroutineCall0 struct {
     fn      func()
     done    sync.Mutex
     paniced interface{}
 }
-func (c *uniroutineCall0) Call() {
+func (c *soloroutineCall0) Call() {
     defer func() {
         if e:=recover(); e!=nil {
             os.Stderr.Write(debug.Stack())
@@ -645,42 +655,115 @@ func (c *uniroutineCall0) Call() {
     }()
     c.fn()
 }
-func (u *Uniroutine) Call0(fn func()) {                                         // Almost 2x faster than the more-general Call().
+func (u *Soloroutine) Call0(fn func()) {                                         // Almost 2x faster than the more-general Call().
     if runtime.getg().goid==u.goid { fn(); return }  // Very fast!  Only 2x slower than a direct function call.
-    uc:=&uniroutineCall0{fn:fn}
+    uc:=&soloroutineCall0{fn:fn}
     uc.done.Lock()
     u.inCh<-uc
     uc.done.Lock()//; uc.done.Unlock()
     if uc.paniced!=nil { panic(uc.paniced) }
 }
 
+func LOG_ERR(e error) { fmt.Fprintln(os.Stderr, e) }
 
-// type RamDB struct {
-//     *ReadyT
-//     uni     *Uniroutine
-//     states  map[string]*State
-//     disp    *Dispatcher
-// }
-// func NewRamDB(data interface{}) *RamDB {
-//     db:=&RamDB{ ReadyT:NewReady(), uni:NewUniroutine(), states:make(map[string]*State), disp:&Dispatcher{} }
-//     db.NotReady("READY")
-//     db.importData(data)
-//     db.OnReady("RamDB.importData", func(){ db.Ready("READY") })
-//     return db
-// }
-// func (db *RamDB) importData(data interface{}) {
-//     db.uni.Call0(func(){
-//         if data==nil { db.Ready("RamDB.importData"); return }
-//         dataV:=reflect.ValueOf(data); dataG:=G(dataV)
-//         db.NotReady("RamDB.importData")
-// HERE I AM.  Should i implement slide?
-//         for _,id:=range dataG.Keys() { db.CreateState(id, dataG.Get(id), true) }
-//         db.Ready("RamDB.importData")
-//     })
-// }
-// func (db *RamDB) CreateState(id, state, doNotWaitReady)
-// 
-// 
-// 
+type RamDB struct {
+    *ReadyT
+    Solo    *Soloroutine
+    states  map[string]*State
+    disp    *Dispatcher
+}
+func NewRamDB(solo *Soloroutine, data interface{}) *RamDB {
+    if solo==nil {solo=GSolo}
+    db:=&RamDB{ ReadyT:NewReady(), Solo:solo, states:make(map[string]*State), disp:&Dispatcher{} }
+    db.Solo.Call0(func() {
+        db.NotReady("READY")
+        db.importData(data)
+        db.OnReady("RamDB.importData", func(){ db.Ready("READY") })
+    })
+    return db
+}
+func (db *RamDB) importData(data interface{}) {
+    db.Solo.Call0(func(){
+        if data==nil { db.Ready("RamDB.importData"); return }
+        dataV:=reflect.ValueOf(data); dataG:=G(dataV)
+        db.NotReady("RamDB.importData")
+        create:=func(id string, state *State, next func(interface{},error)) {
+            var out interface{}; out=nil; var err error; err=nil  // Don't make the mistake of initializing these to interface{}(nil) or error(nil) because then they won't really be nil.
+            defer func() {
+                e:=recover()  // Always catch panics.
+                if err==nil && e!=nil {
+                    switch E:=e.(type) {
+                    case error: err=E
+                    case string: err=errors.New(E)
+                    default: err=fmt.Errorf("%#v",e)
+                    }
+                }
+                next(out,err)
+            }()
+            db.CreateState(id, state,
+                func(*State,string){next(nil,nil)},
+                func(e error){
+                    fmt.Fprintln(os.Stderr, e)
+                    next(nil,nil)  // Our JS ignores the error, so we do too.  I forgot why.
+                },
+                true)  // 'true' tells createState not to wait for READY, so we don't deadlock.
+        }
+        keys:=dataG.Keys(); steps:=make([]SlideFn,0,len(keys))
+        for _,id:=range keys { steps=append(steps,SlideFn{fn:create, args:[]interface{}{id, dataG.GetOrPanic(id)}}) }
+        SlideChain(steps, func([]interface{},error){ db.Ready("RamDB.importData") })
+    })
+}
+func (db *RamDB) exportData() (out map[string]*State) {
+    db.Solo.Call0(func() {
+        out=make(map[string]*State,len(db.states))
+        for k,v:=range db.states { out[k]=v }
+    })
+    return
+}
+func (db *RamDB) OnD(callback,data interface{}) {
+    db.Solo.Call0(func() {
+        db.disp.OnD(callback,data)
+    })
+}
+func (db *RamDB) OffD(callback,data interface{}) {
+    db.Solo.Call0(func() {
+        db.disp.OffD(callback,data)
+    })
+}
+func (db *RamDB) stateCallback(state *State, op string, data interface{}, id string) {
+    db.Solo.Call0(func() {
+        db.disp.Fire(id,state,op,data)
+    })
+}
+func (db *RamDB) Exists(id string, callback func(bool)) { db.ExistsB(id,callback,false) }
+func (db *RamDB) ExistsB(id string, callback func(bool), doNotWaitReady bool) {
+    db.Solo.Call0(func() {
+        afterReady:=func() {
+            _,has:=db.states[id]
+            if callback!=nil { callback(has) }
+        }
+        if doNotWaitReady { afterReady(); return }
+        db.OnReady("READY",afterReady)
+    })
+}
+
+
+func (db *RamDB) CreateState(id string, state *State, onSuccess func(*State,string), onError func(error), doNotWaitReady bool) {
+    db.Solo.Call0(func() {
+        if onError==nil { onError=LOG_ERR }
+        db.ExistsB(id, func(exists bool) {
+            if exists { onError(errors.New("Already exists: "+id)); return }
+            if state==nil { state=NewState(nil) }
+            db.states[id]=state
+            state.OnD(db.stateCallback, id)
+            if !doNotWaitReady { db.disp.Fire(id, state, "create") }  // Do not fire events during loads.
+            onSuccess(state, id)
+            return
+        }, doNotWaitReady)
+    })
+}
+
+
+
 
 

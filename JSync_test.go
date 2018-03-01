@@ -177,9 +177,9 @@ func TestB3(test *T) {
 
 
 func TestC1(test *T) {
-    u:=NewUniroutine(); defer func(){ u.Stop(); time.Sleep(100*time.Millisecond); assert(u.stopped) }()
-    u.Call(fmt.Println, "hello", "uniroutine")
-    badFn:=func(){ panic("panic from uniroutine call") }
+    u:=NewSoloroutine(); defer func(){ u.Stop(); time.Sleep(100*time.Millisecond); assert(u.stopped) }()
+    u.Call(fmt.Println, "hello", "soloroutine")
+    badFn:=func(){ panic("panic from soloroutine call") }
     func() {
         defer func() {
             if e:=recover(); e!=nil {
@@ -195,11 +195,28 @@ func TestC1(test *T) {
     var n int64
     inc:=func() { n++ }
     s:=time.Now(); for i:=0; i<100000; i++ { inc() }; fmt.Println("Direct: ", time.Since(s))
-    s =time.Now(); for i:=0; i<100000; i++ { u.Call(inc) }; fmt.Println("Uniroutine.Call(): ", time.Since(s))
-    s =time.Now(); for i:=0; i<100000; i++ { u.Call0(inc) }; fmt.Println("Uniroutine.Call0(): ", time.Since(s))
+    s =time.Now(); for i:=0; i<100000; i++ { u.Call(inc) }; fmt.Println("Soloroutine.Call(): ", time.Since(s))
+    s =time.Now(); for i:=0; i<100000; i++ { u.Call0(inc) }; fmt.Println("Soloroutine.Call0(): ", time.Since(s))
 }
 
+func TestC2(test *T) {
+    gotChainResult:=false
+    SlideChain([]SlideFn{
+        {fn:func(a,b,c interface{}, next func(interface{},error)){ next(fmt.Sprintf("%#v %#v %#v",a,b,c),nil) }, args:[]interface{}{1,"2",'3'}},
+    }, func(results []interface{}, err error){
+        gotChainResult=true
+        fmt.Println("Chain Result:", results, err)
+    })
+    assert(gotChainResult)
+}
 
+func TestC3(test *T) {
+    db:=NewRamDB(nil, map[string]*State{
+        "test1":nil,
+    })
+    db.Exists("test1", func(exists bool) { fmt.Println("test1 Exists result:", exists) })
+    db.Exists("test2", func(exists bool) { fmt.Println("test2 Exists result:", exists) })
+}
 
 
 
