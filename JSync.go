@@ -432,16 +432,16 @@ func ApplyDeltaBB(obj interface{}, delta Delta, doNotCheckStartHash,doNotCheckEn
 
 const ID_NOMATCH=""
 type Listener struct {
-    ID      string
-    CB,Data interface{}
+    ID            string
+    CB,CBCmp,Data interface{}
 }
 type Dispatcher struct { listeners []Listener }
-func (d *Dispatcher) On(callback interface{}) { d.OnD(callback,nil) }
-func (d *Dispatcher) OnD(callback,data interface{}) { d.OnUniq(ID_NOMATCH, callback, data) }
-func (d *Dispatcher) OnUniq(id string, callback,data interface{}) {
+func (d *Dispatcher) On(callback,cbCmp interface{}) { d.OnD(callback,cbCmp,nil) }  // Go doesn't allow the comparison of functions (because of compiler optimizations that re-use function definitions for closures), so the user should also provide a 'cbCmp' argument, which we will use for comparison.
+func (d *Dispatcher) OnD(callback,cbCmp,data interface{}) { d.OnUniq(ID_NOMATCH,callback,cbCmp,data) }
+func (d *Dispatcher) OnUniq(id string, callback,cbCmp,data interface{}) {
     // Enable registration of callback many times, but each ID will only be called once.
     d.OffUniq(id)
-    d.listeners=append(d.listeners, Listener{ID:id, CB:callback, Data:data})
+    d.listeners=append(d.listeners, Listener{ID:id, CB:callback, CBCmp:cbCmp, Data:data})
 }
 func (d *Dispatcher) IsOn(id string) bool {
     for _,l:=range d.listeners {
@@ -449,9 +449,14 @@ func (d *Dispatcher) IsOn(id string) bool {
     }
     return false
 }
-func (d *Dispatcher) Off(callback interface{}) { d.OffD(callback,nil) }
-func (d *Dispatcher) OffD(callback,data interface{}) {
-    panic("How can i translate the concept of comparing callbacks?  Go functions can't be reliably tested for equality.")
+func (d *Dispatcher) Off(cbCmp interface{}) { d.OffD(cbCmp,nil) }  // Use the same 'cbCmp' that you used for On().
+func (d *Dispatcher) OffD(cbCmp,data interface{}) {
+    for i:=len(d.listeners)-1; i>=0; i-- {
+        l:=d.listeners[i]
+        if l.CBCmp==cbCmp && l.Data==data {
+            d.listeners=append(d.listeners[:i], d.listeners[i+1:]...)
+        }
+    }
 }
 func (d *Dispatcher) OffUniq(id string) {
     if id==ID_NOMATCH { return }
@@ -481,10 +486,10 @@ func NewState(data interface{}) *State {
     s.Reset(data)
     return s
 }
-func (s *State) On(callback interface{}) { s.OnD(callback,nil) }
-func (s *State) OnD(callback,data interface{}) { s.Disp.OnD(callback,data) }
-func (s *State) Off(callback interface{}) { s.OffD(callback,nil) }
-func (s *State) OffD(callback,data interface{}) { s.Disp.OffD(callback,data) }
+func (s *State) On(callback,cbCmp interface{}) { s.OnD(callback,cbCmp,nil) }
+func (s *State) OnD(callback,cbCmp,data interface{}) { s.Disp.OnD(callback,cbCmp,data) }
+func (s *State) Off(cbCmp interface{}) { s.OffD(cbCmp,nil) }
+func (s *State) OffD(cbCmp,data interface{}) { s.Disp.OffD(cbCmp,data) }
 func (s *State) Reset(data interface{}) {
     //s.Lock(); defer s.Unlock()
     if data!=nil { s.Data=data
@@ -591,21 +596,21 @@ func (R *ReadyT) OffNotReady(name string, callback ReadyCB) {
 var GSolo *Soloroutine  // Global Soloroutine
 func init() { GSolo=NewSoloroutine() }
 
-type Caller interface { Call() }
+type Runner interface { Run() }
 type Soloroutine struct {
-    inCh    chan Caller
+    inCh    chan Runner
     goid    int64
     stopped bool
 }
 func NewSoloroutine() *Soloroutine {
-    u:=&Soloroutine{inCh:make(chan Caller), goid:-1}
+    u:=&Soloroutine{inCh:make(chan Runner,64), goid:-1}  // Performance reaches a stable peak at 32.  Using 64 just for some extra buffer.
     go func() {
-        u.goid=runtime.getg().goid
+        u.goid=runtime.getg().m.curg.goid  // According to go/src/runtime/HACKING.md, we should use getg().m.curg instead of just getg() .
+        var r Runner; var ok bool
         for {
-            assert(runtime.getg().goid==u.goid)  // Sanity check while developing.
-            c:= <-u.inCh
-            if c==nil { break }  // We get nil when the chanel is closed.
-            c.Call()
+            if(runtime.getg().m.curg.goid!=u.goid) { fmt.Fprintln(os.Stderr, "Soloroutime: goid changed!") }  // Sanity check while developing.
+            r,ok=<-u.inCh; if !ok { break } // !ok means the channel has been closed.
+            r.Run()
         }
         u.stopped=true
     }()
@@ -613,80 +618,101 @@ func NewSoloroutine() *Soloroutine {
 }
 func (u *Soloroutine) Stop() { close(u.inCh) }
 
-type soloroutineCall struct {
+type soloroutineSync struct {   // A general-purpose, but slow, function call.
     fn       interface{}
     args     []interface{}
-    done     sync.Mutex  // Use a mutex instead of a chanel for performance (turns out to be only very minor improvement).  Requires some very special handling.
-    returned []interface{}
-    paniced  interface{}
+    done     sync.Mutex  // Use a mutex instead of a channel for performance (turns out to be only very minor improvement).  Requires some very special handling.
+    returns []interface{}
+    panik  interface{}
 }
-func (c *soloroutineCall) Call() {
+func (r *soloroutineSync) Run() {
     defer func(){
         if e:=recover(); e!=nil {
-            os.Stderr.Write(debug.Stack())  // Print the stack because we lose it by passing the result over the chanel.
-            c.paniced=e
+            os.Stderr.Write(debug.Stack())  // Print the stack because we lose it by passing the result over the channel.
+            r.panik=e
         }
-        c.done.Unlock()
+        r.done.Unlock()
     }()
-    c.returned=Call(c.fn, c.args...)
+    r.returns=Call(r.fn, r.args...)
 }
-func (u *Soloroutine) Call(fn interface{}, args ...interface{}) []interface{} {  // 1000x slower than a direct function call.
-    if runtime.getg().goid==u.goid { return Call(fn, args...) }  // Allow recursion without deadlock.
-    uc:=&soloroutineCall{fn:fn, args:args}
-    uc.done.Lock()
-    u.inCh<-uc
-    uc.done.Lock()//; uc.done.Unlock()  // I never re-use 'done', so don't bother to Unlock.
-    if uc.paniced!=nil { panic(uc.paniced) }
-    return uc.returned
+func (u *Soloroutine) SyncSlow(fn interface{}, args ...interface{}) []interface{} {  // 1000x slower than a direct function call.
+    if runtime.getg().m.curg.goid==u.goid { return Call(fn, args...) }  // Allow fast recursion, while avoiding deadlock.
+    r:=&soloroutineSync{fn:fn, args:args}
+    r.done.Lock()
+    u.inCh<-r
+    r.done.Lock()//; r.done.Unlock()  // I never re-use 'done', so don't bother to Unlock.
+    if r.panik!=nil { panic(r.panik) }
+    return r.returns
 }
 
-type soloroutineCall0 struct {
+func (u *Soloroutine) AsyncSlow(onPanic func(interface{}), fn interface{}, args ...interface{}) { panic("Not implemented yet.  Waiting for a real-life need.") }
+
+type soloroutineSync0 struct {  // A no-arg/no-return, but fast, function call.
     fn      func()
     done    sync.Mutex
-    paniced interface{}
+    panik interface{}
 }
-func (c *soloroutineCall0) Call() {
+func (r *soloroutineSync0) Run() {
     defer func() {
         if e:=recover(); e!=nil {
             os.Stderr.Write(debug.Stack())
-            c.paniced=e
+            r.panik=e
         }
-        c.done.Unlock()
+        r.done.Unlock()
     }()
-    c.fn()
+    r.fn()
 }
-func (u *Soloroutine) Call0(fn func()) {                                         // Almost 2x faster than the more-general Call().
-    if runtime.getg().goid==u.goid { fn(); return }  // Very fast!  Only 2x slower than a direct function call.
-    uc:=&soloroutineCall0{fn:fn}
-    uc.done.Lock()
-    u.inCh<-uc
-    uc.done.Lock()//; uc.done.Unlock()
-    if uc.paniced!=nil { panic(uc.paniced) }
+func (u *Soloroutine) Sync(fn func()) {  // Almost 2x faster than SyncSlow().
+    if runtime.getg().m.curg.goid==u.goid { fn(); return }  // Very fast!  Only 2x slower than a direct function call.
+    r:=&soloroutineSync0{fn:fn}
+    r.done.Lock()
+    u.inCh<-r
+    r.done.Lock()//; r.done.Unlock()
+    if r.panik!=nil { panic(r.panik) }
 }
 
-func LOG_ERR(e error) { fmt.Fprintln(os.Stderr, e) }
+type soloroutineAsync0 struct {
+    fn      func()
+    onPanic func(interface{})
+}
+func (r *soloroutineAsync0) Run() {
+    defer func() {
+        if e:=recover(); e!=nil {
+            if r.onPanic!=nil { r.onPanic(e)
+            } else { os.Stderr.Write(debug.Stack()) }
+        }
+    }()
+    r.fn()
+}
+func (u *Soloroutine) Async(onPanic func(interface{}), fn func()) {  // 4x faster than Sync().  Still 100x slower than direct.
+    r:=&soloroutineAsync0{fn:fn, onPanic:onPanic}
+    if runtime.getg().m.curg.goid==u.goid { r.Run(); return }
+    u.inCh<-r
+}
+
+func LOG_ERR(e interface{}) { fmt.Fprintln(os.Stderr, e) }
 
 type RamDB struct {
-    *ReadyT
     Solo    *Soloroutine
     states  map[string]*State
+    ready   *ReadyT
     disp    *Dispatcher
 }
 func NewRamDB(solo *Soloroutine, data interface{}) *RamDB {
     if solo==nil {solo=GSolo}
-    db:=&RamDB{ ReadyT:NewReady(), Solo:solo, states:make(map[string]*State), disp:&Dispatcher{} }
-    db.Solo.Call0(func() {
-        db.NotReady("READY")
+    db:=&RamDB{ Solo:solo, states:make(map[string]*State), ready:NewReady(), disp:&Dispatcher{} }
+    db.Solo.Sync(func() {
+        db.ready.NotReady("READY")
         db.importData(data)
-        db.OnReady("RamDB.importData", func(){ db.Ready("READY") })
+        db.ready.OnReady("RamDB.importData", func(){ db.ready.Ready("READY") })
     })
     return db
 }
 func (db *RamDB) importData(data interface{}) {
-    db.Solo.Call0(func(){
-        if data==nil { db.Ready("RamDB.importData"); return }
+    db.Solo.Sync(func(){
+        if data==nil { db.ready.Ready("RamDB.importData"); return }
         dataV:=reflect.ValueOf(data); dataG:=G(dataV)
-        db.NotReady("RamDB.importData")
+        db.ready.NotReady("RamDB.importData")
         create:=func(id string, state *State, next func(interface{},error)) {
             var out interface{}; out=nil; var err error; err=nil  // Don't make the mistake of initializing these to interface{}(nil) or error(nil) because then they won't really be nil.
             defer func() {
@@ -700,9 +726,9 @@ func (db *RamDB) importData(data interface{}) {
                 }
                 next(out,err)
             }()
-            db.CreateState(id, state,
+            db.CreateStateB(id, state,
                 func(*State,string){next(nil,nil)},
-                func(e error){
+                func(e interface{}){
                     fmt.Fprintln(os.Stderr, e)
                     next(nil,nil)  // Our JS ignores the error, so we do too.  I forgot why.
                 },
@@ -710,56 +736,102 @@ func (db *RamDB) importData(data interface{}) {
         }
         keys:=dataG.Keys(); steps:=make([]SlideFn,0,len(keys))
         for _,id:=range keys { steps=append(steps,SlideFn{fn:create, args:[]interface{}{id, dataG.GetOrPanic(id)}}) }
-        SlideChain(steps, func([]interface{},error){ db.Ready("RamDB.importData") })
+        SlideChain(steps, func([]interface{},error){ db.ready.Ready("RamDB.importData") })
     })
 }
 func (db *RamDB) exportData() (out map[string]*State) {
-    db.Solo.Call0(func() {
+    db.Solo.Sync(func() {
         out=make(map[string]*State,len(db.states))
         for k,v:=range db.states { out[k]=v }
     })
     return
 }
 func (db *RamDB) OnD(callback,data interface{}) {
-    db.Solo.Call0(func() {
-        db.disp.OnD(callback,data)
+    db.Solo.Sync(func() {
+        db.disp.OnD(callback,db,data)
     })
 }
 func (db *RamDB) OffD(callback,data interface{}) {
-    db.Solo.Call0(func() {
+    db.Solo.Sync(func() {
         db.disp.OffD(callback,data)
     })
 }
 func (db *RamDB) stateCallback(state *State, op string, data interface{}, id string) {
-    db.Solo.Call0(func() {
+    db.Solo.Sync(func() {
         db.disp.Fire(id,state,op,data)
     })
 }
 func (db *RamDB) Exists(id string, callback func(bool)) { db.ExistsB(id,callback,false) }
 func (db *RamDB) ExistsB(id string, callback func(bool), doNotWaitReady bool) {
-    db.Solo.Call0(func() {
+    db.Solo.Async(nil, func() {
         afterReady:=func() {
             _,has:=db.states[id]
             if callback!=nil { callback(has) }
         }
         if doNotWaitReady { afterReady(); return }
-        db.OnReady("READY",afterReady)
+        db.ready.OnReady("READY",afterReady)
     })
 }
-
-
-func (db *RamDB) CreateState(id string, state *State, onSuccess func(*State,string), onError func(error), doNotWaitReady bool) {
-    db.Solo.Call0(func() {
-        if onError==nil { onError=LOG_ERR }
-        db.ExistsB(id, func(exists bool) {
-            if exists { onError(errors.New("Already exists: "+id)); return }
-            if state==nil { state=NewState(nil) }
-            db.states[id]=state
-            state.OnD(db.stateCallback, id)
-            if !doNotWaitReady { db.disp.Fire(id, state, "create") }  // Do not fire events during loads.
-            onSuccess(state, id)
+func (db *RamDB) ListIDs(callback func([]string)) {
+    db.Solo.Async(nil, func() {
+        db.ready.OnReady("READY", func() {
+            keys:=make([]string,0,len(db.states)); for k:=range db.states { keys=append(keys,k) }
+            if callback!=nil { callback(keys) }
+        })
+    })
+}
+func (db *RamDB) GetState(id string, onSuccess func(*State,string), onError func(interface{})) {
+    db.Solo.Async(onError, func() {
+        db.ready.OnReady("READY", func() {
+            state,has:=db.states[id]
+            if !has {
+                if onError==nil { onError=LOG_ERR }
+                onError(errors.New("State does not exist: "+id))
+                return
+            }
+            if onSuccess!=nil { onSuccess(state,id) }
+        })
+    })
+}
+func (db *RamDB) GetStateAutocreate(id string, defaultData interface{}, onSuccess func(*State,string), onError func(interface{})) {
+    db.GetState(id, onSuccess, func(e interface{}) {
+        if err,ok:=e.(error); ok && err.Error()=="State does not exist: "+id {
+            db.CreateState(id, NewState(defaultData), onSuccess, onError)
+        } else {
+            if onError==nil { onError=LOG_ERR }
+            onError(e)
             return
-        }, doNotWaitReady)
+        }
+    })
+}
+func (db *RamDB) CreateState(id string, state *State, onSuccess func(*State,string), onError func(interface{})) { db.CreateStateB(id,state,onSuccess,onError,false) }
+func (db *RamDB) CreateStateB(id string, state *State, onSuccess func(*State,string), onError func(interface{}), doNotWaitReady bool) {
+    db.ExistsB(id, func(exists bool) {
+        if exists {
+            if onError==nil { onError=LOG_ERR }
+            onError(errors.New("Already exists: "+id))
+            return
+        }
+        if state==nil { state=NewState(nil) }
+        db.states[id]=state
+        state.OnD(db.stateCallback,db,id)
+        if !doNotWaitReady { db.disp.Fire(id, state, "create") }  // Do not fire events during loads.
+        if onSuccess!=nil { onSuccess(state, id) }
+        return
+    }, doNotWaitReady)
+}
+func (db *RamDB) DeleteState(id string, onSuccess func(*State,string), onError func(interface{})) {
+    db.Exists(id, func(exists bool) {
+        if !exists {
+            if onError==nil { onError=LOG_ERR }
+            onError(errors.New("Does not exist: "+id))
+            return
+        }
+        state:=db.states[id]
+        state.OffD(db,id)
+        delete(db.states,id)
+        db.disp.Fire(id, state, "delete")
+        if onSuccess!=nil { onSuccess(state,id) }
     })
 }
 

@@ -144,11 +144,11 @@ func TestA6(test *T) {
 func TestB1(test *T) {
     d:=&Dispatcher{}
     out1:=0
-    d.On(func(val int) { fmt.Println("cb1"); out1=val })
+    d.On(func(val int) { fmt.Println("cb1"); out1=val },nil)
     d.Fire(123)
     assert(out1==123)
-    d.On(func() { fmt.Println("cb2"); out1=456 })
-    d.On(func(a,b,c int, d,e,f,g bool) { fmt.Println(a,b,c,d,e,f,g) })
+    d.On(func() { fmt.Println("cb2"); out1=456 },nil)
+    d.On(func(a,b,c int, d,e,f,g bool) { fmt.Println(a,b,c,d,e,f,g) },nil)
     d.Fire(123)
     assert(out1==456, "out1:",out1)
 }
@@ -157,7 +157,7 @@ func TestB2(test *T) {
     s:=NewState(map[string]int{"a":111})
     cbCount:=0
     cb:=func(state *State, etype string, edata Delta) { cbCount+=1 }
-    s.On(cb)
+    s.On(cb,nil)
     s.Edit(Operations{{Op:"create", Key:"b", Value:222}})
     assert(cbCount==1)
     assert(Stringify(s.Data)==`{"a":111,"b":222}`, Stringify(s.Data))
@@ -178,7 +178,7 @@ func TestB3(test *T) {
 
 func TestC1(test *T) {
     u:=NewSoloroutine(); defer func(){ u.Stop(); time.Sleep(100*time.Millisecond); assert(u.stopped) }()
-    u.Call(fmt.Println, "hello", "soloroutine")
+    u.SyncSlow(fmt.Println, "hello", "soloroutine")
     badFn:=func(){ panic("panic from soloroutine call") }
     func() {
         defer func() {
@@ -188,15 +188,18 @@ func TestC1(test *T) {
                 panic("I expected a panic!")
             }
         }()
-        u.Call(badFn)
+        u.SyncSlow(badFn)
     }()
-    ret:=u.Call(fmt.Sprintf, "%s %d", "abc", 123); retS:=ret[0].(string); fmt.Println(retS)
+    ret:=u.SyncSlow(fmt.Sprintf, "%s %d", "abc", 123); retS:=ret[0].(string); fmt.Println(retS)
 
     var n int64
     inc:=func() { n++ }
-    s:=time.Now(); for i:=0; i<100000; i++ { inc() }; fmt.Println("Direct: ", time.Since(s))
-    s =time.Now(); for i:=0; i<100000; i++ { u.Call(inc) }; fmt.Println("Soloroutine.Call(): ", time.Since(s))
-    s =time.Now(); for i:=0; i<100000; i++ { u.Call0(inc) }; fmt.Println("Soloroutine.Call0(): ", time.Since(s))
+    s,n:=time.Now(),0; for i:=0; i<100000; i++ { inc() }; fmt.Println("Direct: ", time.Since(s))
+    s,n =time.Now(),0; for i:=0; i<100000; i++ { u.SyncSlow(inc) }; fmt.Println("Soloroutine.SyncSlow():", time.Since(s))
+    s,n =time.Now(),0; for i:=0; i<100000; i++ { u.Sync(inc) }; fmt.Println("Soloroutine.Sync():", time.Since(s))
+    s,n =time.Now(),0; for i:=0; i<100000; i++ { u.Async(nil,inc) }; fmt.Println("Soloroutine.Async():", time.Since(s))
+    time.Sleep(10*time.Millisecond)
+    assert(n==100000)
 }
 
 func TestC2(test *T) {
@@ -216,6 +219,25 @@ func TestC3(test *T) {
     })
     db.Exists("test1", func(exists bool) { fmt.Println("test1 Exists result:", exists) })
     db.Exists("test2", func(exists bool) { fmt.Println("test2 Exists result:", exists) })
+    ch:=make(chan bool)
+    db.ListIDs(func(ids []string) { fmt.Println("list:",ids); ch<-true })
+    <-ch
+    db.GetState("test1", func(state *State, id string){ fmt.Println(id,state); ch<-true }, nil)
+    <-ch
+    db.GetState("test2", nil, func(err interface{}){ fmt.Println(err); ch<-true })
+    <-ch
+    db.GetStateAutocreate("test2", nil, func(state *State, id string){ ch<-true }, nil)
+    <-ch
+    db.GetState("test2", func(state *State, id string){ fmt.Println(id,state); ch<-true }, nil)
+    <-ch
+
+    fmt.Println("Can compare db to itself? ", db==db)
+    fmt.Println("Can compare db to interface? ", db==interface{}(db))
+    fmt.Println("Can compare interface to db? ", interface{}(db)==db)
+    fmt.Println("Can compare interface to interface? ", interface{}(db)==interface{}(db))
+
+    db.DeleteState("test2", func(state *State, id string) { fmt.Println("Deleted state:",id); ch<-true }, nil)
+    <-ch
 }
 
 
