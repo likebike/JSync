@@ -1,9 +1,13 @@
 // This a direct translation from JSync.js , that's why none of this is idiomatic Go.
 // After I get it running, I'll probably do another translation pass, implementing idiomatic Go and SSE.
 
+// It would be good to rename 'clientID' to 'connectionID' since it represents an ephemeral connection.
+// Also, 'browserID' would be better named 'clientID' since it is the ID of the client (browser, Go, or whatever).  But I don't think i'll change that since 'clientID' already means something else.
+
 package JSync
 
 import (
+    "seb"
     "encoding/json"
     "unicode/utf8"
     "regexp"
@@ -47,7 +51,7 @@ func Pad(s,p string, n int) string {
 }
 
 var ID_CHARS = []byte("0123456789abcdefghijkmnopqrstuvwxyzABCDEFGHIJKLMNPQRSTUVWXYZ")  // Removed l and O because they are easily confused with 1 and 0.
-var ID_REGEX *regexp.Regexp; func init() { r,e:=regexp.Compile("^["+string(ID_CHARS)+"]+$"); zssert(e); ID_REGEX=r }
+var ID_REGEX *regexp.Regexp; func init() { r,e:=regexp.Compile("^["+string(ID_CHARS)+"]+$"); seb.Zssert(e); ID_REGEX=r }
 func _generateID(length int) string {
     if length<=0 { length=8 }
     id:=make([]byte,0,length)
