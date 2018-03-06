@@ -363,7 +363,31 @@ func TestZ2(test *T) {
     <-ch
     fmt.Println("Got chan sig")
 }
+func TestZ3(test *T) {
+    var a,b int
+    assert(a==b)
+    ap,bp:=&a,&b
+    assert(ap!=bp)
+    m:=map[string]*int{"a":ap, "b":bp}
+    assert(m["a"]==ap && m["b"]==bp)
 
+    type S struct {
+        F func()
+    }
+    var c,d S
+    // assert(c==d)  // Compile error:  struct containing func() cannot be compared.
+    cp,dp:=&c,&d
+    assert(cp!=dp)
+    n:=map[string]*S{"c":cp, "d":dp}
+    assert(n["c"]==cp && n["d"]==dp)
+}
+func TestZ4(test *T) {
+    time.AfterFunc(3*time.Second, func(){
+        fmt.Println("Timer Called")
+    })
+    time.Sleep(5*time.Second)
+    fmt.Println("Done sleeping")
+}
 
 
 

@@ -380,7 +380,7 @@ JSync.CometServer.prototype.clientReceive = function(clientID, onSuccess, onErro
             out = clients.data[clientID].receiveQ;
             clients.edit([{op:'update', path:[clientID], key:'receiveQ', value:[]}]);
             myObj.shutdown();
-        });
+        }, onError);  /////////// 2018-03-06 I think I should be passing onError to getState (instead of passing nothing).  I am modifying this code without the ability to test.
     };
     var debounced_send = _.debounce(send, 4);
     myObj.dataIsWaiting = function(waitingCount) {
@@ -397,7 +397,7 @@ console.log('Forcing send due to waitingCount');
     // Finally, if there is data already waiting, initiate the process:
     this.db.getState('clients', function(clients) {
         if(clients.data[clientID].receiveQ.length) myObj.dataIsWaiting();
-    });
+    }, onError);  /////////// 2018-03-06 I think I should be passing onError to getState (instead of passing nothing).  I am modifying this code without the ability to test.
 };
 
 

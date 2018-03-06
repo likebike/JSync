@@ -107,9 +107,11 @@ func DSHash(s string) string { // The Down Syndrome Hash algorithm, translated f
 
 
 type G reflect.Value   // 'G' for Generic.  I choose this type definition instead of struct embedding because casting has no runtime cost, and (to me) it's easier for this situation.
+func GOf(x interface{}) G { return G(reflect.ValueOf(x)) }
 func (g G) GetOrPanic(key interface{}) (val interface{}) {
     return g.GetVOrPanic(key).Interface()   // I think it's still possible for nil values to sneak thru.  Waiting for a real-life example so I can improve this...
 }
+func (g G) GetGOrPanic(key interface{}) G { return G(g.GetVOrPanic(key)) }
 func (g G) GetVOrPanic(key interface{}) reflect.Value {
     switch reflect.Value(g).Kind() {
     case reflect.Slice, reflect.Array, reflect.String: return reflect.Value(g).Index(key.(int))
@@ -128,10 +130,15 @@ func (g G) Get(key interface{}) (val interface{}, has bool) {
     V,has:=g.GetV(key); if has { val=V.Interface() }
     return
 }
+func (g G) GetG(key interface{}) (G,bool) { V,has:=g.GetV(key); return G(V),has }
 func (g G) GetV(key interface{}) (val reflect.Value, has bool) {
     // I foresee a problem when using Index() on a struct: A field will have 'has=true' even when the value is nil or Zero... But on the JS side it would have 'has=false'.  I'll need a real-life test case to know how to handle this scenario.  I guess the "easy answer" is to just use maps for those situations.
     defer func(){ e:=recover(); if e!=nil { val,has=reflect.ValueOf(0),false } }()
     return g.GetVOrPanic(key),true
+}
+func (g G) GetDefault(key interface{}, dflt interface{}) (val interface{}) {
+    val,has:=g.Get(key); if !has { val=dflt }
+    return
 }
 func (g G) Keys() (keys []interface{}) {
     switch reflect.Value(g).Kind() {
@@ -145,6 +152,21 @@ func (g G) Keys() (keys []interface{}) {
     default: panic("Unknown kind: "+reflect.Value(g).Kind().String())
     }
     return
+}
+func (g G) Each(fn func(k,v interface{})) {
+    switch reflect.Value(g).Kind() {
+    case reflect.Slice, reflect.Array, reflect.String:
+        for i,ii:=0,reflect.Value(g).Len(); i<ii; i++ { fn(i,reflect.Value(g).Index(i)) }
+    case reflect.Struct:
+        typ:=reflect.Value(g).Type()
+        for i,ii:=0,typ.NumField(); i<ii; i++ {
+            n:=typ.Field(i).Name
+            fn(n,reflect.Value(g).FieldByName(n))
+        }
+    case reflect.Map:
+        for _,kV:=range reflect.Value(g).MapKeys() { fn(kV,reflect.Value(g).MapIndex(kV)) }
+    default: panic("Unknown kind: "+reflect.Value(g).Kind().String())
+    }
 }
 func (g G) Set(key,value interface{}) {
     V,has:=g.GetV(key)
@@ -211,6 +233,14 @@ func CallV(fn interface{}, args ...reflect.Value) []reflect.Value {
     return fnValue.Call(fnArgs)
 }
 
+type M map[string]interface{}
+func (m M) Extend(ms ...M) M {
+    for _,m2:=range ms {
+        for k,v:=range m2 { m[k]=v }
+    }
+    return m
+}
+
 func Deref(o reflect.Value) reflect.Value {
     for kind:=o.Kind(); kind==reflect.Ptr || kind==reflect.Interface; kind=o.Kind() {
         //fmt.Println("Deref:",o,"-->",o.Elem())
@@ -230,15 +260,16 @@ func DeepEqual(a,b interface{}) bool { return Stringify(a)==Stringify(b) }
 func isInt(o interface{}) bool { _,ok:=o.(int); return ok }
 
 type Operation struct {
-    Op        string
-    Path      []interface{}
-    Key,Value interface{}
+    Op    string        `json:"op"`
+    Path  []interface{} `json:"path"`
+    Key   interface{}   `json:"key"`
+    Value interface{}   `json:"value"`
 }
 type Operations []Operation
 type DeltaStep struct {
-    Op                string
-    Path              []interface{}
-    Key,Before,After  interface{}
+    Op               string
+    Path             []interface{}
+    Key,Before,After interface{}
 }
 type Delta struct {
     EndHash   string        `json:"endHash"`
@@ -282,7 +313,7 @@ func Edit(obj interface{}, operations Operations) Delta {  // racey!  You need t
         case "create","update","update!":
             if key==nil { panic("nil key!") }
             if value==nil { panic("nil value!") }  // If you want to set something to undefined, just delete instead.
-            V,has:=G(target).GetV(key)
+            I,has:=G(target).Get(key)
             if op=="update!" {
                 if has { op="update" } else { op="create" }
             }
@@ -293,15 +324,15 @@ func Edit(obj interface{}, operations Operations) Delta {  // racey!  You need t
                 steps=append(steps,DeltaStep{Op:op, Path:path, Key:key, After:DeepCopy(value)})
             } else if op=="update" {
                 if !has { panic(fmt.Sprintf("Not in target: %#v",key)) }
-                before:=DeepCopy(V.Interface())
+                before:=DeepCopy(I)
                 // We do NOT check if 'before' and 'after' are equal, or try to detect NOOP operations (setting the same value that already exists, etc.).  Logical linearity is more important than saving a few steps.
                 G(target).Set(key,value)
                 steps=append(steps,DeltaStep{Op:op, Path:path, Key:key, Before:before, After:DeepCopy(value)})
             } else { panic("Inconceivable!") }
         case "delete":
             if key==nil { panic("nil key!") }
-            V,has:=G(target).GetV(key); if !has { panic(fmt.Sprintf("Not in target: %#v",key)) }
-            before:=DeepCopy(V.Interface())
+            I,has:=G(target).Get(key); if !has { panic(fmt.Sprintf("Not in target: %#v",key)) }
+            before:=DeepCopy(I)
             G(target).Del(key)
             steps=append(steps,DeltaStep{Op:op, Path:path, Key:key, Before:before})
         case "arrayPush":
@@ -408,8 +439,7 @@ func ApplyDeltaBB(obj interface{}, delta Delta, doNotCheckStartHash,doNotCheckEn
             if step.After==nil { panic("Undefined After!") }
             G(target).SliceInsert(step.Key,step.After)
         case "arrayRemove":
-            V:=G(target).GetVOrPanic(step.Key)
-            if Stringify(V)!=Stringify(step.Before) { panic("Slice Before value mismatch!") }
+            if Stringify(G(target).GetOrPanic(step.Key))!=Stringify(step.Before) { panic("Slice Before value mismatch!") }
             G(target).SliceRemove(step.Key)
         default: panic("Illegal operation: "+step.Op)
         }
@@ -592,9 +622,9 @@ func (R *ReadyT) OffNotReady(name string, callback ReadyCB) {
 // These DB implementations are extremely racey cuz they were designed for JS.  I am going to limit them to a single goroutine instead of filling them with locks.  (A naive lock-based implementation will be prone to deadlock due to the READY stuff, which really requires an async design.)
 
 // Note, i could improve the performance of the initial "entry call" (no improvement for recursive calls) by converting the whole infrastructure to a async-callback thing.  Basically, i'd get rid of the central goroutine, and instead structure the thing so that it would use whatever goroutine calls it.  The lucky caller would suddenly become the master goroutine until all the work was processesed, then it would be free to go back to its normal life.  This would require a complete consistent structure thru all users.  It's a high price, but it would get me very close to native speeds, while supporting advanced cool stuff like bidirectional generators that are nearly as fast as a normal function call.
+// Response to the above comment: I think the better solution is to keep the current Soloroutine design because it contains the complexity so well.  Instead, focus on improving the performance of Go Channels by avoiding goroutine-parking.  Async() already helps a lot, but more can be done.  As long as you avoid parking, performance is not bad!
 
-var GSolo *Soloroutine  // Global Soloroutine
-func init() { GSolo=NewSoloroutine() }
+var GSolo = NewSoloroutine() // Global Soloroutine
 
 type Runner interface { Run() }
 type Soloroutine struct {
@@ -622,8 +652,8 @@ type soloroutineSync struct {   // A general-purpose, but slow, function call.
     fn       interface{}
     args     []interface{}
     done     sync.Mutex  // Use a mutex instead of a channel for performance (turns out to be only very minor improvement).  Requires some very special handling.
-    returns []interface{}
-    panik  interface{}
+    returns  []interface{}
+    panik    interface{}
 }
 func (r *soloroutineSync) Run() {
     defer func(){
@@ -685,31 +715,86 @@ func (r *soloroutineAsync0) Run() {
     r.fn()
 }
 func (u *Soloroutine) Async(onPanic func(interface{}), fn func()) {  // 4x faster than Sync().  Still 100x slower than direct.
+    // NOTE: This function will block if the 'inCh' is full.
     r:=&soloroutineAsync0{fn:fn, onPanic:onPanic}
     if runtime.getg().m.curg.goid==u.goid { r.Run(); return }
     u.inCh<-r
 }
+func (u *Soloroutine) SetTimeout(fn func(), d time.Duration) {  // For now, I don't support timeout cancelations, mostly because time.Timer is a racey piece of crap, and also because i haven't needed them.
+    // This is guaranteed to not block, so it's safe for queuing future work from within the same Soloroutine.
+    go func() {
+        if d>0 { time.Sleep(d) }
+        u.Async(nil,fn)
+    }()
+}
+
+type Debouncer struct {
+    sync.Mutex
+    fn             func()
+    delay          time.Duration
+    futureCallTime time.Time
+    running        bool
+}
+func NewDebouncer(fn func(), delay time.Duration) *Debouncer { return &Debouncer{fn:fn, delay:delay} }
+func (d *Debouncer) Call() {
+    d.Lock(); defer d.Unlock()
+    d.futureCallTime=time.Now().Add(d.delay)
+    if !d.running {
+        d.running=true
+        go func() {
+            defer d.Unlock()
+            for {
+                d.Lock()
+                now:=time.Now()
+                if now.Before(d.futureCallTime) {
+                    d.Unlock()
+                    time.Sleep(d.futureCallTime.Sub(now))
+                    continue
+                }
+                break
+            }
+            d.running=false
+            d.fn()
+        }()
+    }
+}
+
 
 func LOG_ERR(e interface{}) { fmt.Fprintln(os.Stderr, e) }
 
+type DB interface {
+    Solo() *Soloroutine
+    OnD(callback,data interface{})
+    OffD(data interface{})
+    Exists(id string, callback func(bool))
+    ExistsB(id string, callback func(bool), doNotWaitReady bool)
+    ListIDs(callback func([]string))
+    GetState(id string, onSuccess func(*State,string), onError func(interface{}))
+    GetStateAutocreate(id string, defaultData interface{}, onSuccess func(*State,string), onError func(interface{}))
+    CreateState(id string, state *State, onSuccess func(*State,string), onError func(interface{}))
+    CreateStateB(id string, state *State, onSuccess func(*State,string), onError func(interface{}), doNotWaitReady bool)
+    DeleteState(id string, onSuccess func(*State,string), onError func(interface{}))
+}
+
 type RamDB struct {
-    Solo    *Soloroutine
+    solo    *Soloroutine
     states  map[string]*State
     ready   *ReadyT
     disp    *Dispatcher
 }
 func NewRamDB(solo *Soloroutine, data interface{}) *RamDB {
     if solo==nil {solo=GSolo}
-    db:=&RamDB{ Solo:solo, states:make(map[string]*State), ready:NewReady(), disp:&Dispatcher{} }
-    db.Solo.Sync(func() {
+    db:=&RamDB{ solo:solo, states:make(map[string]*State), ready:NewReady(), disp:&Dispatcher{} }
+    db.solo.Sync(func() {
         db.ready.NotReady("READY")
         db.importData(data)
         db.ready.OnReady("RamDB.importData", func(){ db.ready.Ready("READY") })
     })
     return db
 }
+func (db *RamDB) Solo() *Soloroutine { return db.solo }
 func (db *RamDB) importData(data interface{}) {
-    db.Solo.Sync(func(){
+    db.solo.Sync(func(){
         if data==nil { db.ready.Ready("RamDB.importData"); return }
         dataV:=reflect.ValueOf(data); dataG:=G(dataV)
         db.ready.NotReady("RamDB.importData")
@@ -740,30 +825,30 @@ func (db *RamDB) importData(data interface{}) {
     })
 }
 func (db *RamDB) exportData() (out map[string]*State) {
-    db.Solo.Sync(func() {
+    db.solo.Sync(func() {
         out=make(map[string]*State,len(db.states))
         for k,v:=range db.states { out[k]=v }
     })
     return
 }
 func (db *RamDB) OnD(callback,data interface{}) {
-    db.Solo.Sync(func() {
+    db.solo.Sync(func() {
         db.disp.OnD(callback,db,data)
     })
 }
-func (db *RamDB) OffD(callback,data interface{}) {
-    db.Solo.Sync(func() {
-        db.disp.OffD(callback,data)
+func (db *RamDB) OffD(data interface{}) {
+    db.solo.Sync(func() {
+        db.disp.OffD(db,data)
     })
 }
 func (db *RamDB) stateCallback(state *State, op string, data interface{}, id string) {
-    db.Solo.Sync(func() {
+    db.solo.Sync(func() {
         db.disp.Fire(id,state,op,data)
     })
 }
 func (db *RamDB) Exists(id string, callback func(bool)) { db.ExistsB(id,callback,false) }
 func (db *RamDB) ExistsB(id string, callback func(bool), doNotWaitReady bool) {
-    db.Solo.Async(nil, func() {
+    db.solo.Async(nil, func() {
         afterReady:=func() {
             _,has:=db.states[id]
             if callback!=nil { callback(has) }
@@ -773,7 +858,7 @@ func (db *RamDB) ExistsB(id string, callback func(bool), doNotWaitReady bool) {
     })
 }
 func (db *RamDB) ListIDs(callback func([]string)) {
-    db.Solo.Async(nil, func() {
+    db.solo.Async(nil, func() {
         db.ready.OnReady("READY", func() {
             keys:=make([]string,0,len(db.states)); for k:=range db.states { keys=append(keys,k) }
             if callback!=nil { callback(keys) }
@@ -781,7 +866,7 @@ func (db *RamDB) ListIDs(callback func([]string)) {
     })
 }
 func (db *RamDB) GetState(id string, onSuccess func(*State,string), onError func(interface{})) {
-    db.Solo.Async(onError, func() {
+    db.solo.Async(onError, func() {
         db.ready.OnReady("READY", func() {
             state,has:=db.states[id]
             if !has {
@@ -834,8 +919,4 @@ func (db *RamDB) DeleteState(id string, onSuccess func(*State,string), onError f
         if onSuccess!=nil { onSuccess(state,id) }
     })
 }
-
-
-
-
 
