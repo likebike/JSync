@@ -8,6 +8,8 @@ package JSync
 
 import (
     "seb"
+    "seb/dyn"
+    "seb/solo"
     "encoding/json"
     "unicode/utf8"
     "regexp"
@@ -18,10 +20,9 @@ import (
     "strconv"
     "fmt"
     "os"
-    "runtime"
-    "runtime/debug"
     "errors"
 )
+type D=dyn.D
 
 func init() { rand.Seed(time.Now().UnixNano()) }  // The math/rand uses a constant seed by default.
 
@@ -110,132 +111,6 @@ func DSHash(s string) string { // The Down Syndrome Hash algorithm, translated f
 }
 
 
-type G reflect.Value   // 'G' for Generic.  I choose this type definition instead of struct embedding because casting has no runtime cost, and (to me) it's easier for this situation.
-func GOf(x interface{}) G { return G(reflect.ValueOf(x)) }
-func (g G) GetOrPanic(key interface{}) (val interface{}) {
-    return g.GetVOrPanic(key).Interface()   // I think it's still possible for nil values to sneak thru.  Waiting for a real-life example so I can improve this...
-}
-func (g G) GetGOrPanic(key interface{}) G { return G(g.GetVOrPanic(key)) }
-func (g G) GetVOrPanic(key interface{}) reflect.Value {
-    switch reflect.Value(g).Kind() {
-    case reflect.Slice, reflect.Array, reflect.String: return reflect.Value(g).Index(key.(int))
-    case reflect.Struct:
-        v:=reflect.Value(g).FieldByName(key.(string))
-        if !v.IsValid() { panic("KeyError") }
-        return v
-    case reflect.Map:
-        v:=reflect.Value(g).MapIndex(reflect.ValueOf(key))
-        if !v.IsValid() { panic("KeyError") }
-        return v
-    default: panic("Unknown kind: "+reflect.Value(g).Kind().String())
-    }
-}
-func (g G) Get(key interface{}) (val interface{}, has bool) {
-    V,has:=g.GetV(key); if has { val=V.Interface() }
-    return
-}
-func (g G) GetG(key interface{}) (G,bool) { V,has:=g.GetV(key); return G(V),has }
-func (g G) GetV(key interface{}) (val reflect.Value, has bool) {
-    // I foresee a problem when using Index() on a struct: A field will have 'has=true' even when the value is nil or Zero... But on the JS side it would have 'has=false'.  I'll need a real-life test case to know how to handle this scenario.  I guess the "easy answer" is to just use maps for those situations.
-    defer func(){ e:=recover(); if e!=nil { val,has=reflect.ValueOf(0),false } }()
-    return g.GetVOrPanic(key),true
-}
-func (g G) GetDefault(key interface{}, dflt interface{}) (val interface{}) {
-    val,has:=g.Get(key); if !has { val=dflt }
-    return
-}
-func (g G) Keys() (keys []interface{}) {
-    switch reflect.Value(g).Kind() {
-    case reflect.Slice, reflect.Array, reflect.String:
-        for i,ii:=0,reflect.Value(g).Len(); i<ii; i++ { keys=append(keys,i) }
-    case reflect.Struct:
-        typ:=reflect.Value(g).Type()
-        for i,ii:=0,typ.NumField(); i<ii; i++ { keys=append(keys,typ.Field(i).Name) }
-    case reflect.Map:
-        for _,kV:=range reflect.Value(g).MapKeys() { keys=append(keys,kV.Interface()) }
-    default: panic("Unknown kind: "+reflect.Value(g).Kind().String())
-    }
-    return
-}
-func (g G) Each(fn func(k,v interface{})) {
-    switch reflect.Value(g).Kind() {
-    case reflect.Slice, reflect.Array, reflect.String:
-        for i,ii:=0,reflect.Value(g).Len(); i<ii; i++ { fn(i,reflect.Value(g).Index(i)) }
-    case reflect.Struct:
-        typ:=reflect.Value(g).Type()
-        for i,ii:=0,typ.NumField(); i<ii; i++ {
-            n:=typ.Field(i).Name
-            fn(n,reflect.Value(g).FieldByName(n))
-        }
-    case reflect.Map:
-        for _,kV:=range reflect.Value(g).MapKeys() { fn(kV,reflect.Value(g).MapIndex(kV)) }
-    default: panic("Unknown kind: "+reflect.Value(g).Kind().String())
-    }
-}
-func (g G) Set(key,value interface{}) {
-    V,has:=g.GetV(key)
-    switch reflect.Value(g).Kind() {
-    case reflect.Array,reflect.Struct:
-        if !has { panic("Immutable structure!") }
-        V.Set(reflect.ValueOf(value))
-    case reflect.Slice:
-        if has { V.Set(reflect.ValueOf(value))
-        } else {
-            if key.(int)!=reflect.Value(g).Len() { panic("Non-Append Slice SetIndex!") }
-            reflect.Value(g).Set(reflect.Append(reflect.Value(g),reflect.ValueOf(value)))
-        }
-    case reflect.Map: reflect.Value(g).SetMapIndex(reflect.ValueOf(key),reflect.ValueOf(value))
-    default: panic("Unsupport Kind: "+reflect.Value(g).Kind().String())
-    }
-}
-func (g G) Del(key interface{}) {
-    switch reflect.Value(g).Kind() {
-    case reflect.Array,reflect.Struct: panic("Immutable structure!")
-    case reflect.Slice:
-        length:=reflect.Value(g).Len()
-        if key.(int)!=length-1 { panic("Non-Pop Slice DelIndex!") }
-        reflect.Value(g).Set(reflect.Value(g).Slice(0,length-1))
-    case reflect.Map: reflect.Value(g).SetMapIndex(reflect.ValueOf(key),reflect.Value{})
-    default: panic("Unsupport Kind: "+reflect.Value(g).Kind().String())
-    }
-}
-func (g G) SliceInsert(key,value interface{}) {
-    if reflect.Value(g).Kind()!=reflect.Slice { panic("Expected a Slice!") }
-    keyI:=key.(int)
-    if keyI<0 || reflect.Value(g).Len()<keyI { panic("IndexError") }
-    // Here's what I'm doing:  s=append(s,0); copy(s[i+1:],s[i:]); s[i]=x
-    V:=reflect.ValueOf(value)
-    reflect.Value(g).Set(reflect.Append(reflect.Value(g),V))  // Just use 'V' since it's more convenient than creating a Zero.
-    reflect.Copy( reflect.Value(g).Slice(keyI+1,reflect.Value(g).Len()) , reflect.Value(g).Slice(keyI,reflect.Value(g).Len()) )
-    g.GetVOrPanic(key).Set(V)
-}
-func (g G) SliceRemove(key interface{}) {
-    if reflect.Value(g).Kind()!=reflect.Slice { panic("Expected a Slice!") }
-    keyI:=key.(int)
-    if keyI<0 || reflect.Value(g).Len()-1<keyI { panic("IndexError") }
-    // Here's what I'm doing: s=append(s[:i], s[i+1:]...)
-    reflect.Value(g).Set( reflect.AppendSlice( reflect.Value(g).Slice(0,keyI) , reflect.Value(g).Slice(keyI+1,reflect.Value(g).Len()) ) )
-}
-
-func Call(fn interface{}, args ...interface{}) []interface{} {
-    argsV:=make([]reflect.Value, len(args))
-    for i,a:=range args { argsV[i]=reflect.ValueOf(a) }
-    resultV:=CallV(fn,argsV...)
-    result:=make([]interface{}, len(resultV))
-    for i,r:=range resultV { result[i]=r.Interface() }
-    return result
-}
-func CallV(fn interface{}, args ...reflect.Value) []reflect.Value {
-    fnValue:=reflect.ValueOf(fn); fnType:=fnValue.Type()
-    numArgs:=fnType.NumIn(); if fnType.IsVariadic() { numArgs=len(args) }
-    fnArgs:=make([]reflect.Value, numArgs)
-    for i:=range fnArgs {
-        if i<len(args) { fnArgs[i]=args[i]
-
-        } else { fnArgs[i]=reflect.Zero(fnType.In(i)) }
-    }
-    return fnValue.Call(fnArgs)
-}
 
 type M map[string]interface{}
 func (m M) Extend(ms ...M) M {
@@ -245,16 +120,9 @@ func (m M) Extend(ms ...M) M {
     return m
 }
 
-func Deref(o reflect.Value) reflect.Value {
-    for kind:=o.Kind(); kind==reflect.Ptr || kind==reflect.Interface; kind=o.Kind() {
-        //fmt.Println("Deref:",o,"-->",o.Elem())
-        o=o.Elem()
-    }
-    return o
-}
 func TargetV(o reflect.Value, path []interface{}) reflect.Value {
-    o=Deref(o)
-    for _,p:=range path { o=Deref(G(o).GetVOrPanic(p)) }
+    o=dyn.Deref(o)
+    for _,p:=range path { o=dyn.Deref(D(o).GetVOrPanic(p)) }
     return o
 }
 func Target(o interface{}, path []interface{}) interface{} { return TargetV(reflect.ValueOf(o), path).Interface() }
@@ -317,27 +185,27 @@ func Edit(obj interface{}, operations Operations) Delta {  // racey!  You need t
         case "create","update","update!":
             if key==nil { panic("nil key!") }
             if value==nil { panic("nil value!") }  // If you want to set something to undefined, just delete instead.
-            I,has:=G(target).Get(key)
+            I,has:=D(target).Get(key)
             if op=="update!" {
                 if has { op="update" } else { op="create" }
             }
             if op=="create" {
                 if has { panic(fmt.Sprintf("Already in target: %#v",key)) }
-                G(target).Set(key,value)
+                D(target).Set(key,value)
 
                 steps=append(steps,DeltaStep{Op:op, Path:path, Key:key, After:DeepCopy(value)})
             } else if op=="update" {
                 if !has { panic(fmt.Sprintf("Not in target: %#v",key)) }
                 before:=DeepCopy(I)
                 // We do NOT check if 'before' and 'after' are equal, or try to detect NOOP operations (setting the same value that already exists, etc.).  Logical linearity is more important than saving a few steps.
-                G(target).Set(key,value)
+                D(target).Set(key,value)
                 steps=append(steps,DeltaStep{Op:op, Path:path, Key:key, Before:before, After:DeepCopy(value)})
             } else { panic("Inconceivable!") }
         case "delete":
             if key==nil { panic("nil key!") }
-            I,has:=G(target).Get(key); if !has { panic(fmt.Sprintf("Not in target: %#v",key)) }
+            I,has:=D(target).Get(key); if !has { panic(fmt.Sprintf("Not in target: %#v",key)) }
             before:=DeepCopy(I)
-            G(target).Del(key)
+            D(target).Del(key)
             steps=append(steps,DeltaStep{Op:op, Path:path, Key:key, Before:before})
         case "arrayPush":
             if key!=nil { panic("arrayPush: Expected key to be nil!") }
@@ -349,7 +217,7 @@ func Edit(obj interface{}, operations Operations) Delta {  // racey!  You need t
             if key==nil { panic("nil key!") }
             if value==nil { panic("nil value!") }
             if !isInt(key) { panic("Expected an int key!") }
-            G(target).SliceInsert(key,value)
+            D(target).SliceInsert(key,value)
             steps=append(steps,DeltaStep{Op:op, Path:path, Key:key, After:DeepCopy(value)})
         case "arrayPop":
             if key!=nil { panic("arrayPop: Expected key to be nil!") }
@@ -361,8 +229,8 @@ func Edit(obj interface{}, operations Operations) Delta {  // racey!  You need t
             if key==nil { panic("nil key!") }
             if value!=nil { panic("non-nil value!") }
             if !isInt(key) { panic("Expected an int key!") }
-            before:=DeepCopy(G(target).GetOrPanic(key))
-            G(target).SliceRemove(key)
+            before:=DeepCopy(D(target).GetOrPanic(key))
+            D(target).SliceRemove(key)
             steps=append(steps,DeltaStep{Op:op, Path:path, Key:key, Before:before})
         default: panic("Illegal operation: "+op)
         }
@@ -424,7 +292,7 @@ func ApplyDeltaBB(obj interface{}, delta Delta, doNotCheckStartHash,doNotCheckEn
         target:=TargetV(reflect.ValueOf(obj), step.Path)
         switch step.Op {
         case "create","update","delete":
-            V,has:=G(target).GetV(step.Key)
+            V,has:=D(target).GetV(step.Key)
             if step.Before!=nil {
                 if !has { panic(fmt.Sprintf("Not in target: %#v",step.Key)) }
                 if Stringify(V.Interface())!=Stringify(step.Before) { panic("Before value did not match!") }
@@ -433,18 +301,18 @@ func ApplyDeltaBB(obj interface{}, delta Delta, doNotCheckStartHash,doNotCheckEn
             }
 
             if step.After!=nil {
-                G(target).Set(step.Key,DeepCopy(step.After))  // Use DeepCopy to avoid external mutation.
+                D(target).Set(step.Key,DeepCopy(step.After))  // Use DeepCopy to avoid external mutation.
             } else {
                 if has {
-                    G(target).Del(step.Key)
+                    D(target).Del(step.Key)
                 }
             }
         case "arrayInsert":
             if step.After==nil { panic("Undefined After!") }
-            G(target).SliceInsert(step.Key,step.After)
+            D(target).SliceInsert(step.Key,step.After)
         case "arrayRemove":
-            if Stringify(G(target).GetOrPanic(step.Key))!=Stringify(step.Before) { panic("Slice Before value mismatch!") }
-            G(target).SliceRemove(step.Key)
+            if Stringify(D(target).GetOrPanic(step.Key))!=Stringify(step.Before) { panic("Slice Before value mismatch!") }
+            D(target).SliceRemove(step.Key)
         default: panic("Illegal operation: "+step.Op)
         }
     }
@@ -505,7 +373,7 @@ func (d *Dispatcher) Fire(args ...interface{}) {
     argsV:=make([]reflect.Value,len(args)); for i:=range args { argsV[i]=reflect.ValueOf(args[i]) }
     for _,l:=range append([]Listener{}, d.listeners...) {  // Make a copy because listeners can be modified from the event handlers (like removal of one-shot handlers).
         largsV:=argsV; if l.Data!=nil { largsV=append(largsV,reflect.ValueOf(l.Data)) }
-        CallV(l.CB, largsV...)
+        dyn.CallV(l.CB, largsV...)
     }
 }
 
@@ -527,13 +395,13 @@ func (s *State) OffD(cbCmp,data interface{}) { s.Disp.OffD(cbCmp,data) }
 func (s *State) Reset(data interface{}) {
     //s.Lock(); defer s.Unlock()
     if data!=nil { s.Data=data
-    } else { s.Data=make(map[interface{}]interface{}) }
+    } else { s.Data=make(map[string]interface{}) }
     s.Disp.Fire(s,"reset")
 }
 func (s *State) Edit(operations Operations) {
     //s.Lock(); defer s.Unlock()
     if len(operations)==0 { return }  // Skip noops.
-    delta:=Edit(s.Data,operations)
+    delta:=Edit(s.Data, operations)
     s.Disp.Fire(s,"delta",delta)
 }
 func (s *State) ApplyDelta(delta Delta) {
@@ -628,109 +496,7 @@ func (R *ReadyT) OffNotReady(name string, callback ReadyCB) {
 // Note, i could improve the performance of the initial "entry call" (no improvement for recursive calls) by converting the whole infrastructure to a async-callback thing.  Basically, i'd get rid of the central goroutine, and instead structure the thing so that it would use whatever goroutine calls it.  The lucky caller would suddenly become the master goroutine until all the work was processesed, then it would be free to go back to its normal life.  This would require a complete consistent structure thru all users.  It's a high price, but it would get me very close to native speeds, while supporting advanced cool stuff like bidirectional generators that are nearly as fast as a normal function call.
 // Response to the above comment: I think the better solution is to keep the current Soloroutine design because it contains the complexity so well.  Instead, focus on improving the performance of Go Channels by avoiding goroutine-parking.  Async() already helps a lot, but more can be done.  As long as you avoid parking, performance is not bad!
 
-var GSolo = NewSoloroutine() // Global Soloroutine
-
-type Runner interface { Run() }
-type Soloroutine struct {
-    inCh    chan Runner
-    goid    int64
-    stopped bool
-}
-func NewSoloroutine() *Soloroutine {
-    u:=&Soloroutine{inCh:make(chan Runner,64), goid:-1}  // Performance reaches a stable peak at 32.  Using 64 just for some extra buffer.
-    go func() {
-        u.goid=runtime.getg().m.curg.goid  // According to go/src/runtime/HACKING.md, we should use getg().m.curg instead of just getg() .
-        var r Runner; var ok bool
-        for {
-            if(runtime.getg().m.curg.goid!=u.goid) { fmt.Fprintln(os.Stderr, "Soloroutime: goid changed!") }  // Sanity check while developing.
-            r,ok=<-u.inCh; if !ok { break } // !ok means the channel has been closed.
-            r.Run()
-        }
-        u.stopped=true
-    }()
-    return u
-}
-func (u *Soloroutine) Stop() { close(u.inCh) }
-
-type soloroutineSync struct {   // A general-purpose, but slow, function call.
-    fn       interface{}
-    args     []interface{}
-    done     sync.Mutex  // Use a mutex instead of a channel for performance (turns out to be only very minor improvement).  Requires some very special handling.
-    returns  []interface{}
-    panik    interface{}
-}
-func (r *soloroutineSync) Run() {
-    defer func(){
-        if e:=recover(); e!=nil {
-            os.Stderr.Write(debug.Stack())  // Print the stack because we lose it by passing the result over the channel.
-            r.panik=e
-        }
-        r.done.Unlock()
-    }()
-    r.returns=Call(r.fn, r.args...)
-}
-func (u *Soloroutine) SyncSlow(fn interface{}, args ...interface{}) []interface{} {  // 1000x slower than a direct function call.
-    if runtime.getg().m.curg.goid==u.goid { return Call(fn, args...) }  // Allow fast recursion, while avoiding deadlock.
-    r:=&soloroutineSync{fn:fn, args:args}
-    r.done.Lock()
-    u.inCh<-r
-    r.done.Lock()//; r.done.Unlock()  // I never re-use 'done', so don't bother to Unlock.
-    if r.panik!=nil { panic(r.panik) }
-    return r.returns
-}
-
-func (u *Soloroutine) AsyncSlow(onPanic func(interface{}), fn interface{}, args ...interface{}) { panic("Not implemented yet.  Waiting for a real-life need.") }
-
-type soloroutineSync0 struct {  // A no-arg/no-return, but fast, function call.
-    fn      func()
-    done    sync.Mutex
-    panik interface{}
-}
-func (r *soloroutineSync0) Run() {
-    defer func() {
-        if e:=recover(); e!=nil {
-            os.Stderr.Write(debug.Stack())
-            r.panik=e
-        }
-        r.done.Unlock()
-    }()
-    r.fn()
-}
-func (u *Soloroutine) Sync(fn func()) {  // Almost 2x faster than SyncSlow().
-    if runtime.getg().m.curg.goid==u.goid { fn(); return }  // Very fast!  Only 2x slower than a direct function call.
-    r:=&soloroutineSync0{fn:fn}
-    r.done.Lock()
-    u.inCh<-r
-    r.done.Lock()//; r.done.Unlock()
-    if r.panik!=nil { panic(r.panik) }
-}
-
-type soloroutineAsync0 struct {
-    fn      func()
-    onPanic func(interface{})
-}
-func (r *soloroutineAsync0) Run() {
-    defer func() {
-        if e:=recover(); e!=nil {
-            if r.onPanic!=nil { r.onPanic(e)
-            } else { os.Stderr.Write(debug.Stack()) }
-        }
-    }()
-    r.fn()
-}
-func (u *Soloroutine) Async(onPanic func(interface{}), fn func()) {  // 4x faster than Sync().  Still 100x slower than direct.
-    // NOTE: This function will block if the 'inCh' is full.
-    r:=&soloroutineAsync0{fn:fn, onPanic:onPanic}
-    if runtime.getg().m.curg.goid==u.goid { r.Run(); return }
-    u.inCh<-r
-}
-func (u *Soloroutine) SetTimeout(fn func(), d time.Duration) {  // For now, I don't support timeout cancelations, mostly because time.Timer is a racey piece of crap, and also because i haven't needed them.
-    // This is guaranteed to not block, so it's safe for queuing future work from within the same Soloroutine.
-    go func() {
-        if d>0 { time.Sleep(d) }
-        u.Async(nil,fn)
-    }()
-}
+var GSolo = solo.NewSoloroutine() // Global Soloroutine
 
 type Debouncer struct {
     sync.Mutex
@@ -767,7 +533,7 @@ func (d *Debouncer) Call() {
 func LOG_ERR(e interface{}) { fmt.Fprintln(os.Stderr, e) }
 
 type DB interface {
-    Solo() *Soloroutine
+    Solo() *solo.Soloroutine
     OnD(callback,data interface{})
     OffD(data interface{})
     Exists(id string, callback func(bool))
@@ -781,12 +547,12 @@ type DB interface {
 }
 
 type RamDB struct {
-    solo    *Soloroutine
+    solo    *solo.Soloroutine
     states  map[string]*State
     ready   *ReadyT
     disp    *Dispatcher
 }
-func NewRamDB(solo *Soloroutine, data interface{}) *RamDB {
+func NewRamDB(solo *solo.Soloroutine, data interface{}) *RamDB {
     if solo==nil {solo=GSolo}
     db:=&RamDB{ solo:solo, states:make(map[string]*State), ready:NewReady(), disp:&Dispatcher{} }
     db.solo.Sync(func() {
@@ -796,11 +562,11 @@ func NewRamDB(solo *Soloroutine, data interface{}) *RamDB {
     })
     return db
 }
-func (db *RamDB) Solo() *Soloroutine { return db.solo }
+func (db *RamDB) Solo() *solo.Soloroutine { return db.solo }
 func (db *RamDB) importData(data interface{}) {
     db.solo.Sync(func(){
         if data==nil { db.ready.Ready("RamDB.importData"); return }
-        dataV:=reflect.ValueOf(data); dataG:=G(dataV)
+        dataV:=reflect.ValueOf(data); dataD:=D(dataV)
         db.ready.NotReady("RamDB.importData")
         create:=func(id string, state *State, next func(interface{},error)) {
             var out interface{}; out=nil; var err error; err=nil  // Don't make the mistake of initializing these to interface{}(nil) or error(nil) because then they won't really be nil.
@@ -823,8 +589,8 @@ func (db *RamDB) importData(data interface{}) {
                 },
                 true)  // 'true' tells createState not to wait for READY, so we don't deadlock.
         }
-        keys:=dataG.Keys(); steps:=make([]SlideFn,0,len(keys))
-        for _,id:=range keys { steps=append(steps,SlideFn{fn:create, args:[]interface{}{id, dataG.GetOrPanic(id)}}) }
+        keys:=dataD.Keys(); steps:=make([]SlideFn,0,len(keys))
+        for _,id:=range keys { steps=append(steps,SlideFn{fn:create, args:[]interface{}{id, dataD.GetOrPanic(id)}}) }
         SlideChain(steps, func([]interface{},error){ db.ready.Ready("RamDB.importData") })
     })
 }

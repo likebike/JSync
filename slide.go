@@ -1,5 +1,9 @@
 package JSync  // I'm using the JSync package with a 'Slide' prefix so I don't need to restructure my code for a subpackage.
 
+import (
+    "seb/dyn"
+)
+
 // See slide.js for commentary.
 
 // I made a general change: I place the 'error' return value as the last value instead of the first value, to fit better into the Go ecosystem.
@@ -11,7 +15,7 @@ type SlideFn struct {
     fn   interface{}
     args []interface{}
 }
-func (s SlideFn) Call(next SlideNext) { Call(s.fn, append(s.args,next)...) }
+func (s SlideFn) Call(next SlideNext) { dyn.Call(s.fn, append(s.args,next)...) }
 
 func SlideChain(steps []SlideFn, cb func(results []interface{}, err error)) {
     if cb==nil { cb=func([]interface{},error){} }

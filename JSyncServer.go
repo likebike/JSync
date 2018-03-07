@@ -1,13 +1,26 @@
 package JSync
 
 import (
+    "seb/dyn"
+    sebHttp "seb/http"
     "fmt"
     "errors"
     "os"
     "time"
+    "net/http"
 )
+var DOf=dyn.DOf
 
 // I haven't implemented FileDB or DirDB yet -- I haven't needed them.
+
+
+
+func setJsonResponseHeaders(res http.ResponseWriter) {
+    res.Header().Set("Content-Type","application/json")
+    res.Header().Set("Cache-Control","no-cache, must-revalidate")
+}
+
+
 
 type OpHandler func(clientID string, data M, next func(result M))
 type Receive struct {
@@ -25,7 +38,14 @@ func NewCometServer(db DB) (s *CometServer) {
     s=&CometServer{LongPollTimeout:100*time.Second, ConnectionStaleTime:5*time.Minute, DisposableQueueSizeLimit:200, receives:make(map[string]*Receive)}
     s.SetDB(db)
     s.InstallOpHandlers()
-    s.runRemoveStaleClients()
+
+    go func() {  // I'm putting this function inline instead of as a method because if it's a method, it implies that it might be called more than once, and then I'd need a tracking variable to tell me if it's running or not.  This structure defines that it's only run once.
+        for {
+            time.Sleep(10*time.Second)
+            s.removeStaleClients()
+        }
+    }()
+
     return s
 }
 func (s *CometServer) SetDB(db DB) {
@@ -67,41 +87,48 @@ func (s *CometServer) InstallOpHandlers() {
         reply(data) // Send a Delayed reply.
     })
 }
-type BrowserInfoT struct { BrowserID string; Clients map[string]bool }
-func (s *CometServer) BrowserInfo(browserID string, callback func(*BrowserInfoT)) {
+type BrowserState struct {
+    Atime     time.Time
+}
+type BrowserInfo struct {
+    BrowserID string
+    Clients   map[string]bool
+}
+func (s *CometServer) BrowserInfo(browserID string, callback func(*BrowserInfo)) {
     if browserID=="" { callback(nil); return }
     s.DB.GetState("browsers", func(browsers *State, _ string) {
-        infoInterface,has:=GOf(browsers.Data).Get(browserID)
+        _,has:=DOf(browsers.Data).Get(browserID)
         if !has { callback(nil); return }
-        info:=DeepCopy(infoInterface).(BrowserInfoT)  // Prevent external mutation.
-        info.BrowserID=browserID
-        info.Clients=map[string]bool{}
+        info:=BrowserInfo{BrowserID:browserID, Clients:make(map[string]bool)}
         s.DB.GetState("clients", func(clients *State, _ string) {
-            clientsDataG:=GOf(clients.Data)
-            for _,clientID:=range clientsDataG.Keys() {
-                if clientsDataG.GetGOrPanic(clientID).GetDefault("browserID",nil)==browserID { info.Clients[clientID.(string)]=true }
+            clientsDataD:=DOf(clients.Data)
+            for _,clientID:=range clientsDataD.Keys() {
+                if clientsDataD.GetDOrPanic(clientID).GetDefault("browserID",nil)==browserID { info.Clients[clientID.(string)]=true }
             }
             callback(&info)
         }, nil)
     }, nil)
 }
-type ClientInfoT struct { BrowserID,ClientID string }
-func (s *CometServer) ClientInfoSync(clientID string, clientsState *State) *ClientInfoT {
+type ClientState struct {
+    BrowserID string
+    ReceiveQ  []M
+    Atime     time.Time
+}
+type ClientInfo struct {
+    BrowserID,ClientID string
+}
+func (s *CometServer) ClientInfoSync(clientID string, clientsState *State) *ClientInfo {
     if clientID=="" { return nil }
-    c,has:=GOf(clientsState.Data).GetG(clientID); if !has { return nil }
-    info:=ClientInfoT{BrowserID:c.GetOrPanic("browserID").(string), ClientID:clientID}
+    c,has:=DOf(clientsState.Data).GetD(clientID); if !has { return nil }
+    info:=ClientInfo{BrowserID:c.GetOrPanic("BrowserID").(string), ClientID:clientID}
     // In the future, I might also want to fetch the 'browsers' state and inclue some info from there, but right now, it's just blank objects.
     // Might also want to include a list of other clientIDs that have the same browserID...
     return &info
 }
-func (s *CometServer) ClientInfo(clientID string, callback func(*ClientInfoT)) {
+func (s *CometServer) ClientInfo(clientID string, callback func(*ClientInfo)) {
     s.DB.GetState("clients", func(clients *State, _ string) { if callback!=nil { callback(s.ClientInfoSync(clientID,clients)) } }, nil)
 }
-type ClientState struct {
-    BrowserID string
-    ReceiveQ  []M
-}
-func (s *CometServer) ClientConnect(browserID,requestedClientID string, onSuccess func(ClientInfoT), onError func(interface{})) {
+func (s *CometServer) ClientConnect(browserID,requestedClientID string, onSuccess func(ClientInfo), onError func(interface{})) {
     s.DB.GetState("clients", func(clients *State, _ string) {
         clientID:=func() string {
             if requestedClientID=="" { return "" }
@@ -114,13 +141,13 @@ func (s *CometServer) ClientConnect(browserID,requestedClientID string, onSucces
         if clientID=="" { clientID=_newID(-1,clients.Data) }
         if rcv,has:=s.receives[clientID]; has { rcv.Shutdown(true) }  // Check for an existing connection with the same clientID and hijack it ('true').
         fmt.Fprintln(os.Stderr, "Connected: browserID="+browserID, "clientID="+clientID)
-        if _,has:=GOf(clients.Data).GetV(clientID); !has { clients.Edit(Operations{ {Op:"create", Key:clientID, Value:ClientState{BrowserID:browserID}} }) }
-        s.touchClient(clientID, func(){onSuccess(ClientInfoT{BrowserID:browserID,ClientID:clientID})}, onError)
+        if _,has:=DOf(clients.Data).GetV(clientID); !has { clients.Edit(Operations{ {Op:"create", Key:clientID, Value:&ClientState{BrowserID:browserID}} }) }
+        s.touchClient(clientID, func(){onSuccess(ClientInfo{BrowserID:browserID,ClientID:clientID})}, onError)
     }, onError)
 }
 func (s *CometServer) ClientDisconnect(clientID string, onSuccess func(), onError func(interface{})) {
     s.DB.GetState("clients", func(clients *State, _ string) {
-        if _,has:=GOf(clients.Data).GetV(clientID); !has {
+        if _,has:=DOf(clients.Data).GetV(clientID); !has {
             if onError==nil { onError=LOG_ERR }
             onError(errors.New("clientID not found: "+clientID))
             return
@@ -134,14 +161,11 @@ func (s *CometServer) removeClient(clientsState *State, clientID string) {
     if _,has:=s.receives[clientID]; has { fmt.Fprintln(os.Stderr, "CometServer shutdown(0 did not remove receives[clientID] !") }
     clientsState.Edit(Operations{ {Op:"delete", Key:clientID} })
 }
-func (s *CometServer) runRemoveStaleClients() {
-    panic("TODO")
-}
 func (s *CometServer) removeStaleClients() {
     s.DB.GetState("clients", func(clients *State, _ string) {
         curTime:=time.Now()
-        for _,clientID:=range GOf(clients.Data).Keys() {
-            if curTime.Sub(GOf(clients.Data).GetGOrPanic(clientID).GetOrPanic("Atime").(time.Time)) > s.ConnectionStaleTime {
+        for _,clientID:=range DOf(clients.Data).Keys() {
+            if curTime.Sub(DOf(clients.Data).GetDOrPanic(clientID).Deref().GetOrPanic("Atime").(time.Time)) > s.ConnectionStaleTime {
                 fmt.Fprintln(os.Stderr, "Removing Stale Client:", clientID)
                 s.removeClient(clients, clientID.(string))
             }
@@ -153,7 +177,7 @@ func (s *CometServer) touchClient(clientID string, onSuccess func(), onError fun
         now:=time.Now()
         clients.Edit(Operations{ {Op:"update!", Path:[]interface{}{clientID}, Key:"Atime", Value:now } })
         s.DB.GetState("browsers", func(browsers *State, _ string) {
-            browsers.Edit(Operations{ {Op:"update!", Path:[]interface{}{GOf(clients.Data).GetOrPanic("browserID")}, Key:"Atime", Value:now} })
+            browsers.Edit(Operations{ {Op:"update!", Path:[]interface{}{DOf(clients.Data).GetOrPanic(clientID).(*ClientState).BrowserID}, Key:"Atime", Value:now} })
             if onSuccess!=nil { onSuccess() }
         }, onError)
     }, onError)
@@ -199,7 +223,7 @@ func (s *CometServer) ClientSend(clientID string, bundle []M, onSuccess func([]M
 }
 func (s *CometServer) AddToReceiveQ(clientID string, data M) {
     s.DB.GetState("clients", func(clients *State, _ string) {
-        c,has:=GOf(clients.Data).Get(clientID);  C:=c.(ClientState)
+        c,has:=DOf(clients.Data).Get(clientID);  C:=c.(*ClientState)
         if !has { return }  // The client disconnected while we were sending data to them.  Discard the data.
         if data["_disposable"]==true {
             // This data is disposable.  Throw it out if the queue is already too long:
@@ -214,7 +238,7 @@ func Broadcast_includeAll(clientID string, data M, cb func(bool)) { cb(true) }  
 func (s *CometServer) Broadast(excludeConnIDs []string, shouldIncludeFunc func(clientID string, data M, cb func(bool)), data M) {
     excludeMap:=make(map[string]bool, len(excludeConnIDs)); for _,id:=range excludeConnIDs { excludeMap[id]=true }
     s.DB.GetState("clients", func(clients *State, _ string) {
-        GOf(clients.Data).Each(func(clientIDI,_ interface{}) {
+        DOf(clients.Data).Each(func(clientIDI,_ interface{}) {
             clientID:=clientIDI.(string)
             if excludeMap[clientID] { return }
             shouldIncludeFunc(clientID, data, func(shouldInclude bool) {
@@ -252,9 +276,9 @@ func (s *CometServer) ClientReceive(clientID string, onSuccess func([]M), onErro
     send := func() {
         s.DB.GetState("clients", func(clients *State, _ string) {
             if s.receives[clientID]!=myObj { return }  // The connection was already shut down.
-            c,has:=GOf(clients.Data).Get(clientID)
+            c,has:=DOf(clients.Data).Get(clientID)
             if !has { myObj.Shutdown(false); return }  // The client disconnected.  There's no point to send any data.  (Also, it would cause a "Path now found" exception in the edit() below.)  Just shut down the socket and stuff like that.
-            out=c.(ClientState).ReceiveQ
+            out=c.(*ClientState).ReceiveQ
             clients.Edit(Operations{ {Op:"update", Path:[]interface{}{clientID}, Key:"ReceiveQ", Value:nil} })
             myObj.Shutdown(false)
         }, onError)
@@ -273,9 +297,57 @@ fmt.Fprintln(os.Stderr, "Forcing send due to waitingCount")
 
     // Finally, if there is data already waiting, initiate the process:
     s.DB.GetState("clients", func(clients *State, _ string) {
-        curLen:=len(GOf(clients.Data).GetOrPanic(clientID).(ClientState).ReceiveQ)
+        curLen:=len(DOf(clients.Data).GetOrPanic(clientID).(*ClientState).ReceiveQ)
         if curLen>0 { myObj.DataIsWaiting(curLen) }
     }, onError)
+}
+
+
+
+type HttpInstallationOptions struct {
+    CookieSecret string
+}
+func InstallCometServerIntoHttpMux(comet *CometServer, mux *http.ServeMux, baseURL string, options HttpInstallationOptions) {
+    if baseURL=="" { panic(errors.New("Empty baseURL!")) }
+    if baseURL[0]!='/' { panic(errors.New("baseURL should start with '/'.")) }
+    if baseURL[len(baseURL)-1]=='/' { panic(errors.New("baseURL should not end with '/'.")) }
+    connect:=sebHttp.SoloroutineAsyncHandler{Solo:comet.DB.Solo(), Next:HttpHandlerFunc_connect(comet, options)}
+    mux.Handle(baseURL+"/connect", connect)
+    mux.Handle(baseURL+"/disconnect", connect)
+}
+func HttpHandlerFunc_connect(comet *CometServer, options HttpInstallationOptions) func(http.ResponseWriter, *http.Request, func(), func(interface{})) {
+    if options.CookieSecret=="" { panic("You must define options.CookieSecret!") }
+    return func(res http.ResponseWriter, req *http.Request, onSuccess func(), onError func(interface{})) {
+        afterWeHaveABrowserID:=func(browserID string) {
+            if err:=req.ParseForm(); err!=nil { onError(err); return }
+            opArray:=req.Form["op"]
+            if len(opArray)!=1 { onError(errors.New("Wrong number of ops!")); return }
+            clientIdArray:=req.Form["clientID"]; if len(clientIdArray)==0 { clientIdArray=req.Form["_clientID"] }  // '_clientID' is used by 'connect' to prevent 'ajax()' from waiting for connection.
+            if len(clientIdArray)!=1 { onError(errors.New("Wrong number of clientIDs!")); return }
+            clientID:=clientIdArray[0]
+            switch(opArray[0]) {
+            case "connect":
+                comet.ClientConnect(browserID, clientID, func(clientInfo ClientInfo) {
+                    setJsonResponseHeaders(res)
+                    res.Write([]byte(Stringify(clientInfo)))
+                    onSuccess()
+                }, onError)
+            case "disconnect":
+fmt.Println("DISCONNECT")
+            default:
+                onError(errors.New("Invalid op!"))
+                return
+            }
+        }
+        comet.DB.GetState("browsers", func(browsers *State, _ string) {
+            browserID:="0000"
+            func() {
+                defer func(){recover()}()  // "defer recover()"  doesn't work.
+                browsers.Edit(Operations{ {Op:"create", Key:browserID, Value:&BrowserState{}} })
+            }()
+            afterWeHaveABrowserID(browserID)
+        }, onError)
+    }
 }
 
 

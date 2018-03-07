@@ -1,7 +1,7 @@
 package main
 
 import (
-//    "JSync"
+    "JSync"
     "fmt"
     "net/http"
     "os"
@@ -13,7 +13,8 @@ func main() {
     wwwDir:=filepath.Join(myDir,"www")
     mux:=http.NewServeMux()
     mux.Handle("/", http.FileServer(http.Dir(wwwDir)))
-    //mux.HandleFunc("/rt/connect", 
+    comet:=JSync.NewCometServer(JSync.NewRamDB(JSync.GSolo, nil))
+    JSync.InstallCometServerIntoHttpMux(comet, mux, "/rt", JSync.HttpInstallationOptions{CookieSecret:"Gabriella"})
 
 
     bind:=":4040"
