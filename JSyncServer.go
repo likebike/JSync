@@ -15,6 +15,15 @@ var DOf=dyn.DOf
 
 
 
+func setCorsHeaders(req *http.Request, res http.ResponseWriter, options HttpInstallationOptions) {
+    res.Header().Set("Access-Control-Allow-Origin", func() string {
+        if o:=options.AccessControlAllowOrigin; o!="" { return o }
+        if o:=req.Header.Get("Origin"); o!="" { return o }
+        if r:=req.Header.Get("Referer"); r!="" { return r }
+        return "*"   // '*' isn't actually compatible with Access-Control-Allow-Credentials.
+    }())   // Allow cross-domain requests.  ...otherwise javascript can't see the status code (it sees 0 instead because it is not allows to see any data that is not granted access via CORS).   ///// NOTE 2015-08-01: Client requests do not contain the 'Origin' header because they are not cross-domain requests.  I am adding 'Referer' as another option.
+    res.Header().Set("Access-Control-Allow-Credentials", "true")   // Allow cross-domain cookies.  ...otherwise, javascript can't access the response body.
+}
 func setJsonResponseHeaders(res http.ResponseWriter) {
     res.Header().Set("Content-Type","application/json")
     res.Header().Set("Cache-Control","no-cache, must-revalidate")
@@ -103,7 +112,7 @@ func (s *CometServer) BrowserInfo(browserID string, callback func(*BrowserInfo))
         s.DB.GetState("clients", func(clients *State, _ string) {
             clientsDataD:=DOf(clients.Data)
             for _,clientID:=range clientsDataD.Keys() {
-                if clientsDataD.GetDOrPanic(clientID).GetDefault("browserID",nil)==browserID { info.Clients[clientID.(string)]=true }
+                if clientsDataD.GetOrPanic(clientID).(*ClientState).BrowserID==browserID { info.Clients[clientID.(string)]=true }
             }
             callback(&info)
         }, nil)
@@ -115,7 +124,8 @@ type ClientState struct {
     Atime     time.Time
 }
 type ClientInfo struct {
-    BrowserID,ClientID string
+    BrowserID string `json:"browserID"`
+    ClientID  string `json:"clientID"`
 }
 func (s *CometServer) ClientInfoSync(clientID string, clientsState *State) *ClientInfo {
     if clientID=="" { return nil }
@@ -139,7 +149,7 @@ func (s *CometServer) ClientConnect(browserID,requestedClientID string, onSucces
             return requestedClientID
         }()
         if clientID=="" { clientID=_newID(-1,clients.Data) }
-        if rcv,has:=s.receives[clientID]; has { rcv.Shutdown(true) }  // Check for an existing connection with the same clientID and hijack it ('true').
+        if rcv,has:=s.receives[clientID]; has { rcv.Shutdown(true) }  // Check for an existing connection with the same clientID and hijack it ('true').  'true' means that we are hijacking the previous connection, causing existing connections to be shut down and forcing existing clients to re-connect with a different clientID.
         fmt.Fprintln(os.Stderr, "Connected: browserID="+browserID, "clientID="+clientID)
         if _,has:=DOf(clients.Data).GetV(clientID); !has { clients.Edit(Operations{ {Op:"create", Key:clientID, Value:&ClientState{BrowserID:browserID}} }) }
         s.touchClient(clientID, func(){onSuccess(ClientInfo{BrowserID:browserID,ClientID:clientID})}, onError)
@@ -247,9 +257,11 @@ func (s *CometServer) Broadast(excludeConnIDs []string, shouldIncludeFunc func(c
         })
     }, nil)
 }
-type ClientIDWasHijacked struct {}
-func (e ClientIDWasHijacked) Error() string { return "clientID was hijacked!" }
-func (e ClientIDWasHijacked) StatusCode() int { return 452 }
+type ErrorWithStatusCode struct {                              //           /--- This 'onError'
+    Err        string                                          //           |    must handle
+    StatusCode int                                             //           |    ErrorWithStatusCode
+}                                                              //           |    errors specially.
+func (e ErrorWithStatusCode) Error() string { return e.Err }   //           v
 func (s *CometServer) ClientReceive(clientID string, onSuccess func([]M), onError func(interface{})) {
     s.touchClient(clientID,nil,nil)
 
@@ -268,7 +280,7 @@ func (s *CometServer) ClientReceive(clientID string, onSuccess func([]M), onErro
         myOut:=out
         out=nil  // So subsequent shutdown() calls don't freak out about data in 'out'.
         if hijacked {
-            onError(ClientIDWasHijacked{})
+            onError(ErrorWithStatusCode{"clientID was hijacked!", 452})
             return
         }
         onSuccess(myOut)
@@ -305,19 +317,22 @@ fmt.Fprintln(os.Stderr, "Forcing send due to waitingCount")
 
 
 type HttpInstallationOptions struct {
-    CookieSecret string
+    CookieSecret             string
+    AccessControlAllowOrigin string
 }
 func InstallCometServerIntoHttpMux(comet *CometServer, mux *http.ServeMux, baseURL string, options HttpInstallationOptions) {
     if baseURL=="" { panic(errors.New("Empty baseURL!")) }
     if baseURL[0]!='/' { panic(errors.New("baseURL should start with '/'.")) }
     if baseURL[len(baseURL)-1]=='/' { panic(errors.New("baseURL should not end with '/'.")) }
-    connect:=sebHttp.SoloroutineAsyncHandler{Solo:comet.DB.Solo(), Next:HttpHandlerFunc_connect(comet, options)}
-    mux.Handle(baseURL+"/connect", connect)
+    connect:=sebHttp.SoloroutineAsyncHandler{Solo:comet.DB.Solo(), Next:HttpHandler_connect(comet, options)}
+    mux.Handle(baseURL+"/connect",    connect)
     mux.Handle(baseURL+"/disconnect", connect)
+    mux.Handle(baseURL+"/receive",    sebHttp.SoloroutineAsyncHandler{Solo:comet.DB.Solo(), Next:HttpHandler_receive(comet, options)})
 }
-func HttpHandlerFunc_connect(comet *CometServer, options HttpInstallationOptions) func(http.ResponseWriter, *http.Request, func(), func(interface{})) {
+func HttpHandler_connect(comet *CometServer, options HttpInstallationOptions) func(http.ResponseWriter, *http.Request, func(), func(interface{})) {
     if options.CookieSecret=="" { panic("You must define options.CookieSecret!") }
     return func(res http.ResponseWriter, req *http.Request, onSuccess func(), onError func(interface{})) {
+        setCorsHeaders(req, res, options)
         afterWeHaveABrowserID:=func(browserID string) {
             if err:=req.ParseForm(); err!=nil { onError(err); return }
             opArray:=req.Form["op"]
@@ -348,6 +363,48 @@ fmt.Println("DISCONNECT")
             afterWeHaveABrowserID(browserID)
         }, onError)
     }
+}
+func JSyncHttpAuth(comet *CometServer, options HttpInstallationOptions, next func(string,string,http.ResponseWriter,*http.Request,func(),func(interface{}))) func(http.ResponseWriter,*http.Request,func(),func(interface{})) {
+    return func(res http.ResponseWriter, req *http.Request, onSuccess func(), onError func(interface{})) {
+        setCorsHeaders(req, res, options)
+        if err:=req.ParseForm(); err!=nil { onError(err); return }
+        clientIdArray:=req.Form["clientID"]
+        if len(clientIdArray)!=1 { onError(errors.New("Wrong number of clientIDs!")); return }
+        clientID:=clientIdArray[0]
+        browserID:="0000"
+        comet.BrowserInfo(browserID, func(browserInfo *BrowserInfo) {
+            if browserInfo==nil {
+                // This occurs when a client IP address changes, or if a cookie gets hijacked.  The user should log back in and re-authenticate.
+                res.WriteHeader(450)
+                onError(errors.New("Unknown browserID: "+browserID))
+                return
+            }
+            // Now that browserID is checked, make sure the clientID matches:
+            if _,has:=browserInfo.Clients[clientID]; !has {
+                // This occurs when a client goes to sleep for a long time and then wakes up again (after their stale connection has already been cleared).  It is safe to allow the user to connect() again and resume where they left off.
+                res.WriteHeader(451)
+                onError(errors.New("Unknown clientID: "+clientID))
+                return
+            }
+
+            // Not that status code 452 (client hijacked) is managed by the ClientRecieve Shutdown() function.
+
+            // Authentication complete.  Continue on to the next step:
+            next(browserID, clientID, res, req, onSuccess, onError)
+        })
+    }
+}
+func HttpHandler_receive(comet *CometServer, options HttpInstallationOptions) func(http.ResponseWriter, *http.Request, func(), func(interface{})) {
+    return JSyncHttpAuth(comet, options, func(browserID,clientID string, res http.ResponseWriter, req *http.Request, onSuccess func(), onError func(interface{})) {
+        comet.ClientReceive(clientID, func(result []M) {
+            res.Header().Set("Content-Type", "application/json")
+            res.Header().Set("Cache-Control", "no-cache, must-revalidate")
+            res.Write([]byte(Stringify(result)))
+        }, func(e interface{}) {
+            if err,ok:=e.(ErrorWithStatusCode); ok { res.WriteHeader(err.StatusCode) }
+            onError(e)
+        })
+    })
 }
 
 
