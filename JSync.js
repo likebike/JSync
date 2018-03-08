@@ -1208,18 +1208,21 @@ JSync.CometClient.prototype.connect = function() {
     });
 };
 JSync.CometClient.prototype.disconnect = function(callback, sync) {
+console.log('Disconnect...');
     callback = callback || NOOP;
     var THIS = this;
     if(!this.clientID) return callback(this); // Not connected.
     this.ready.notReady('CometClient.connect');
+console.log('Before ajax');
     this.ajax({
         doNotRetry:true,
         ajaxOpts:{async:!sync},
         url:THIS.url+'/disconnect',
         type:'POST',
         data:{op:'disconnect',
-              clientID:THIS.clientID},
+              _clientID:THIS.clientID},
         onSuccess:function(data, retCodeStr, jqXHR) {
+console.log('In onSucces');
             if(!_.isObject(data)) throw new Error('Expected object from server!');
             THIS.clientID = null;
             for(var i=THIS.activeAJAX.length-1; i>=0; i--) {
@@ -1230,10 +1233,12 @@ JSync.CometClient.prototype.disconnect = function(callback, sync) {
             return callback();
         },
         onError:function(jqXHR, retCodeStr, exceptionObj) {
+console.log('In onError');
             console.log('Error disconnecting:', exceptionObj);
             return callback();
         }
     });
+console.log('Exiting disconnect.')
 };
 JSync.CometClient.prototype.reconnect = function(forceNewClientID) {
     this.ready.notReady('CometClient.connect');
@@ -1318,6 +1323,7 @@ JSync.CometClient.prototype._receive = function() {
     var THIS = this;
     if(!this.__receive_raw) this.__receive_raw = slide.asyncOneAtATime(function(next) {
         var FAIL = function(err) {
+            console.error(err);  // 2018-03-09, The server was sending 'null' instead of '[]' and this receive loop was dying silently, so I added this line.  I guess it would also make sense to "setTimeout(next,0); throw err;".
             next();
             throw err;
         };

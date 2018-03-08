@@ -130,7 +130,7 @@ type ClientInfo struct {
 func (s *CometServer) ClientInfoSync(clientID string, clientsState *State) *ClientInfo {
     if clientID=="" { return nil }
     c,has:=DOf(clientsState.Data).GetD(clientID); if !has { return nil }
-    info:=ClientInfo{BrowserID:c.GetOrPanic("BrowserID").(string), ClientID:clientID}
+    info:=ClientInfo{BrowserID:c.Deref().GetOrPanic("BrowserID").(string), ClientID:clientID}
     // In the future, I might also want to fetch the 'browsers' state and inclue some info from there, but right now, it's just blank objects.
     // Might also want to include a list of other clientIDs that have the same browserID...
     return &info
@@ -277,7 +277,7 @@ func (s *CometServer) ClientReceive(clientID string, onSuccess func([]M), onErro
             return
         }
         delete(s.receives,clientID)
-        myOut:=out
+        myOut:=out; if myOut==nil { myOut=make([]M,0) }  // Don't pass 'nil' to onSuccess to avoid 'null' JSON results.
         out=nil  // So subsequent shutdown() calls don't freak out about data in 'out'.
         if hijacked {
             onError(ErrorWithStatusCode{"clientID was hijacked!", 452})
@@ -349,7 +349,16 @@ func HttpHandler_connect(comet *CometServer, options HttpInstallOptions) func(ht
                     onSuccess()
                 }, onError)
             case "disconnect":
-fmt.Println("DISCONNECT")
+                fmt.Fprintln(os.Stderr, "Disconnected: browserID="+browserID, "clientID="+clientID)
+                comet.BrowserInfo(browserID, func(browserInfo *BrowserInfo) {
+                    if browserInfo==nil { onError(errors.New("Disconnect: browserID not found (weird!): "+browserID)); return }  // This would be weird, since we *just* validate the browserID...
+                    if _,has:=browserInfo.Clients[clientID]; !has { onError(errors.New("Disconnect: Wrong browserID, or expired client.")); return }
+                    comet.ClientDisconnect(clientID, func() {
+                        setJsonResponseHeaders(res)
+                        res.Write([]byte("{}"))
+                        onSuccess()
+                    }, onError)
+                })
             default:
                 onError(errors.New("Invalid op!"))
                 return
@@ -365,6 +374,11 @@ fmt.Println("DISCONNECT")
         }, onError)
     }
 }
+func WriteHeader(res http.ResponseWriter, code int) {
+    res.WriteHeader(code)
+    if F,ok:=res.(http.Flusher); ok { F.Flush()
+    } else { fmt.Fprintln(os.Stderr, "Warning: ResponseWriter is not a Flusher.  Responses might not be sent properly.") }
+}
 func JSyncHttpAuth(comet *CometServer, options HttpInstallOptions, next func(string,string,http.ResponseWriter,*http.Request,func(),func(interface{}))) func(http.ResponseWriter,*http.Request,func(),func(interface{})) {
     return func(res http.ResponseWriter, req *http.Request, onSuccess func(), onError func(interface{})) {
         setCorsHeaders(req, res, options)
@@ -376,15 +390,17 @@ func JSyncHttpAuth(comet *CometServer, options HttpInstallOptions, next func(str
         comet.BrowserInfo(browserID, func(browserInfo *BrowserInfo) {
             if browserInfo==nil {
                 // This occurs when a client IP address changes, or if a cookie gets hijacked.  The user should log back in and re-authenticate.
-                res.WriteHeader(450)
-                onError(errors.New("Unknown browserID: "+browserID))
+                WriteHeader(res, 450)
+                //onError(errors.New("Unknown browserID: "+browserID))  // JS version
+                fmt.Fprintln(os.Stderr, "Unknown browserID: "+browserID); onSuccess()  // Go version
                 return
             }
             // Now that browserID is checked, make sure the clientID matches:
             if _,has:=browserInfo.Clients[clientID]; !has {
                 // This occurs when a client goes to sleep for a long time and then wakes up again (after their stale connection has already been cleared).  It is safe to allow the user to connect() again and resume where they left off.
-                res.WriteHeader(451)
-                onError(errors.New("Unknown clientID: "+clientID))
+                WriteHeader(res, 451)
+                // onError(errors.New("Unknown clientID: "+clientID))  // JS version
+                fmt.Fprintln(os.Stderr, "Unknown clientID: "+clientID); onSuccess()  // Go version
                 return
             }
 
@@ -417,8 +433,9 @@ func HttpHandler_receive(comet *CometServer, options HttpInstallOptions) func(ht
             res.Write([]byte(Stringify(result)))
             onSuccess()
         }, func(e interface{}) {
-            if err,ok:=e.(ErrorWithStatusCode); ok { res.WriteHeader(err.StatusCode) }
-            onError(e)
+            if err,ok:=e.(ErrorWithStatusCode); ok { WriteHeader(res, err.StatusCode) }
+            // onError(e)  // JS version
+            fmt.Fprintln(os.Stderr, "JSyncHttpAuth Error:", e); onSuccess() // Go version
         })
     })
 }
