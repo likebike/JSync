@@ -14,7 +14,7 @@ func main() {
     mux:=http.NewServeMux()
     mux.Handle("/", http.FileServer(http.Dir(wwwDir)))
     comet:=JSync.NewCometServer(JSync.NewRamDB(JSync.GSolo, nil))
-    JSync.InstallCometServerIntoHttpMux(comet, mux, "/rt", JSync.HttpInstallationOptions{CookieSecret:"Gabriella"})
+    JSync.InstallCometServerIntoHttpMux(comet, mux, "/rt", JSync.HttpInstallOptions{CookieSecret:"Gabriella"})
 
 
     bind:=":4040"

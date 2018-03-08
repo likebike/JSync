@@ -36,9 +36,9 @@ var VERSION="201802241630";
 //
 
 
-func Parse(s string) (o interface{}) {
-    if e:=json.Unmarshal([]byte(s),&o); e!=nil { panic(e) }
-    return
+func Parse(s string, o interface{}) interface{} {
+    if e:=json.Unmarshal([]byte(s),o); e!=nil { panic(e) }
+    return o
 }
 func Stringify(o interface{}) (s string) {
     bs,e:=json.Marshal(o); if e!=nil { panic(e) }
@@ -127,7 +127,16 @@ func TargetV(o reflect.Value, path []interface{}) reflect.Value {
 }
 func Target(o interface{}, path []interface{}) interface{} { return TargetV(reflect.ValueOf(o), path).Interface() }
 
-func DeepCopy(o interface{}) interface{} { return Parse(Stringify(o)) }
+func DeepCopy(o interface{}) interface{} {
+    inData,wasPointer:=reflect.ValueOf(o),false
+    if inData.Kind()==reflect.Ptr {
+        inData,wasPointer=inData.Elem(),true
+    }
+    out:=reflect.New(inData.Type()).Interface()
+    Parse(Stringify(o),out)
+    if !wasPointer { out=reflect.ValueOf(out).Elem().Interface() }
+    return out
+}
 func DeepEqual(a,b interface{}) bool { return Stringify(a)==Stringify(b) }
 func isInt(o interface{}) bool { _,ok:=o.(int); return ok }
 

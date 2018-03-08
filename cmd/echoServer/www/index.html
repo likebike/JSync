@@ -12,7 +12,7 @@
          syncClient=JSync.CometClient('/rt')
          syncClient.ready.waitReady('CometClient.connect', function(){
             setTimeout(function(){
-                console.log("ECHO")
+                syncClient.addToSendQ({op:'echoImmediate', a:1, b:'hi', c:1.234}, function(reply,next){ console.log(reply); next() })
             }, 500)
          })
        })()

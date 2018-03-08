@@ -15,7 +15,7 @@ var DOf=dyn.DOf
 
 
 
-func setCorsHeaders(req *http.Request, res http.ResponseWriter, options HttpInstallationOptions) {
+func setCorsHeaders(req *http.Request, res http.ResponseWriter, options HttpInstallOptions) {
     res.Header().Set("Access-Control-Allow-Origin", func() string {
         if o:=options.AccessControlAllowOrigin; o!="" { return o }
         if o:=req.Header.Get("Origin"); o!="" { return o }
@@ -194,7 +194,7 @@ func (s *CometServer) touchClient(clientID string, onSuccess func(), onError fun
 }
 func (s *CometServer) ClientSend(clientID string, bundle []M, onSuccess func([]M), onError func(interface{})) {
     s.touchClient(clientID,nil,nil)
-    fn:=func(bundleItem M, next func(error,M)) {
+    fn:=func(bundleItem M, next SlideNext) {
         // We provide opHandlers with this 'reply' function.  Call it up to twice: Once as an Immediate (usually undefined) reply, or a second time for a Delayed reply.
         replied,callNum:=false,0
         reply:=func(result M) {
@@ -207,7 +207,7 @@ func (s *CometServer) ClientSend(clientID string, bundle []M, onSuccess func([]M
             } else if callNum==1 && result!=nil {
                 // Immediate result
                 replied=true
-                next(nil, M{"op":"REPLY", "cbID":bundleItem["cbID"]}.Extend(result))
+                next(M{"op":"REPLY", "cbID":bundleItem["cbID"]}.Extend(result), nil)
             } else if callNum==2 && result==nil {
                 panic(errors.New("Falsey Delayed reply!"))
             } else if callNum==2 && result!=nil {
@@ -219,7 +219,7 @@ func (s *CometServer) ClientSend(clientID string, bundle []M, onSuccess func([]M
         handler:=s.GetOpHandler(bundleItem["op"].(string))
         s.DB.Solo().SetTimeout(func(){ handler(clientID,bundleItem,reply) }, 0)  // We use this 'SetTimeout()' to accomplish two things:  1) Prevent stack overflow (actually not an issue for Go), and prevent one client from hogging the server.  2) Guarantee correct order of operations, regardless of the async implementation of the handlers.  Without this timeout, it's easy for operations to become reversed depending on whether an async function is really asynchronous or whether it's synchronous with and async interface.
     }
-    chain:=make([]SlideFn,len(bundle))
+    chain:=make([]SlideFn,0,len(bundle))
     for _,bundleItem:=range bundle { chain=append(chain, SlideFn{fn:fn, args:[]interface{}{bundleItem}}) }
     SlideChain(chain, func(results []interface{}, err error) {
         if err!=nil { panic(errors.New("I have never seen this.")) }
@@ -316,20 +316,21 @@ fmt.Fprintln(os.Stderr, "Forcing send due to waitingCount")
 
 
 
-type HttpInstallationOptions struct {
+type HttpInstallOptions struct {
     CookieSecret             string
     AccessControlAllowOrigin string
 }
-func InstallCometServerIntoHttpMux(comet *CometServer, mux *http.ServeMux, baseURL string, options HttpInstallationOptions) {
+func InstallCometServerIntoHttpMux(comet *CometServer, mux *http.ServeMux, baseURL string, options HttpInstallOptions) {
     if baseURL=="" { panic(errors.New("Empty baseURL!")) }
     if baseURL[0]!='/' { panic(errors.New("baseURL should start with '/'.")) }
     if baseURL[len(baseURL)-1]=='/' { panic(errors.New("baseURL should not end with '/'.")) }
     connect:=sebHttp.SoloroutineAsyncHandler{Solo:comet.DB.Solo(), Next:HttpHandler_connect(comet, options)}
     mux.Handle(baseURL+"/connect",    connect)
     mux.Handle(baseURL+"/disconnect", connect)
+    mux.Handle(baseURL+"/send",       sebHttp.SoloroutineAsyncHandler{Solo:comet.DB.Solo(), Next:HttpHandler_send(comet, options)})
     mux.Handle(baseURL+"/receive",    sebHttp.SoloroutineAsyncHandler{Solo:comet.DB.Solo(), Next:HttpHandler_receive(comet, options)})
 }
-func HttpHandler_connect(comet *CometServer, options HttpInstallationOptions) func(http.ResponseWriter, *http.Request, func(), func(interface{})) {
+func HttpHandler_connect(comet *CometServer, options HttpInstallOptions) func(http.ResponseWriter, *http.Request, func(), func(interface{})) {
     if options.CookieSecret=="" { panic("You must define options.CookieSecret!") }
     return func(res http.ResponseWriter, req *http.Request, onSuccess func(), onError func(interface{})) {
         setCorsHeaders(req, res, options)
@@ -364,7 +365,7 @@ fmt.Println("DISCONNECT")
         }, onError)
     }
 }
-func JSyncHttpAuth(comet *CometServer, options HttpInstallationOptions, next func(string,string,http.ResponseWriter,*http.Request,func(),func(interface{}))) func(http.ResponseWriter,*http.Request,func(),func(interface{})) {
+func JSyncHttpAuth(comet *CometServer, options HttpInstallOptions, next func(string,string,http.ResponseWriter,*http.Request,func(),func(interface{}))) func(http.ResponseWriter,*http.Request,func(),func(interface{})) {
     return func(res http.ResponseWriter, req *http.Request, onSuccess func(), onError func(interface{})) {
         setCorsHeaders(req, res, options)
         if err:=req.ParseForm(); err!=nil { onError(err); return }
@@ -394,11 +395,25 @@ func JSyncHttpAuth(comet *CometServer, options HttpInstallationOptions, next fun
         })
     }
 }
-func HttpHandler_receive(comet *CometServer, options HttpInstallationOptions) func(http.ResponseWriter, *http.Request, func(), func(interface{})) {
+func HttpHandler_send(comet *CometServer, options HttpInstallOptions) func(http.ResponseWriter, *http.Request, func(), func(interface{})) {
+    return JSyncHttpAuth(comet, options, func(browserID,clientID string, res http.ResponseWriter, req *http.Request, onSuccess func(), onError func(interface{})) {
+        bundleArray:=req.Form["bundle"]
+        if len(bundleArray)!=1 { onError(errors.New("Wrong Bundle Length!")); return }
+        bundleStr:=bundleArray[0]
+        if bundleStr=="" { onError(errors.New("Blank Bundle!")); return }
+        if bundleStr[0]!='[' || bundleStr[len(bundleStr)-1]!=']' { onError(errors.New("Bundle missing [] chars!")); return }
+        bundle:=make([]M,0,4); Parse(bundleStr,&bundle)
+        comet.ClientSend(clientID, bundle, func(result []M) {
+            setJsonResponseHeaders(res)
+            res.Write([]byte(Stringify(result)))
+            onSuccess()
+        }, onError)
+    })
+}
+func HttpHandler_receive(comet *CometServer, options HttpInstallOptions) func(http.ResponseWriter, *http.Request, func(), func(interface{})) {
     return JSyncHttpAuth(comet, options, func(browserID,clientID string, res http.ResponseWriter, req *http.Request, onSuccess func(), onError func(interface{})) {
         comet.ClientReceive(clientID, func(result []M) {
-            res.Header().Set("Content-Type", "application/json")
-            res.Header().Set("Cache-Control", "no-cache, must-revalidate")
+            setJsonResponseHeaders(res)
             res.Write([]byte(Stringify(result)))
         }, func(e interface{}) {
             if err,ok:=e.(ErrorWithStatusCode); ok { res.WriteHeader(err.StatusCode) }
