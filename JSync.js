@@ -1208,12 +1208,10 @@ JSync.CometClient.prototype.connect = function() {
     });
 };
 JSync.CometClient.prototype.disconnect = function(callback, sync) {
-console.log('Disconnect...');
     callback = callback || NOOP;
     var THIS = this;
     if(!this.clientID) return callback(this); // Not connected.
     this.ready.notReady('CometClient.connect');
-console.log('Before ajax');
     this.ajax({
         doNotRetry:true,
         ajaxOpts:{async:!sync},
@@ -1222,7 +1220,6 @@ console.log('Before ajax');
         data:{op:'disconnect',
               _clientID:THIS.clientID},
         onSuccess:function(data, retCodeStr, jqXHR) {
-console.log('In onSucces');
             if(!_.isObject(data)) throw new Error('Expected object from server!');
             THIS.clientID = null;
             for(var i=THIS.activeAJAX.length-1; i>=0; i--) {
@@ -1233,12 +1230,10 @@ console.log('In onSucces');
             return callback();
         },
         onError:function(jqXHR, retCodeStr, exceptionObj) {
-console.log('In onError');
             console.log('Error disconnecting:', exceptionObj);
             return callback();
         }
     });
-console.log('Exiting disconnect.')
 };
 JSync.CometClient.prototype.reconnect = function(forceNewClientID) {
     this.ready.notReady('CometClient.connect');

@@ -543,8 +543,8 @@ func LOG_ERR(e interface{}) { fmt.Fprintln(os.Stderr, e) }
 
 type DB interface {
     Solo() *solo.Soloroutine
-    OnD(callback,data interface{})
-    OffD(data interface{})
+    OnD(callback,cbCmp,data interface{})
+    OffD(cbCmp,data interface{})
     Exists(id string, callback func(bool))
     ExistsB(id string, callback func(bool), doNotWaitReady bool)
     ListIDs(callback func([]string))
@@ -610,14 +610,14 @@ func (db *RamDB) exportData() (out map[string]*State) {
     })
     return
 }
-func (db *RamDB) OnD(callback,data interface{}) {
+func (db *RamDB) OnD(callback,cbCmp,data interface{}) {
     db.solo.Sync(func() {
-        db.disp.OnD(callback,db,data)
+        db.disp.OnD(callback,cbCmp,data)
     })
 }
-func (db *RamDB) OffD(data interface{}) {
+func (db *RamDB) OffD(cbCmp,data interface{}) {
     db.solo.Sync(func() {
-        db.disp.OffD(db,data)
+        db.disp.OffD(cbCmp,data)
     })
 }
 func (db *RamDB) stateCallback(state *State, op string, data interface{}, id string) {

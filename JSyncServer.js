@@ -574,7 +574,7 @@ JSync.CometDBServer = function(comet, db, accessPolicy) {
 JSync.CometDBServer.prototype.setAccessPolicy = function(accessPolicy) {
     this.accessPolicy = accessPolicy || JSync.AccessPolicy_Denied;  // 'Denied' is the only safe default.
     var THIS = this;
-    this._shouldIncludeInBroadcast = function(clientID, data, cb) {   // So we don't need to re-create this closure on every network operation.  (That would be expensive.)
+    this._shouldIncludeInBroadcast = function(clientID, data, cb) {   // So we don't need to re-create this closure on every network operation.  (That would be expensive.)      2018-03-09: I am confused why I defined this as a closure instead of a method.
         THIS.accessPolicy(clientID, data.id, function(access) { cb(access.read) });
     };
 
