@@ -531,8 +531,7 @@ JSync.sebwebHandler_send = function(comet, options) {
         if(bundleStr.charAt(0) !== '['  ||  bundleStr.charAt(bundleStr.length-1) !== ']') return onError(new Error('Bundle missing [] chars!'));
         var bundle = JSON.parse(bundleStr);
         comet.clientSend(clientID, bundle, function(result) {
-            res.setHeader('Content-Type', 'application/json');
-            res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+            JSync._setJsonResponseHeaders(res)
             res.end(JSON.stringify(result));
             return onSuccess();
         }, onError);
@@ -541,8 +540,7 @@ JSync.sebwebHandler_send = function(comet, options) {
 JSync.sebwebHandler_receive = function(comet, options) {
     return JSync.sebwebAuth(comet, options, function(browserID, clientID, req, res, onSuccess, onError) {
         comet.clientReceive(clientID, function(result) {
-            res.setHeader('Content-Type', 'application/json');
-            res.setHeader('Cache-Control', 'no-cache, must-revalidate');
+            JSync._setJsonResponseHeaders(res)
             res.end(JSON.stringify(result));
             return onSuccess();
         }, onError);

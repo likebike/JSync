@@ -223,7 +223,7 @@ func (s *CometServer) ClientSend(clientID string, bundle []M, onSuccess func([]M
     for _,bundleItem:=range bundle { chain=append(chain, SlideFn{fn:fn, args:[]interface{}{bundleItem}}) }
     SlideChain(chain, func(results []interface{}, err error) {
         if err!=nil { panic(errors.New("I have never seen this.")) }
-        var out []M
+        out:=make([]M,0,len(results))
         for _,r:=range results {
             if r==nil { continue }
             out=append(out,r.(M))
@@ -240,7 +240,7 @@ func (s *CometServer) AddToReceiveQ(clientID string, data M) {
             if len(C.ReceiveQ) > s.DisposableQueueSizeLimit { return }
             delete(data, "_disposable")  // Save some bandwidth.
         }
-        clients.Edit(Operations{ {Op:"arrayPush", Path:[]interface{}{clientID, "receiveQ"}, Value:data} })
+        clients.Edit(Operations{ {Op:"arrayPush", Path:[]interface{}{clientID, "ReceiveQ"}, Value:data} })
         if rcv,has:=s.receives[clientID]; has { rcv.DataIsWaiting(len(C.ReceiveQ)) }
     }, nil)
 }
@@ -291,7 +291,7 @@ func (s *CometServer) ClientReceive(clientID string, onSuccess func([]M), onErro
             c,has:=DOf(clients.Data).Get(clientID)
             if !has { myObj.Shutdown(false); return }  // The client disconnected.  There's no point to send any data.  (Also, it would cause a "Path now found" exception in the edit() below.)  Just shut down the socket and stuff like that.
             out=c.(*ClientState).ReceiveQ
-            clients.Edit(Operations{ {Op:"update", Path:[]interface{}{clientID}, Key:"ReceiveQ", Value:nil} })
+            clients.Edit(Operations{ {Op:"update", Path:[]interface{}{clientID}, Key:"ReceiveQ", Value:make([]M,0,4)} })
             myObj.Shutdown(false)
         }, onError)
     }
@@ -415,6 +415,7 @@ func HttpHandler_receive(comet *CometServer, options HttpInstallOptions) func(ht
         comet.ClientReceive(clientID, func(result []M) {
             setJsonResponseHeaders(res)
             res.Write([]byte(Stringify(result)))
+            onSuccess()
         }, func(e interface{}) {
             if err,ok:=e.(ErrorWithStatusCode); ok { res.WriteHeader(err.StatusCode) }
             onError(e)
