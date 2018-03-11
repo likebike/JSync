@@ -2,6 +2,7 @@ package JSync
 
 import (
     "seb"
+    "seb/solo"
     "testing"
     "fmt"
     "time"
@@ -19,7 +20,8 @@ func TestA0(t *T) {
         `[1,2,3,4]`,
         `["a",{"a":"a","c":3},"delete",null,null]`,
     } {
-        out:=Stringify(Parse(in))
+        var I interface{}
+        out:=Stringify(Parse(in,&I))
         assert(in==out, "Unequal Parse/Stringify:",in,"!=",out)
     }
     fmt.Println("Parse/Stringify OK")
@@ -177,7 +179,7 @@ func TestB3(test *T) {
 
 
 func TestC1(test *T) {
-    u:=NewSoloroutine(); defer func(){ u.Stop(); time.Sleep(100*time.Millisecond); assert(u.stopped) }()
+    u:=solo.NewSoloroutine(); defer func(){ u.Stop(); time.Sleep(100*time.Millisecond); assert(u.stopped) }()
     u.SyncSlow(fmt.Println, "hello", "soloroutine")
     badFn:=func(){ panic("panic from soloroutine call") }
     func() {
@@ -289,7 +291,7 @@ type C struct {
     A
 }
 
-type D struct {
+type DD struct {  // Call it 'DD' because 'D' is alredy defined in JSync.
     *A
 }
 
@@ -329,7 +331,7 @@ func BenchmarkEmbedVal(bench *testing.B) {   // This is some small cost to embed
 }
 
 func BenchmarkEmbedPtr(bench *testing.B) {   // No runtime cost.
-    d:=D{A:&A{}}
+    d:=DD{A:&A{}}
     for i:=0; i<bench.N; i++ {
         d.Inc()
     }
@@ -387,6 +389,14 @@ func TestZ4(test *T) {
     })
     time.Sleep(5*time.Second)
     fmt.Println("Done sleeping")
+}
+func TestZ5(test *T) {
+    A,B,C,D,E:=1,2,4,8,16
+    fl0:=A|C|E
+    fl1:=fl0&A | B | C
+    fl2:=fl0&(A | B | C)
+    fmt.Println("fl0:",fl0, "fl1:",fl1, "fl2:",fl2)
+    assert(fl1!=fl2)
 }
 
 

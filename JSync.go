@@ -3,6 +3,7 @@
 
 // It would be good to rename 'clientID' to 'connectionID' since it represents an ephemeral connection.
 // Also, 'browserID' would be better named 'clientID' since it is the ID of the client (browser, Go, or whatever).  But I don't think i'll change that since 'clientID' already means something else.
+// NOTE: According to the Git log, I intentionally converted 'connectionID' to 'clientID' on Aug 27 2015, with the commit message: "Makes more sense for stable streaming and communication.".   I guess I was thinking of the "connection" concept as a stable communication path, regardless of how that stability is achieved.  OK, whatever, i'll keep the current naming convention.
 
 package JSync
 
@@ -23,6 +24,7 @@ import (
     "errors"
 )
 type D=dyn.D
+type V=reflect.Value
 
 func init() { rand.Seed(time.Now().UnixNano()) }  // The math/rand uses a constant seed by default.
 
@@ -40,10 +42,9 @@ func Parse(s string, o interface{}) interface{} {
     if e:=json.Unmarshal([]byte(s),o); e!=nil { panic(e) }
     return o
 }
-func Stringify(o interface{}) (s string) {
+func Stringify(o interface{}) string {
     bs,e:=json.Marshal(o); if e!=nil { panic(e) }
-    s=string(bs)
-    return
+    return string(bs)
 }
 
 func Pad(s,p string, n int) string {
@@ -59,17 +60,17 @@ func _generateID(length int) string {
     for len(id)<length { id=append(id, ID_CHARS[rand.Intn(len(ID_CHARS))]) }
     return string(id)
 }
-func _newID(length int, m interface{}) (id string) {
+func _newID(length int, m V) (id string) {
     for {
         id=_generateID(length)
-        if reflect.ValueOf(m).MapIndex(reflect.ValueOf(id)).IsValid() { continue }
+        if m.MapIndex(dyn.VOf(id)).IsValid() { continue }
         return
     }
 }
 var _ids=struct { sync.Mutex; m map[string]bool }{m:make(map[string]bool)}
 func NewID() (id string) {
     _ids.Lock(); defer _ids.Unlock()
-    id=_newID(0,_ids.m)
+    id=_newID(0,reflect.ValueOf(_ids.m))
     _ids.m[id]=true
     return
 }
@@ -79,19 +80,19 @@ func DelID(id string) {  // Use this after you're done with an ID.
     delete(_ids.m, id)
 }
 
-var _globals=struct { sync.Mutex; m map[string]interface{} }{m:make(map[string]interface{})}
-func NewGlobal(v interface{}) (id string) {
+var _globals=struct { sync.Mutex; m map[string]*V }{m:make(map[string]*V)}
+func NewGlobal(v *V) (id string) {
     _globals.Lock(); defer _globals.Unlock()
-    id=_newID(0,_globals.m)
+    id=_newID(0,reflect.ValueOf(_globals.m))
     _globals.m[id]=v
     return
 }
-func GetGlobal(id string) interface{} {
+func GetGlobal(id string) *V {
     _globals.Lock(); defer _globals.Unlock()
     v,has:=_globals.m[id]; if !has { panic("Unknown global key!") }
     return v
 }
-func PopGlobal(id string) interface{} {
+func PopGlobal(id string) *V {
     _globals.Lock(); defer _globals.Unlock()
     v,has:=_globals.m[id]; if !has { panic("Unknown global key!") }
     delete(_globals.m, id)
@@ -112,7 +113,7 @@ func DSHash(s string) string { // The Down Syndrome Hash algorithm, translated f
 
 
 
-type M map[string]interface{}
+type M map[string]*D
 func (m M) Extend(ms ...M) M {
     for _,m2:=range ms {
         for k,v:=range m2 { m[k]=v }
@@ -120,49 +121,84 @@ func (m M) Extend(ms ...M) M {
     return m
 }
 
-func TargetV(o reflect.Value, path []interface{}) reflect.Value {
-    o=dyn.Deref(o)
-    for _,p:=range path { o=dyn.Deref(D(o).GetVOrPanic(p)) }
+func TargetV(o V, path []interface{}) V {  // If you're getting errors like "reflect.Value.Set using unaddressable value", it's probably because Go's interface{} values are unaddressable.  See: https://stackoverflow.com/a/48874650/2177445
+fmt.Println("TargetV in:",o,o.CanAddr())
+    o=D(o).DerefV()
+fmt.Println("        deref0:",o,o.CanAddr())
+    for _,p:=range path { o=D(o).DerefD().GetVOrPanic(p)
+fmt.Println("        derefN:",p,o,o.CanAddr())
+}
+fmt.Println("TargetV out:",o,o.CanAddr())
     return o
 }
-func Target(o interface{}, path []interface{}) interface{} { return TargetV(reflect.ValueOf(o), path).Interface() }
+//func Target(o interface{}, path []interface{}) interface{} { return TargetV(dyn.VOf(o), path).Interface() }
 
-func DeepCopy(o interface{}) interface{} {
-    inData,wasPointer:=reflect.ValueOf(o),false
-    if inData.Kind()==reflect.Ptr {
-        inData,wasPointer=inData.Elem(),true
-    }
-    out:=reflect.New(inData.Type()).Interface()
-    Parse(Stringify(o),out)
-    if !wasPointer { out=reflect.ValueOf(out).Elem().Interface() }
-    return out
+func DeepCopy(o V) V {
+    wasPointer:=false
+    if o.Kind()==reflect.Ptr { o,wasPointer=o.Elem(),true }
+    out:=reflect.New(o.Type()).Interface()
+    Parse(Stringify(o.Interface()),out)
+    outV:=dyn.VOf(out)
+    if !wasPointer { outV=outV.Elem() }
+    return outV
 }
 func DeepEqual(a,b interface{}) bool { return Stringify(a)==Stringify(b) }
 func isInt(o interface{}) bool { _,ok:=o.(int); return ok }
 
+type OperationKey interface{}
+func ToOperationKey(I interface{}) OperationKey {
+    switch II:=I.(type) {
+    case float32: if II-float32(int(II))==0 { I=int(II) }
+    case float64: if II-float64(int(II))==0 { I=int(II) }
+    }
+    return OperationKey(I)
+}
 type Operation struct {
     Op    string        `json:"op"`
     Path  []interface{} `json:"path"`
-    Key   interface{}   `json:"key"`
-    Value interface{}   `json:"value"`
+    Key   OperationKey  `json:"key"`
+    Value *D            `json:"value"`
+}
+func (o *Operation) UnmarshalJSON(bs []byte) error {
+    var O struct {
+        Op    string
+        Path  []interface{}
+        Key   interface{}
+        Value *D
+    }
+    err:=json.Unmarshal(bs,&O); if err!=nil { return err }
+    *o=Operation{Op:O.Op, Path:O.Path, Key:ToOperationKey(O.Key), Value:O.Value}
+    return nil
 }
 type Operations []Operation
 type DeltaStep struct {
-    Op               string
-    Path             []interface{}
-    Key,Before,After interface{}
+    Op           string
+    Path         []interface{}
+    Key          OperationKey
+    Before,After D
+}
+func (s *DeltaStep) UnmarshalJSON(bs []byte) error {
+    var S struct {
+        Op           string
+        Path         []interface{}
+        Key          interface{}
+        Before,After D
+    }
+    err:=json.Unmarshal(bs, &S); if err!=nil { return err }
+    *s=DeltaStep{Op:S.Op, Path:S.Path, Key:ToOperationKey(S.Key), Before:S.Before, After:S.After}
+    return nil
+}
+func (s DeltaStep) MarshalJSON() ([]byte,error) {
+    out:=map[string]interface{}{"op":s.Op, "key":s.Key}
+    path:=s.Path; if path==nil { path=[]interface{}{} }; out["path"]=path // Match the JS behavior of always including a 'path' field, even when it's just a blank list.
+    if V(s.Before).IsValid() { out["before"]=s.Before }
+    if V(s.After).IsValid() { out["after"]=s.After }
+    return json.Marshal(out)
 }
 type Delta struct {
     EndHash   string        `json:"endHash"`
     StartHash string        `json:"startHash"`
     Steps     []DeltaStep   `json:"steps"`
-}
-func (s DeltaStep) MarshalJSON() ([]byte,error) {
-    out:=map[string]interface{}{"op":s.Op, "key":s.Key}
-    path:=s.Path; if path==nil { path=[]interface{}{} }; out["path"]=path // Match the JS behavior of always including a 'path' field, even when it's just a blank list.
-    if s.Before!=nil { out["before"]=s.Before }
-    if s.After!=nil { out["after"]=s.After }
-    return json.Marshal(out)
 }
 
 // The JSync.Edit function is used to modify objects, and also
@@ -171,51 +207,54 @@ func (s DeltaStep) MarshalJSON() ([]byte,error) {
 // then just make a copy first, like this:
 //     JSync.Edit(JSync.DeepCopy(myObj), myOps)
 // ...or send in a value type instead of a pointer/reference type.
-func Edit(obj interface{}, operations Operations) Delta {  // racey!  You need to manage concurrency from a higher level.
-    origObjStr,steps:=Stringify(obj),[]DeltaStep{}
+func Edit(objV V, operations Operations) Delta {  // racey!  You need to manage concurrency from a higher level.
+    // Note that I used to recieve "obj interface{}" instead of "objV reflect.Value" but I found it impossible to handle certain situations due to the 'reflect' lib's unawareness of addressability.  Consider the scenario when you are trying to Edit(state.Data, ...).  You are sending in a value that you got via dereferencing, and therefore you know that the value is addressable.  But 'reflect' only receives the result and therefore doesn't know about the dereferencing, so it assumes that the thing is unaddressable.  Of course, you can reach into the internals with Go-- and set the flagAddr, but I want to avoid that kind of stuff.
+    origObjStr,steps:=Stringify(objV.Interface()),[]DeltaStep{}
     defer func(){
         if e:=recover(); e!=nil {
             if len(steps)>0 {
                 fmt.Fprintln(os.Stderr, "Edit Failed.  Rolling back...")
-                ApplyDelta(obj, ReverseDelta(Delta{Steps:steps}))
-                if Stringify(obj)!=origObjStr { fmt.Fprintln(os.Stderr, "Rollback Failed!") }
+                ApplyDelta(objV, ReverseDelta(Delta{Steps:steps}))
+                if Stringify(objV.Interface())!=origObjStr { fmt.Fprintln(os.Stderr, "Rollback Failed!") }
             }
             panic(e)
         }
     }()
-    objV:=reflect.ValueOf(obj)
     for _,step:=range operations {
         op:=step.Op
         path:=step.Path
         key:=step.Key
         value:=step.Value
         target:=TargetV(objV, step.Path)
+fmt.Printf("Edit got Target: objV=%#v step.Path=%#v target=%#v\n",objV,step.Path,target)
         switch op {
         case "create","update","update!":
             if key==nil { panic("nil key!") }
-            if value==nil { panic("nil value!") }  // If you want to set something to undefined, just delete instead.
-            I,has:=D(target).Get(key)
+            if !V(*value).IsValid() { panic("nil value!") }  // If you want to set something to undefined, just delete instead.
+            VV,has:=D(target).GetV(key)
             if op=="update!" {
                 if has { op="update" } else { op="create" }
             }
             if op=="create" {
                 if has { panic(fmt.Sprintf("Already in target: %#v",key)) }
-                D(target).Set(key,value)
+fmt.Printf("Edit create: target=%#v key=%#v value=%#v\n",target,key,value)
+                D(target).Set(key,V(*value))
 
-                steps=append(steps,DeltaStep{Op:op, Path:path, Key:key, After:DeepCopy(value)})
+                steps=append(steps,DeltaStep{Op:op, Path:path, Key:key, After:D(DeepCopy(V(*value)))})
             } else if op=="update" {
                 if !has { panic(fmt.Sprintf("Not in target: %#v",key)) }
-                before:=DeepCopy(I)
+                before:=DeepCopy(VV)
                 // We do NOT check if 'before' and 'after' are equal, or try to detect NOOP operations (setting the same value that already exists, etc.).  Logical linearity is more important than saving a few steps.
-                D(target).Set(key,value)
-                steps=append(steps,DeltaStep{Op:op, Path:path, Key:key, Before:before, After:DeepCopy(value)})
+fmt.Printf("Edit update: target=%#v key=%#v value=%#v\n",target,key,value)
+                D(target).Set(key,V(*value))
+                steps=append(steps,DeltaStep{Op:op, Path:path, Key:key, Before:D(before), After:D(DeepCopy(V(*value)))})
             } else { panic("Inconceivable!") }
         case "delete":
             if key==nil { panic("nil key!") }
-            I,has:=D(target).Get(key); if !has { panic(fmt.Sprintf("Not in target: %#v",key)) }
-            before:=DeepCopy(I)
+            VV,has:=D(target).GetV(key); if !has { panic(fmt.Sprintf("Not in target: %#v",key)) }
+            before:=DeepCopy(VV)
             D(target).Del(key)
-            steps=append(steps,DeltaStep{Op:op, Path:path, Key:key, Before:before})
+            steps=append(steps,DeltaStep{Op:op, Path:path, Key:key, Before:D(before)})
         case "arrayPush":
             if key!=nil { panic("arrayPush: Expected key to be nil!") }
             if target.Kind()!=reflect.Slice { panic("arrayPush: Expected a Slice target!") }
@@ -224,10 +263,10 @@ func Edit(obj interface{}, operations Operations) Delta {  // racey!  You need t
             fallthrough
         case "arrayInsert":
             if key==nil { panic("nil key!") }
-            if value==nil { panic("nil value!") }
+            if !V(*value).IsValid() { panic("nil value!") }
             if !isInt(key) { panic("Expected an int key!") }
-            D(target).SliceInsert(key,value)
-            steps=append(steps,DeltaStep{Op:op, Path:path, Key:key, After:DeepCopy(value)})
+            D(target).SliceInsert(key,V(*value))
+            steps=append(steps,DeltaStep{Op:op, Path:path, Key:key, After:D(DeepCopy(V(*value)))})
         case "arrayPop":
             if key!=nil { panic("arrayPop: Expected key to be nil!") }
             if target.Kind()!=reflect.Slice { panic("arrayPop: Expected a Slice target!") }
@@ -236,15 +275,15 @@ func Edit(obj interface{}, operations Operations) Delta {  // racey!  You need t
             fallthrough
         case "arrayRemove":
             if key==nil { panic("nil key!") }
-            if value!=nil { panic("non-nil value!") }
+            if !V(*value).IsValid() { panic("non-nil value!") }
             if !isInt(key) { panic("Expected an int key!") }
-            before:=DeepCopy(D(target).GetOrPanic(key))
+            before:=DeepCopy(D(target).GetVOrPanic(key))
             D(target).SliceRemove(key)
-            steps=append(steps,DeltaStep{Op:op, Path:path, Key:key, Before:before})
+            steps=append(steps,DeltaStep{Op:op, Path:path, Key:key, Before:D(before)})
         default: panic("Illegal operation: "+op)
         }
     }
-    return Delta{StartHash:DSHash(origObjStr), EndHash:DSHash(Stringify(obj)), Steps:steps}
+    return Delta{StartHash:DSHash(origObjStr), EndHash:DSHash(Stringify(objV.Interface())), Steps:steps}
 }
 func ReverseDelta(delta Delta) Delta {
     reversedSteps:=make([]DeltaStep,len(delta.Steps))
@@ -252,24 +291,24 @@ func ReverseDelta(delta Delta) Delta {
         rstep:=DeltaStep{Path:fstep.Path, Key:fstep.Key}
         switch fstep.Op {
             case "create":
-                if fstep.Before!=nil { panic("Unexpected Before!") }
-                if fstep.After==nil { panic("Missing After!") }
+                if V(fstep.Before).IsValid() { panic("Unexpected Before!") }
+                if !V(fstep.After).IsValid() { panic("Missing After!") }
                 rstep.Op,rstep.Before="delete",fstep.After
             case "update":
-                if fstep.Before==nil { panic("Missing Before!") }
-                if fstep.After==nil { panic("Missing After!") }
+                if !V(fstep.Before).IsValid() { panic("Missing Before!") }
+                if !V(fstep.After).IsValid() { panic("Missing After!") }
                 rstep.Op,rstep.Before,rstep.After="update",fstep.After,fstep.Before
             case "delete":
-                if fstep.After!=nil { panic("Unexpected After!") }
-                if fstep.Before==nil { panic("Missing Before!") }
+                if V(fstep.After).IsValid() { panic("Unexpected After!") }
+                if !V(fstep.Before).IsValid() { panic("Missing Before!") }
                 rstep.Op,rstep.After="create",fstep.Before
             case "arrayInsert":
-                if fstep.Before!=nil { panic("Unexpected Before!") }
-                if fstep.After==nil {  panic("Missing After!") }
+                if V(fstep.Before).IsValid() { panic("Unexpected Before!") }
+                if !V(fstep.After).IsValid() {  panic("Missing After!") }
                 rstep.Op,rstep.Before="arrayRemove",fstep.After
             case "arrayRemove":
-                if fstep.Before==nil { panic("Missing Before!") }
-                if fstep.After!=nil { panic("Unexpected After!") }
+                if !V(fstep.Before).IsValid() { panic("Missing Before!") }
+                if V(fstep.After).IsValid() { panic("Unexpected After!") }
                 rstep.Op,rstep.After="arrayInsert",fstep.Before
             default: panic("Illegal operation: "+fstep.Op)
         }
@@ -277,10 +316,10 @@ func ReverseDelta(delta Delta) Delta {
     }
     return Delta{StartHash:delta.EndHash, EndHash:delta.StartHash, Steps:reversedSteps}
 }
-func ApplyDelta(obj interface{}, delta Delta) interface{} { return ApplyDeltaBB(obj,delta,false,false) }
-func ApplyDeltaBB(obj interface{}, delta Delta, doNotCheckStartHash,doNotCheckEndHash bool) interface{} {
-    // Note: 'obj' is modified.
-    origObjStr:=Stringify(obj)
+func ApplyDelta(objV V, delta Delta) V { return ApplyDeltaBB(objV,delta,false,false) }
+func ApplyDeltaBB(objV V, delta Delta, doNotCheckStartHash,doNotCheckEndHash bool) V {
+    // Note: The given object is modified.
+    origObjStr:=Stringify(objV.Interface())
     if !doNotCheckStartHash && delta.StartHash!="" {
         if DSHash(origObjStr)!=delta.StartHash { panic("Wrong StartHash!") }
     }
@@ -289,8 +328,8 @@ func ApplyDeltaBB(obj interface{}, delta Delta, doNotCheckStartHash,doNotCheckEn
         if e:=recover(); e!=nil {
             if stepI>0 {
                 fmt.Fprintln(os.Stderr, "Delta application failed.  Rolling back...")
-                ApplyDelta(obj, ReverseDelta(Delta{StartHash:delta.StartHash, Steps:delta.Steps[:stepI]}))
-                if Stringify(obj)!=origObjStr { fmt.Fprintln(os.Stderr, "Rollback failed!") }
+                ApplyDelta(objV, ReverseDelta(Delta{StartHash:delta.StartHash, Steps:delta.Steps[:stepI]}))
+                if Stringify(objV.Interface())!=origObjStr { fmt.Fprintln(os.Stderr, "Rollback failed!") }
             }
             panic(e)
         }
@@ -298,37 +337,37 @@ func ApplyDeltaBB(obj interface{}, delta Delta, doNotCheckStartHash,doNotCheckEn
     for stepI=range delta.Steps {
         step:=delta.Steps[stepI]
         if step.Key==nil { panic("nil key!") }
-        target:=TargetV(reflect.ValueOf(obj), step.Path)
+        target:=TargetV(objV, step.Path)
         switch step.Op {
         case "create","update","delete":
-            V,has:=D(target).GetV(step.Key)
-            if step.Before!=nil {
+            VV,has:=D(target).GetV(step.Key)
+            if V(step.Before).IsValid() {
                 if !has { panic(fmt.Sprintf("Not in target: %#v",step.Key)) }
-                if Stringify(V.Interface())!=Stringify(step.Before) { panic("Before value did not match!") }
+                if Stringify(VV.Interface())!=Stringify(step.Before) { panic("Before value did not match!") }
             } else {
                 if has { panic(fmt.Sprintf("Unexpectedly in target: ",step.Key)) }
             }
 
-            if step.After!=nil {
-                D(target).Set(step.Key,DeepCopy(step.After))  // Use DeepCopy to avoid external mutation.
+            if V(step.After).IsValid() {
+                D(target).Set(step.Key,DeepCopy(V(step.After)))  // Use DeepCopy to avoid external mutation.
             } else {
                 if has {
                     D(target).Del(step.Key)
                 }
             }
         case "arrayInsert":
-            if step.After==nil { panic("Undefined After!") }
-            D(target).SliceInsert(step.Key,step.After)
+            if !V(step.After).IsValid() { panic("Undefined After!") }
+            D(target).SliceInsert(step.Key,V(step.After))
         case "arrayRemove":
-            if Stringify(D(target).GetOrPanic(step.Key))!=Stringify(step.Before) { panic("Slice Before value mismatch!") }
+            if Stringify(D(target).GetVOrPanic(step.Key).Interface())!=Stringify(step.Before) { panic("Slice Before value mismatch!") }
             D(target).SliceRemove(step.Key)
         default: panic("Illegal operation: "+step.Op)
         }
     }
     if !doNotCheckEndHash && delta.EndHash!="" {
-        if DSHash(Stringify(obj))!=delta.EndHash { panic("Wrong EndHash!") }
+        if DSHash(Stringify(objV.Interface()))!=delta.EndHash { panic("Wrong EndHash!") }
     }
-    return obj // For chaining...  (I'm not sure if this is actually useful in Go, i'm just porting the logic directly from JS.)
+    return objV // For chaining...  (I'm not sure if this is actually useful in Go, i'm just porting the logic directly from JS.)
 }
 
 
@@ -343,13 +382,14 @@ func ApplyDeltaBB(obj interface{}, delta Delta, doNotCheckStartHash,doNotCheckEn
 
 const ID_NOMATCH=""
 type Listener struct {
-    ID            string
-    CB,CBCmp,Data interface{}
+    ID        string
+    CB,CBCmp  interface{}
+    Data      V
 }
 type Dispatcher struct { listeners []Listener }
-func (d *Dispatcher) On(callback,cbCmp interface{}) { d.OnD(callback,cbCmp,nil) }  // Go doesn't allow the comparison of functions (because of compiler optimizations that re-use function definitions for closures), so the user should also provide a 'cbCmp' argument, which we will use for comparison.
-func (d *Dispatcher) OnD(callback,cbCmp,data interface{}) { d.OnUniq(ID_NOMATCH,callback,cbCmp,data) }
-func (d *Dispatcher) OnUniq(id string, callback,cbCmp,data interface{}) {
+func (d *Dispatcher) On(callback,cbCmp interface{}) { d.OnD(callback,cbCmp,V{}) }  // Go doesn't allow the comparison of functions (because of compiler optimizations that re-use function definitions for closures), so the user should also provide a 'cbCmp' argument, which we will use for comparison.
+func (d *Dispatcher) OnD(callback,cbCmp interface{}, data V) { d.OnUniq(ID_NOMATCH,callback,cbCmp,data) }
+func (d *Dispatcher) OnUniq(id string, callback,cbCmp interface{}, data V) {
     // Enable registration of callback many times, but each ID will only be called once.
     d.OffUniq(id)
     d.listeners=append(d.listeners, Listener{ID:id, CB:callback, CBCmp:cbCmp, Data:data})
@@ -360,11 +400,11 @@ func (d *Dispatcher) IsOn(id string) bool {
     }
     return false
 }
-func (d *Dispatcher) Off(cbCmp interface{}) { d.OffD(cbCmp,nil) }  // Use the same 'cbCmp' that you used for On().
-func (d *Dispatcher) OffD(cbCmp,data interface{}) {
+func (d *Dispatcher) Off(cbCmp interface{}) { d.OffD(cbCmp,V{}) }  // Use the same 'cbCmp' that you used for On().
+func (d *Dispatcher) OffD(cbCmp interface{}, data V) {
     for i:=len(d.listeners)-1; i>=0; i-- {
         l:=d.listeners[i]
-        if l.CBCmp==cbCmp && l.Data==data {
+        if l.CBCmp==cbCmp && dyn.EqualPV(l.Data,data) {
             d.listeners=append(d.listeners[:i], d.listeners[i+1:]...)
         }
     }
@@ -378,11 +418,10 @@ func (d *Dispatcher) OffUniq(id string) {
     }
 }
 func (d *Dispatcher) OffAll() { d.listeners=d.listeners[:0] }
-func (d *Dispatcher) Fire(args ...interface{}) {
-    argsV:=make([]reflect.Value,len(args)); for i:=range args { argsV[i]=reflect.ValueOf(args[i]) }
+func (d *Dispatcher) Fire(args ...V) {
     for _,l:=range append([]Listener{}, d.listeners...) {  // Make a copy because listeners can be modified from the event handlers (like removal of one-shot handlers).
-        largsV:=argsV; if l.Data!=nil { largsV=append(largsV,reflect.ValueOf(l.Data)) }
-        dyn.CallV(l.CB, largsV...)
+        largs:=args; if l.Data.IsValid() { largs=append(largs,l.Data) }
+        dyn.CallV(l.CB, largs...)
     }
 }
 
@@ -390,35 +429,41 @@ func (d *Dispatcher) Fire(args ...interface{}) {
 type State struct {
     //sync.Mutex   /////////  This would cause deadlock.  Instead, always operate on states from a Soloroutine.
     Disp  *Dispatcher
-    Data  interface{}
+    Data  D   // I use dyn.D instead of reflect.Value for JSON Marshal support.
 }
-func NewState(data interface{}) *State {
+func NewState(data D) *State {
     s:=&State{Disp:&Dispatcher{}}
     s.Reset(data)
     return s
 }
-func (s *State) On(callback,cbCmp interface{}) { s.OnD(callback,cbCmp,nil) }
-func (s *State) OnD(callback,cbCmp,data interface{}) { s.Disp.OnD(callback,cbCmp,data) }
-func (s *State) Off(cbCmp interface{}) { s.OffD(cbCmp,nil) }
-func (s *State) OffD(cbCmp,data interface{}) { s.Disp.OffD(cbCmp,data) }
-func (s *State) Reset(data interface{}) {
+func (s *State) On(callback,cbCmp interface{}) { s.OnD(callback,cbCmp,V{}) }
+func (s *State) OnD(callback,cbCmp interface{}, data V) { s.Disp.OnD(callback,cbCmp,data) }
+func (s *State) Off(cbCmp interface{}) { s.OffD(cbCmp,V{}) }
+func (s *State) OffD(cbCmp interface{}, data V) { s.Disp.OffD(cbCmp,data) }
+func (s *State) Reset(data D) {
     //s.Lock(); defer s.Unlock()
-    if data!=nil { s.Data=data
-    } else { s.Data=make(map[string]interface{}) }
-    s.Disp.Fire(s,"reset")
+    if V(data).IsValid() { s.Data=data
+    } else { s.Data=dyn.DOf(make(M)) }
+    s.Disp.Fire(reflect.ValueOf(s),
+                reflect.ValueOf("reset"))
 }
 func (s *State) Edit(operations Operations) {
     //s.Lock(); defer s.Unlock()
     if len(operations)==0 { return }  // Skip noops.
-    delta:=Edit(s.Data, operations)
-    s.Disp.Fire(s,"delta",delta)
+    delta:=Edit(V(s.Data), operations)
+    s.Disp.Fire(reflect.ValueOf(s),
+                reflect.ValueOf("delta"),
+                dyn.VOf(delta))
 }
 func (s *State) ApplyDelta(delta Delta) {
     //s.Lock(); defer s.Unlock()
     if len(delta.Steps)==0 { return }  // Skip noops.
-    ApplyDelta(s.Data,delta)
-    s.Disp.Fire(s,"delta",delta)
+    ApplyDelta(V(s.Data), delta)
+    s.Disp.Fire(reflect.ValueOf(s),
+                reflect.ValueOf("delta"),
+                dyn.VOf(delta))
 }
+func (s *State) MarshalJSON() ([]byte,error) { return json.Marshal(s.Data) }
 
 
 
@@ -543,13 +588,13 @@ func LOG_ERR(e interface{}) { fmt.Fprintln(os.Stderr, e) }
 
 type DB interface {
     Solo() *solo.Soloroutine
-    OnD(callback,cbCmp,data interface{})
-    OffD(cbCmp,data interface{})
+    OnD(callback,cbCmp interface{}, data V)
+    OffD(cbCmp interface{}, data V)
     Exists(id string, callback func(bool))
     ExistsB(id string, callback func(bool), doNotWaitReady bool)
     ListIDs(callback func([]string))
     GetState(id string, onSuccess func(*State,string), onError func(interface{}))
-    GetStateAutocreate(id string, defaultData interface{}, onSuccess func(*State,string), onError func(interface{}))
+    GetStateAutocreate(id string, defaultData D, onSuccess func(*State,string), onError func(interface{}))
     CreateState(id string, state *State, onSuccess func(*State,string), onError func(interface{}))
     CreateStateB(id string, state *State, onSuccess func(*State,string), onError func(interface{}), doNotWaitReady bool)
     DeleteState(id string, onSuccess func(*State,string), onError func(interface{}))
@@ -561,7 +606,7 @@ type RamDB struct {
     ready   *ReadyT
     disp    *Dispatcher
 }
-func NewRamDB(solo *solo.Soloroutine, data interface{}) *RamDB {
+func NewRamDB(solo *solo.Soloroutine, data D) *RamDB {
     if solo==nil {solo=GSolo}
     db:=&RamDB{ solo:solo, states:make(map[string]*State), ready:NewReady(), disp:&Dispatcher{} }
     db.solo.Sync(func() {
@@ -572,13 +617,12 @@ func NewRamDB(solo *solo.Soloroutine, data interface{}) *RamDB {
     return db
 }
 func (db *RamDB) Solo() *solo.Soloroutine { return db.solo }
-func (db *RamDB) importData(data interface{}) {
+func (db *RamDB) importData(data D) {
     db.solo.Sync(func(){
-        if data==nil { db.ready.Ready("RamDB.importData"); return }
-        dataV:=reflect.ValueOf(data); dataD:=D(dataV)
+        if !V(data).IsValid() { db.ready.Ready("RamDB.importData"); return }
         db.ready.NotReady("RamDB.importData")
-        create:=func(id string, state *State, next func(interface{},error)) {
-            var out interface{}; out=nil; var err error; err=nil  // Don't make the mistake of initializing these to interface{}(nil) or error(nil) because then they won't really be nil.
+        create:=func(id string, state *State, next func(V,error)) {
+            var err error  // Don't make the mistake of initializing this to error(nil) because then it won't really be nil.
             defer func() {
                 e:=recover()  // Always catch panics.
                 if err==nil && e!=nil {
@@ -588,19 +632,19 @@ func (db *RamDB) importData(data interface{}) {
                     default: err=fmt.Errorf("%#v",e)
                     }
                 }
-                next(out,err)
+                next(V{},err)
             }()
             db.CreateStateB(id, state,
-                func(*State,string){next(nil,nil)},
+                func(*State,string){next(V{},nil)},
                 func(e interface{}){
                     fmt.Fprintln(os.Stderr, e)
-                    next(nil,nil)  // Our JS ignores the error, so we do too.  I forgot why.
+                    next(V{},nil)  // Our JS ignores the error, so we do too.  I forgot why.
                 },
                 true)  // 'true' tells createState not to wait for READY, so we don't deadlock.
         }
-        keys:=dataD.Keys(); steps:=make([]SlideFn,0,len(keys))
-        for _,id:=range keys { steps=append(steps,SlideFn{fn:create, args:[]interface{}{id, dataD.GetOrPanic(id)}}) }
-        SlideChain(steps, func([]interface{},error){ db.ready.Ready("RamDB.importData") })
+        keys:=data.Keys(); steps:=make([]SlideFn,0,len(keys))
+        for _,id:=range keys { steps=append(steps,SlideFn{fn:create, args:[]V{dyn.VOf(id), data.GetVOrPanic(id)}}) }
+        SlideChain(steps, func([]V,error){ db.ready.Ready("RamDB.importData") })
     })
 }
 func (db *RamDB) exportData() (out map[string]*State) {
@@ -610,19 +654,22 @@ func (db *RamDB) exportData() (out map[string]*State) {
     })
     return
 }
-func (db *RamDB) OnD(callback,cbCmp,data interface{}) {
+func (db *RamDB) OnD(callback,cbCmp interface{}, data V) {
     db.solo.Sync(func() {
         db.disp.OnD(callback,cbCmp,data)
     })
 }
-func (db *RamDB) OffD(cbCmp,data interface{}) {
+func (db *RamDB) OffD(cbCmp interface{}, data V) {
     db.solo.Sync(func() {
         db.disp.OffD(cbCmp,data)
     })
 }
-func (db *RamDB) stateCallback(state *State, op string, data interface{}, id string) {
+func (db *RamDB) stateCallback(state *State, op string, data V, id string) {
     db.solo.Sync(func() {
-        db.disp.Fire(id,state,op,data)
+        db.disp.Fire(reflect.ValueOf(id),
+                     reflect.ValueOf(state),
+                     reflect.ValueOf(op),
+                     data)
     })
 }
 func (db *RamDB) Exists(id string, callback func(bool)) { db.ExistsB(id,callback,false) }
@@ -657,7 +704,7 @@ func (db *RamDB) GetState(id string, onSuccess func(*State,string), onError func
         })
     })
 }
-func (db *RamDB) GetStateAutocreate(id string, defaultData interface{}, onSuccess func(*State,string), onError func(interface{})) {
+func (db *RamDB) GetStateAutocreate(id string, defaultData D, onSuccess func(*State,string), onError func(interface{})) {
     db.GetState(id, onSuccess, func(e interface{}) {
         if err,ok:=e.(error); ok && err.Error()=="State does not exist: "+id {
             db.CreateState(id, NewState(defaultData), onSuccess, onError)
@@ -676,10 +723,12 @@ func (db *RamDB) CreateStateB(id string, state *State, onSuccess func(*State,str
             onError(errors.New("Already exists: "+id))
             return
         }
-        if state==nil { state=NewState(nil) }
+        if state==nil { state=NewState(D{}) }
         db.states[id]=state
-        state.OnD(db.stateCallback,db,id)
-        if !doNotWaitReady { db.disp.Fire(id, state, "create") }  // Do not fire events during loads.
+        state.OnD(db.stateCallback,db,reflect.ValueOf(id))
+        if !doNotWaitReady { db.disp.Fire(reflect.ValueOf(id),         // Do not fire events during loads.
+                                          reflect.ValueOf(state),
+                                          reflect.ValueOf("create")) }
         if onSuccess!=nil { onSuccess(state, id) }
         return
     }, doNotWaitReady)
@@ -692,9 +741,11 @@ func (db *RamDB) DeleteState(id string, onSuccess func(*State,string), onError f
             return
         }
         state:=db.states[id]
-        state.OffD(db,id)
+        state.OffD(db,reflect.ValueOf(id))
         delete(db.states,id)
-        db.disp.Fire(id, state, "delete")
+        db.disp.Fire(reflect.ValueOf(id),
+                     reflect.ValueOf(state),
+                     reflect.ValueOf("delete"))
         if onSuccess!=nil { onSuccess(state,id) }
     })
 }

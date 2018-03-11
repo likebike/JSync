@@ -8,8 +8,9 @@ import (
     "os"
     "time"
     "net/http"
+    "reflect"
+"runtime/debug"
 )
-var DOf=dyn.DOf
 
 // I haven't implemented FileDB or DirDB yet -- I haven't needed them.
 
@@ -63,8 +64,8 @@ func (s *CometServer) SetDB(db DB) {
     s.DB=db
     //s.DB.OnD(s.dbEventCallback,struct{Obj,Method interface{}}{Obj:s, Method:"dbEventCallback"},nil);  // For now, I don't actually have a need for these callbacks.
     // Define some states that definitely need to be there:
-    s.DB.GetStateAutocreate("browsers",nil,nil,nil);
-    s.DB.GetStateAutocreate("clients",nil,nil,nil);
+    s.DB.GetStateAutocreate("browsers",D{},nil,nil)
+    s.DB.GetStateAutocreate("clients",D{},nil,nil)
 }
 func (s *CometServer) dbEventCallback(id string, state *State, op string, data interface{}) { fmt.Fprintln(os.Stderr, "CometServer dbEventCallback:",id,state,op,data) }
 func (s *CometServer) SetOpHandler(name string, handler OpHandler) OpHandler {
@@ -80,18 +81,18 @@ func (s *CometServer) GetOpHandler(name string) OpHandler {
     if !has {
         h = func(clientID string, data M, next func(result M)) {
             fmt.Fprintln(os.Stderr, "Unknown OpHandler:", name)
-            next(M{"op":"REPLY", "error":"Unknown Server OpHandler", "cbID":data["cbID"]})
+            next(M{"op":dyn.NewD("REPLY"), "error":dyn.NewD("Unknown Server OpHandler"), "cbID":data["cbID"]})
         }
     }
     return h
 }
 func (s *CometServer) InstallOpHandlers() {
     s.SetOpHandler("echoImmediate", func(clientID string, data M, reply func(M)) {
-        data["op"]="REPLY"
+        data["op"]=dyn.NewD("REPLY")
         reply(data)
     })
     s.SetOpHandler("echo", func(clientID string, data M, reply func(M)) {
-        data["op"]="REPLY"
+        data["op"]=dyn.NewD("REPLY")
         reply(nil)  // Send an Immediate blank reply.
         reply(data) // Send a Delayed reply.
     })
@@ -106,13 +107,13 @@ type BrowserInfo struct {
 func (s *CometServer) BrowserInfo(browserID string, callback func(*BrowserInfo)) {
     if browserID=="" { callback(nil); return }
     s.DB.GetState("browsers", func(browsers *State, _ string) {
-        _,has:=DOf(browsers.Data).Get(browserID)
+        _,has:=dyn.DOf(browsers.Data).GetV(browserID)
         if !has { callback(nil); return }
         info:=BrowserInfo{BrowserID:browserID, Clients:make(map[string]bool)}
         s.DB.GetState("clients", func(clients *State, _ string) {
-            clientsDataD:=DOf(clients.Data)
+            clientsDataD:=dyn.DOf(clients.Data)
             for _,clientID:=range clientsDataD.Keys() {
-                if clientsDataD.GetOrPanic(clientID).(*ClientState).BrowserID==browserID { info.Clients[clientID.(string)]=true }
+                if clientsDataD.GetVOrPanic(clientID).Interface().(ClientState).BrowserID==browserID { info.Clients[clientID.(string)]=true }
             }
             callback(&info)
         }, nil)
@@ -122,6 +123,7 @@ type ClientState struct {
     BrowserID string
     ReceiveQ  []M
     Atime     time.Time
+    IsValid   bool
 }
 type ClientInfo struct {
     BrowserID string `json:"browserID"`
@@ -129,8 +131,8 @@ type ClientInfo struct {
 }
 func (s *CometServer) ClientInfoSync(clientID string, clientsState *State) *ClientInfo {
     if clientID=="" { return nil }
-    c,has:=DOf(clientsState.Data).GetD(clientID); if !has { return nil }
-    info:=ClientInfo{BrowserID:c.Deref().GetOrPanic("BrowserID").(string), ClientID:clientID}
+    c,has:=dyn.DOf(clientsState.Data).GetD(clientID); if !has { return nil }
+    info:=ClientInfo{BrowserID:c.DerefD().GetVOrPanic("BrowserID").Interface().(string), ClientID:clientID}
     // In the future, I might also want to fetch the 'browsers' state and inclue some info from there, but right now, it's just blank objects.
     // Might also want to include a list of other clientIDs that have the same browserID...
     return &info
@@ -148,16 +150,16 @@ func (s *CometServer) ClientConnect(browserID,requestedClientID string, onSucces
             if cInfo.BrowserID!=browserID { return "" }
             return requestedClientID
         }()
-        if clientID=="" { clientID=_newID(-1,clients.Data) }
+        if clientID=="" { clientID=_newID(-1,V(clients.Data)) }
         if rcv,has:=s.receives[clientID]; has { rcv.Shutdown(true) }  // Check for an existing connection with the same clientID and hijack it ('true').  'true' means that we are hijacking the previous connection, causing existing connections to be shut down and forcing existing clients to re-connect with a different clientID.
         fmt.Fprintln(os.Stderr, "Connected: browserID="+browserID, "clientID="+clientID)
-        if _,has:=DOf(clients.Data).GetV(clientID); !has { clients.Edit(Operations{ {Op:"create", Key:clientID, Value:&ClientState{BrowserID:browserID}} }) }
+        if _,has:=clients.Data.GetV(clientID); !has { clients.Edit(Operations{ {Op:"create", Key:clientID, Value:dyn.NewD(ClientState{BrowserID:browserID, IsValid:true})} }) }
         s.touchClient(clientID, func(){onSuccess(ClientInfo{BrowserID:browserID,ClientID:clientID})}, onError)
     }, onError)
 }
 func (s *CometServer) ClientDisconnect(clientID string, onSuccess func(), onError func(interface{})) {
     s.DB.GetState("clients", func(clients *State, _ string) {
-        if _,has:=DOf(clients.Data).GetV(clientID); !has {
+        if _,has:=dyn.DOf(clients.Data).GetV(clientID); !has {
             if onError==nil { onError=LOG_ERR }
             onError(errors.New("clientID not found: "+clientID))
             return
@@ -174,8 +176,8 @@ func (s *CometServer) removeClient(clientsState *State, clientID string) {
 func (s *CometServer) removeStaleClients() {
     s.DB.GetState("clients", func(clients *State, _ string) {
         curTime:=time.Now()
-        for _,clientID:=range DOf(clients.Data).Keys() {
-            if curTime.Sub(DOf(clients.Data).GetDOrPanic(clientID).Deref().GetOrPanic("Atime").(time.Time)) > s.ConnectionStaleTime {
+        for _,clientID:=range clients.Data.Keys() {
+            if curTime.Sub(dyn.DOf(clients.Data).GetDOrPanic(clientID).DerefD().GetVOrPanic("Atime").Interface().(time.Time)) > s.ConnectionStaleTime {
                 fmt.Fprintln(os.Stderr, "Removing Stale Client:", clientID)
                 s.removeClient(clients, clientID.(string))
             }
@@ -185,9 +187,9 @@ func (s *CometServer) removeStaleClients() {
 func (s *CometServer) touchClient(clientID string, onSuccess func(), onError func(interface{})) {
     s.DB.GetState("clients", func(clients *State, _ string) {
         now:=time.Now()
-        clients.Edit(Operations{ {Op:"update!", Path:[]interface{}{clientID}, Key:"Atime", Value:now } })
+        clients.Edit(Operations{ {Op:"update!", Path:[]interface{}{clientID}, Key:"Atime", Value:dyn.NewD(now) } })
         s.DB.GetState("browsers", func(browsers *State, _ string) {
-            browsers.Edit(Operations{ {Op:"update!", Path:[]interface{}{DOf(clients.Data).GetOrPanic(clientID).(*ClientState).BrowserID}, Key:"Atime", Value:now} })
+            browsers.Edit(Operations{ {Op:"update!", Path:[]interface{}{dyn.DOf(clients.Data).GetVOrPanic(clientID).Interface().(ClientState).BrowserID}, Key:"Atime", Value:dyn.NewD(now)} })
             if onSuccess!=nil { onSuccess() }
         }, onError)
     }, onError)
@@ -203,44 +205,44 @@ func (s *CometServer) ClientSend(clientID string, bundle []M, onSuccess func([]M
             if replied { panic(errors.New("Already replied@")) }
             if callNum==1 && result==nil {
                 // Blank Immediate result.
-                next(nil, nil)
+                next(V{}, nil)
             } else if callNum==1 && result!=nil {
                 // Immediate result
                 replied=true
-                next(M{"op":"REPLY", "cbID":bundleItem["cbID"]}.Extend(result), nil)
+                next(reflect.ValueOf(M{"op":dyn.NewD("REPLY"), "cbID":dyn.NewD(bundleItem["cbID"])}.Extend(result)), nil)
             } else if callNum==2 && result==nil {
                 panic(errors.New("Falsey Delayed reply!"))
             } else if callNum==2 && result!=nil {
                 // Delayed result
                 replied=true
-                s.AddToReceiveQ(clientID, M{"op":"REPLY", "cbID":bundleItem["cbID"]}.Extend(result))
+                s.AddToReceiveQ(clientID, M{"op":dyn.NewD("REPLY"), "cbID":dyn.NewD(bundleItem["cbID"])}.Extend(result))
             } else { panic(errors.New("This should never happen.")) }
         }
-        handler:=s.GetOpHandler(bundleItem["op"].(string))
+        handler:=s.GetOpHandler(V(*bundleItem["op"]).Interface().(string))
         s.DB.Solo().SetTimeout(func(){ handler(clientID,bundleItem,reply) }, 0)  // We use this 'SetTimeout()' to accomplish two things:  1) Prevent stack overflow (actually not an issue for Go), and prevent one client from hogging the server.  2) Guarantee correct order of operations, regardless of the async implementation of the handlers.  Without this timeout, it's easy for operations to become reversed depending on whether an async function is really asynchronous or whether it's synchronous with and async interface.
     }
     chain:=make([]SlideFn,0,len(bundle))
-    for _,bundleItem:=range bundle { chain=append(chain, SlideFn{fn:fn, args:[]interface{}{bundleItem}}) }
-    SlideChain(chain, func(results []interface{}, err error) {
+    for _,bundleItem:=range bundle { chain=append(chain, SlideFn{fn:fn, args:[]V{reflect.ValueOf(bundleItem)}}) }
+    SlideChain(chain, func(results []V, err error) {
         if err!=nil { panic(errors.New("I have never seen this.")) }
         out:=make([]M,0,len(results))
         for _,r:=range results {
-            if r==nil { continue }
-            out=append(out,r.(M))
+            if !r.IsValid() { continue }
+            out=append(out,r.Interface().(M))
         }
         if onSuccess!=nil { onSuccess(out) }
     })
 }
 func (s *CometServer) AddToReceiveQ(clientID string, data M) {
     s.DB.GetState("clients", func(clients *State, _ string) {
-        c,has:=DOf(clients.Data).Get(clientID);  C:=c.(*ClientState)
+        c,has:=dyn.DOf(clients.Data).GetV(clientID);  C:=c.Interface().(ClientState)
         if !has { return }  // The client disconnected while we were sending data to them.  Discard the data.
-        if data["_disposable"]==true {
+        if V(*data["_disposable"]).Interface()==true {
             // This data is disposable.  Throw it out if the queue is already too long:
             if len(C.ReceiveQ) > s.DisposableQueueSizeLimit { return }
             delete(data, "_disposable")  // Save some bandwidth.
         }
-        clients.Edit(Operations{ {Op:"arrayPush", Path:[]interface{}{clientID, "ReceiveQ"}, Value:data} })
+        clients.Edit(Operations{ {Op:"arrayPush", Path:[]interface{}{clientID, "ReceiveQ"}, Value:dyn.NewD(data)} })
         if rcv,has:=s.receives[clientID]; has { rcv.DataIsWaiting(len(C.ReceiveQ)) }
     }, nil)
 }
@@ -248,7 +250,7 @@ func Broadcast_includeAll(clientID string, data M, cb func(bool)) { cb(true) }  
 func (s *CometServer) Broadcast(excludeConnIDs []string, shouldIncludeFunc func(clientID string, data M, cb func(bool)), data M) {
     excludeMap:=make(map[string]bool, len(excludeConnIDs)); for _,id:=range excludeConnIDs { excludeMap[id]=true }
     s.DB.GetState("clients", func(clients *State, _ string) {
-        DOf(clients.Data).Each(func(clientIDI,_ interface{}) {
+        dyn.DOf(clients.Data).EachV(func(clientIDI interface{},_ reflect.Value) {
             clientID:=clientIDI.(string)
             if excludeMap[clientID] { return }
             shouldIncludeFunc(clientID, data, func(shouldInclude bool) {
@@ -288,10 +290,10 @@ func (s *CometServer) ClientReceive(clientID string, onSuccess func([]M), onErro
     send := func() {
         s.DB.GetState("clients", func(clients *State, _ string) {
             if s.receives[clientID]!=myObj { return }  // The connection was already shut down.
-            c,has:=DOf(clients.Data).Get(clientID)
+            c,has:=dyn.DOf(clients.Data).GetV(clientID)
             if !has { myObj.Shutdown(false); return }  // The client disconnected.  There's no point to send any data.  (Also, it would cause a "Path now found" exception in the edit() below.)  Just shut down the socket and stuff like that.
-            out=c.(*ClientState).ReceiveQ
-            clients.Edit(Operations{ {Op:"update", Path:[]interface{}{clientID}, Key:"ReceiveQ", Value:make([]M,0,4)} })
+            out=c.Interface().(ClientState).ReceiveQ
+            clients.Edit(Operations{ {Op:"update", Path:[]interface{}{clientID}, Key:"ReceiveQ", Value:dyn.NewD(make([]M,0,4))} })
             myObj.Shutdown(false)
         }, onError)
     }
@@ -309,7 +311,7 @@ fmt.Fprintln(os.Stderr, "Forcing send due to waitingCount")
 
     // Finally, if there is data already waiting, initiate the process:
     s.DB.GetState("clients", func(clients *State, _ string) {
-        curLen:=len(DOf(clients.Data).GetOrPanic(clientID).(*ClientState).ReceiveQ)
+        curLen:=len(dyn.DOf(clients.Data).GetVOrPanic(clientID).Interface().(ClientState).ReceiveQ)
         if curLen>0 { myObj.DataIsWaiting(curLen) }
     }, onError)
 }
@@ -352,7 +354,10 @@ func HttpHandler_connect(comet *CometServer, options HttpInstallOptions) func(ht
                 fmt.Fprintln(os.Stderr, "Disconnected: browserID="+browserID, "clientID="+clientID)
                 comet.BrowserInfo(browserID, func(browserInfo *BrowserInfo) {
                     if browserInfo==nil { onError(errors.New("Disconnect: browserID not found (weird!): "+browserID)); return }  // This would be weird, since we *just* validate the browserID...
-                    if _,has:=browserInfo.Clients[clientID]; !has { onError(errors.New("Disconnect: Wrong browserID, or expired client.")); return }
+                    if _,has:=browserInfo.Clients[clientID]; !has {
+                        //onError(errors.New("Disconnect: Wrong browserID, or expired client.")); return  // JS version
+                        fmt.Fprintln(os.Stderr, "Disconnect: Wrong browserID, or expired client."); WriteHeader(res,500); onSuccess(); return  // Go version
+                    }
                     comet.ClientDisconnect(clientID, func() {
                         setJsonResponseHeaders(res)
                         res.Write([]byte("{}"))
@@ -368,7 +373,7 @@ func HttpHandler_connect(comet *CometServer, options HttpInstallOptions) func(ht
             browserID:="0000"
             func() {
                 defer func(){recover()}()  // "defer recover()"  doesn't work.
-                browsers.Edit(Operations{ {Op:"create", Key:browserID, Value:&BrowserState{}} })
+                browsers.Edit(Operations{ {Op:"create", Key:browserID, Value:dyn.NewD(&BrowserState{})} })
             }()
             afterWeHaveABrowserID(browserID)
         }, onError)
@@ -473,22 +478,23 @@ func NewCometDBServer(comet *CometServer, db DB, accessPolicy AccessPolicyFN) *C
 }
 func (s *CometDBServer) SetAccessPolicy(accessPolicy AccessPolicyFN) {
     if accessPolicy==nil { accessPolicy=AccessPolicy_Denied }  // 'Denied' is the only safe default.
+    s.AccessPolicy=accessPolicy
 }
 func (s *CometDBServer) shouldIncludeInBroadcast(clientID string, data M, cb func(bool)) {
-    s.AccessPolicy(clientID, data["id"].(string), func(access Policy){ cb(access.Read) })
+    s.AccessPolicy(clientID, V(*data["id"]).Interface().(string), func(access Policy){ cb(access.Read) })
 }
 func (s *CometDBServer) SetDB(db DB) {
     if db==nil { panic(errors.New("Nil DB")) }
     if s.DB!=nil { panic(errors.New("DB replacement not implemented yet.")) }  // When replacing a stateDB, you would need to unregister callback, re-load currently-used states... etc.
     s.DB=db
-    db.OnD(s.dbEventCallback, struct{Obj,Method interface{}}{Obj:s, Method:"dbEventCallback"}, nil)
+    db.OnD(s.dbEventCallback, struct{Obj,Method interface{}}{Obj:s, Method:"dbEventCallback"}, V{})
 }
 func (s *CometDBServer) dbEventCallback(id string, state *State, op string, data interface{}) {
     // Eventually, I will also need to add handling of the 'reset' event.  I'll get to that when I add the DirDB, and have more complex loading/unloading of data.
     switch op {
-    case "create": s.broadcast(M{"op":"createState", "id":id, "stateData":state.Data})
-    case "delete": s.broadcast(M{"op":"deleteState", "id":id})
-    case "delta":  s.broadcast(M{"op":op, "id":id, "delta":data.(Delta)})
+    case "create": s.broadcast(M{"op":dyn.NewD("createState"), "id":dyn.NewD(id), "stateData":&state.Data})
+    case "delete": s.broadcast(M{"op":dyn.NewD("deleteState"), "id":dyn.NewD(id)})
+    case "delta":  s.broadcast(M{"op":dyn.NewD(op), "id":dyn.NewD(id), "delta":dyn.NewD(data.(Delta))})
     default: fmt.Fprintln(os.Stderr, "Unknown dbEventCallback op:", id, state, op, data)
     }
 }
@@ -510,66 +516,70 @@ func (s *CometDBServer) ignoreSend(clientIDs []string, data M) {
     s.ignoreSendList=append(s.ignoreSendList, Ignore{DataStr:Stringify(data), ClientIDs:clientIDs})
 }
 func (s *CometDBServer) InstallOpHandlers() {
+    // It's interesting to note that this design currently restricts me to having only ONE CometDB per server because the Ops (getState, createState,...) are global.  To have more than one DB, I'd need to include some kind of dbID with the Op.
     s.Comet.SetOpHandler("getState", func(clientID string, data M, reply func(M)) {
-        dataIDI,has:=data["id"]; if !has { reply(M{"error":"Missing ID"}); return }
-        dataID,ok:=dataIDI.(string); if !ok { reply(M{"error":"Non-String ID"}); return }
+        dataIDD,has:=data["id"]; if !has { reply(M{"error":dyn.NewD("Missing ID")}); return }
+        dataID,ok:=V(*dataIDD).Interface().(string); if !ok { reply(M{"error":dyn.NewD("Non-String ID")}); return }
         reply(nil)  // Send an Immediate blank reply.
         s.AccessPolicy(clientID, dataID, func(access Policy) {
             if access.Read { s.DB.GetState(dataID,
-                                           func(state *State, id string) { reply(M{"id":dataID, "stateData":state.Data}) },
-                                           func(err interface{}) { reply(M{"id":dataID, "error":err.(error).Error()}) })
-            } else { reply(M{"id":dataID, "error":"Access Denied"}) }
+                                           func(state *State, id string) { reply(M{"id":dataIDD, "stateData":&state.Data}) },
+                                           func(err interface{}) { reply(M{"id":dataIDD, "error":dyn.NewD(fmt.Sprintf("%v",err))}) })
+            } else { reply(M{"id":dataIDD, "error":dyn.NewD("Access Denied")}) }
         })
     })
     s.Comet.SetOpHandler("createState", func(clientID string, data M, reply func(M)) {
-        dataIDI,has:=data["id"]; if !has { reply(M{"error":"Missing ID"}); return }
-        dataID,ok:=dataIDI.(string); if !ok { reply(M{"error":"Non-String ID"}); return }
+        dataIDD,has:=data["id"]; if !has { reply(M{"error":dyn.NewD("Missing ID")}); return }
+        dataID,ok:=V(*dataIDD).Interface().(string); if !ok { reply(M{"error":dyn.NewD("Non-String ID")}); return }
         reply(nil)
         s.AccessPolicy(clientID, dataID, func(access Policy) {
             if access.Create {
-                s.ignoreSend([]string{clientID}, M{"op":data["op"], "id":dataID, "stateData":data["stateData"]})
+                s.ignoreSend([]string{clientID}, M{"op":data["op"], "id":dataIDD, "stateData":data["stateData"]})
                 s.DB.CreateState(dataID,
-                                 NewState(data["stateData"]),
-                                 func(state *State, id string) { reply(M{"id":dataID}) },
-                                 func(err interface{}) { reply(M{"id":dataID, "error":err.(error).Error()}) })
-            } else { reply(M{"id":dataID, "error":"Access Denied"}) }
+                                 NewState(*data["stateData"]),
+                                 func(state *State, id string) { reply(M{"id":dataIDD}) },
+                                 func(err interface{}) { reply(M{"id":dataIDD, "error":dyn.NewD(fmt.Sprintf("%v",err))}) })
+            } else { reply(M{"id":dataIDD, "error":dyn.NewD("Access Denied")}) }
         })
     })
     s.Comet.SetOpHandler("deleteState", func(clientID string, data M, reply func(M)) {
-        dataIDI,has:=data["id"]; if !has { reply(M{"error":"Missing ID"}); return }
-        dataID,ok:=dataIDI.(string); if !ok { reply(M{"error":"Non-String ID"}); return }
+        dataIDD,has:=data["id"]; if !has { reply(M{"error":dyn.NewD("Missing ID")}); return }
+        dataID,ok:=V(*dataIDD).Interface().(string); if !ok { reply(M{"error":dyn.NewD("Non-String ID")}); return }
         reply(nil)
         s.AccessPolicy(clientID, dataID, func(access Policy) {
             if access.Remove {
-                s.ignoreSend([]string{clientID}, M{"op":data["op"], "id":dataID})
+                s.ignoreSend([]string{clientID}, M{"op":data["op"], "id":dataIDD})
                 s.DB.DeleteState(dataID,
-                                 func(state *State, id string) { reply(M{"id":dataID}) },
-                                 func(err interface{}) { reply(M{"id":dataID, "error":err.(error).Error()}) })
-            } else { reply(M{"id":dataID, "error":"Access Denied"}) }
+                                 func(state *State, id string) { reply(M{"id":dataIDD}) },
+                                 func(err interface{}) { reply(M{"id":dataIDD, "error":dyn.NewD(fmt.Sprintf("%v",err))}) })
+            } else { reply(M{"id":dataIDD, "error":dyn.NewD("Access Denied")}) }
         })
     })
     s.Comet.SetOpHandler("delta", func(clientID string, data M, reply func(M)) {
-        dataIDI,has:=data["id"]; if !has { reply(M{"error":"Missing ID"}); return }
-        dataID,ok:=dataIDI.(string); if !ok { reply(M{"error":"Non-String ID"}); return }
+        dataIDD,has:=data["id"]; if !has { reply(M{"error":dyn.NewD("Missing ID")}); return }
+        dataID,ok:=V(*dataIDD).Interface().(string); if !ok { reply(M{"error":dyn.NewD("Non-String ID")}); return }
+        _,has=data["delta"]; if !has { reply(M{"error":dyn.NewD("Missing delta")}); return }
+        data["delta"]=dyn.NewD(*(Parse(Stringify(data["delta"]),&Delta{}).(*Delta)))  // Inefficiently convert map[string]interface{} to Delta
         reply(nil)
         s.AccessPolicy(clientID, dataID, func(access Policy) {
             if access.Update {
                 s.DB.GetState(dataID,
                               func(state *State, id string) {
-                                  s.ignoreSend([]string{clientID}, M{"op":data["op"], "id":dataID, "delta":Parse(Stringify(data["delta"]),Delta{}) })
+                                  s.ignoreSend([]string{clientID}, M{ "op":data["op"], "id":dataIDD, "delta":data["delta"] })
                                   if func() (escape bool) {
                                       defer func(){
                                           if err:=recover(); err!=nil {
                                               escape=true
-                                              reply(M{"id":dataID, "error":err.(error).Error()})
+fmt.Printf("%s\n",debug.Stack())
+                                              reply(M{"id":dataIDD, "error":dyn.NewD(fmt.Sprintf("%v",err))})
                                           }
                                       }()
-                                      state.ApplyDelta(data["delta"].(Delta))
+                                      state.ApplyDelta(V(*data["delta"]).Interface().(Delta))
                                       return
                                   }() { return }
-                                  reply(M{"id":dataID})
-                              }, func(err interface{}) { reply(M{"id":dataID, "error":err.(error).Error()}) })
-            } else { reply(M{"id":dataID, "error":"Access Denied"}) }
+                                  reply(M{"id":dataIDD})
+                              }, func(err interface{}) { reply(M{"id":dataIDD, "error":dyn.NewD(fmt.Sprintf("%v",err))}) })
+            } else { reply(M{"id":dataIDD, "error":dyn.NewD("Access Denied")}) }
         })
     })
 }

@@ -1465,6 +1465,21 @@ JSync.CometDB.prototype.exists = function(id, callback) {
     });
 };
 JSync.CometDB.prototype.listIDs = function(callback) {
+    // 2018-03-09: WTF, why isn't this method implemented?!?  I thought I finished this...
+    //             Am I supposed to just reach into the inner DB?  Obviously not, because 'exists()' uses this.  
+    //             I guess I just never needed this yet?
+    //
+    //             Thinking about it a bit, this is actually not trivial to implement;  I don't
+    //             yet have a 'listStates' or 'exists' opHandler on the server side.  Also,
+    //             there are AccessPolicy logics, along with efficiency considerations of
+    //             querying every state (how can you even do that when you have GBs of states???).
+    //             Finally, 'exists' is fundamentally a racey operation; 'getState' is probaby just a
+    //             simpler and better solution.
+    //
+    //             I guess I'll just try to survive without this until I really really need it.
+    //             If I really need a list, maybe I can maintain it in a State, or use the inner DB.
+    //
+    throw new Error('Not Implemented');
 };
 JSync.CometDB.prototype.fetchState = function(id, onSuccess, onError) {
     onSuccess = onSuccess || NOOP; onError = onError || LOG_ERR;

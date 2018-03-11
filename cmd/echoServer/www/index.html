@@ -12,7 +12,8 @@
          syncClient=JSync.CometClient('/rt')
          syncClient.ready.waitReady('CometClient.connect', function(){
             setTimeout(function(){
-                syncClient.addToSendQ({op:'echoImmediate', a:1, b:'hi', c:1.234}, function(reply,next){ console.log(reply); next() })
+                syncClient.addToSendQ({op:'echoImmediate', a:1, b:'hello', c:1.234}, function(reply,next){ console.log(reply); next() })
+                syncClient.addToSendQ({op:'echo', a:2, b:'world', c:3.14}, function(reply,next){ console.log(reply); next() })
             }, 500)
          })
        })()
