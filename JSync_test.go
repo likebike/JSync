@@ -3,10 +3,12 @@ package JSync
 import (
     "seb"
     "seb/solo"
+    "seb/dyn"
     "testing"
     "fmt"
     "time"
     "sync"
+    "reflect"
 )
 
 var assert,zssert=seb.Assert,seb.Zssert
@@ -54,26 +56,26 @@ func TestA4(t *T) {
             b byte
         }
     }{a:struct{b byte}{b:'c'}}
-    result:=Target(data1,[]interface{}{"a","b"}).(byte)
+    result:=TargetV(reflect.ValueOf(data1),[]interface{}{"a","b"}).Interface().(byte)
     assert(result=='c', "expected:",'c', "got:",result)
 
     data2:=map[string]struct{b byte}{"a":struct{b byte}{b:'c'}}
-    result=Target(data2,[]interface{}{"a","b"}).(byte)
+    result=TargetV(reflect.ValueOf(data2),[]interface{}{"a","b"}).Interface().(byte)
     assert(result=='c', "expected:",'c', "got:",result)
 
     data3:=map[string][]byte{"a":[]byte{'c'}}
-    result=Target(data3,[]interface{}{"a",0}).(byte)
+    result=TargetV(reflect.ValueOf(data3),[]interface{}{"a",0}).Interface().(byte)
     assert(result=='c', "expected:",'c', "got:",result)
 
     data4:=map[string]string{"a":"cat"}
-    result=Target(data4,[]interface{}{"a",0}).(byte)
+    result=TargetV(reflect.ValueOf(data4),[]interface{}{"a",0}).Interface().(byte)
     assert(result=='c', "expected:",'c', "got:",result)
 }
 
 func TestA5(t *T) {
     data:=struct{a []interface{}}{a:[]interface{}{1,2,"3"}}
     expected:=`{"a":[1,2,"3"]}`
-    result:=Stringify(DeepCopy(data))
+    result:=Stringify(D(DeepCopy(reflect.ValueOf(data))))
     assert(result==expected, "expected:",expected, "got:",result)
 
     assert(DeepEqual(data,data))
@@ -81,63 +83,62 @@ func TestA5(t *T) {
 
 func TestA6(test *T) {
     s:=make([]int,2,2); s[0],s[1]=0,1
-    d:=Edit(&s, Operations{ {Op:"create", Path:nil, Key:2, Value:20 } })
+    d:=Edit(reflect.ValueOf(&s), Operations{ {Op:"create", Path:nil, Key:2, Value:dyn.NewD(20) } })
     assert(Stringify(d)==`{"endHash":"0xa1cf69fb","startHash":"0x323bd0cf","steps":[{"after":20,"key":2,"op":"create","path":[]}]}` &&
            Stringify(s)==`[0,1,20]`, Stringify(d),Stringify(s))
-    d=Edit(&s, Operations{ {Op:"update", Path:nil, Key:2, Value:30 } })
+    d=Edit(reflect.ValueOf(&s), Operations{ {Op:"update", Path:nil, Key:2, Value:dyn.NewD(30) } })
     assert(Stringify(d)==`{"endHash":"0x42f3536b","startHash":"0xa1cf69fb","steps":[{"after":30,"before":20,"key":2,"op":"update","path":[]}]}` &&
            Stringify(s)==`[0,1,30]`, Stringify(d),Stringify(s))
-    d=Edit(&s, Operations{ {Op:"delete", Path:nil, Key:2 } })
+    d=Edit(reflect.ValueOf(&s), Operations{ {Op:"delete", Path:nil, Key:2 } })
     assert(Stringify(d)==`{"endHash":"0x323bd0cf","startHash":"0x42f3536b","steps":[{"before":30,"key":2,"op":"delete","path":[]}]}` &&
            Stringify(s)==`[0,1]`, Stringify(d),Stringify(s))
-    d=Edit(&s, Operations{ {Op:"arrayPush", Path:nil, Value:40 } })
+    d=Edit(reflect.ValueOf(&s), Operations{ {Op:"arrayPush", Path:nil, Value:dyn.NewD(40) } })
     assert(Stringify(d)==`{"endHash":"0x853b267a","startHash":"0x323bd0cf","steps":[{"after":40,"key":2,"op":"arrayInsert","path":[]}]}` &&
            Stringify(s)==`[0,1,40]`, Stringify(d),Stringify(s))
-    d=Edit(&s, Operations{ {Op:"arrayInsert", Path:nil, Key:1, Value:5 } })
+    d=Edit(reflect.ValueOf(&s), Operations{ {Op:"arrayInsert", Path:nil, Key:1, Value:dyn.NewD(5) } })
     assert(Stringify(d)==`{"endHash":"0x1aa037bf","startHash":"0x853b267a","steps":[{"after":5,"key":1,"op":"arrayInsert","path":[]}]}` &&
            Stringify(s)==`[0,5,1,40]`, Stringify(d),Stringify(s))
-    d=Edit(&s, Operations{ {Op:"arrayPop", Path:nil } })
+    d=Edit(reflect.ValueOf(&s), Operations{ {Op:"arrayPop", Path:nil } })
     assert(Stringify(d)==`{"endHash":"0x338a838e","startHash":"0x1aa037bf","steps":[{"before":40,"key":3,"op":"arrayRemove","path":[]}]}` &&
            Stringify(s)==`[0,5,1]`, Stringify(d),Stringify(s))
-    d=Edit(&s, Operations{ {Op:"arrayRemove", Path:nil, Key:0 } })
+    d=Edit(reflect.ValueOf(&s), Operations{ {Op:"arrayRemove", Path:nil, Key:0 } })
     assert(Stringify(d)==`{"endHash":"0x8f9209a0","startHash":"0x338a838e","steps":[{"before":0,"key":0,"op":"arrayRemove","path":[]}]}` &&
            Stringify(s)==`[5,1]`, Stringify(d),Stringify(s))
 
     m:=make(map[string]int); m["a"],m["b"]=0,1
-    d=Edit(m, Operations{ {Op:"create", Path:nil, Key:"c", Value:20 } })
+    d=Edit(reflect.ValueOf(m), Operations{ {Op:"create", Path:nil, Key:"c", Value:dyn.NewD(20) } })
     assert(Stringify(d)==`{"endHash":"0x3e19d6ef","startHash":"0x5bc2d078","steps":[{"after":20,"key":"c","op":"create","path":[]}]}` &&
            Stringify(m)==`{"a":0,"b":1,"c":20}`, Stringify(d),Stringify(m))
-    d=Edit(m, Operations{ {Op:"update", Path:nil, Key:"c", Value:30 } })
+    d=Edit(reflect.ValueOf(m), Operations{ {Op:"update", Path:nil, Key:"c", Value:dyn.NewD(30) } })
     assert(Stringify(d)==`{"endHash":"0x7a622bf8","startHash":"0x3e19d6ef","steps":[{"after":30,"before":20,"key":"c","op":"update","path":[]}]}` &&
            Stringify(m)==`{"a":0,"b":1,"c":30}`, Stringify(d),Stringify(m))
-    d=Edit(m, Operations{ {Op:"delete", Path:nil, Key:"c" } })
+    d=Edit(reflect.ValueOf(m), Operations{ {Op:"delete", Path:nil, Key:"c" } })
     assert(Stringify(d)==`{"endHash":"0x5bc2d078","startHash":"0x7a622bf8","steps":[{"before":30,"key":"c","op":"delete","path":[]}]}` &&
            Stringify(m)==`{"a":0,"b":1}`, Stringify(d),Stringify(m))
 
     t:=struct{a,b,c int}{a:0,b:1,c:2}
-    d=Edit(&t, Operations{ {Op:"update", Path:nil, Key:"c", Value:30 } })
+    d=Edit(reflect.ValueOf(&t), Operations{ {Op:"update", Path:nil, Key:"c", Value:dyn.NewD(30) } })
     assert(Stringify(d)==`{"endHash":"0x7a622bf8","startHash":"0xaa3ca07a","steps":[{"after":30,"before":2,"key":"c","op":"update","path":[]}]}` &&
            Stringify(t)==`{"a":0,"b":1,"c":30}`, Stringify(d),Stringify(t))
-    //d=Edit(&t, Operations{ {Op:"delete", Path:nil, Key:"c" } })
+    //d=Edit(reflect.ValueOf(&t), Operations{ {Op:"delete", Path:nil, Key:"c" } })
     //assert(Stringify(d)==`{"endHash":"0x7a622bf8","startHash":"0xaa3ca07a","steps":[{"before":30,"key":"c","op":"delete","path":[]}]}` &&
     //       Stringify(t)==`{"a":0,"b":1}`, Stringify(d),Stringify(t))
 
     a:=[3]int{0,1,2}
-    d=Edit(&a, Operations{ {Op:"update", Path:nil, Key:2, Value:30 } })
+    d=Edit(reflect.ValueOf(&a), Operations{ {Op:"update", Path:nil, Key:2, Value:dyn.NewD(30) } })
     assert(Stringify(d)==`{"endHash":"0x42f3536b","startHash":"0x749fd136","steps":[{"after":30,"before":2,"key":2,"op":"update","path":[]}]}` &&
            Stringify(a)==`[0,1,30]`, Stringify(d),Stringify(a))
 
 
-    type M map[string]interface{}
     type L []interface{}
-    obj:=M{"a":1}
-    ops:=Operations{{Op:"create", Key:"b", Value:M{"x":24}},
-                    {Op:"update!", Path:L{"b"}, Key:"c", Value:3},
-                    {Op:"update", Path:L{"b"}, Key:"c", Value:&L{30}},
+    obj:=M{"a":dyn.NewD(1)}
+    ops:=Operations{{Op:"create", Key:"b", Value:dyn.NewD(M{"x":dyn.NewD(24)})},
+                    {Op:"update!", Path:L{"b"}, Key:"c", Value:dyn.NewD(3)},
+                    {Op:"update", Path:L{"b"}, Key:"c", Value:dyn.NewD(&L{30})},
                     {Op:"delete", Key:"a"},
-                    {Op:"arrayInsert", Path:L{"b","c"}, Key:0, Value:"item-0"},
+                    {Op:"arrayInsert", Path:L{"b","c"}, Key:0, Value:dyn.NewD("item-0")},
                     {Op:"arrayRemove", Path:L{"b","c"}, Key:1}}
-    delta:=Edit(obj, ops)
+    delta:=Edit(reflect.ValueOf(obj), ops)
     assert(Stringify(delta)==`{"endHash":"0x2289c69e","startHash":"0xb02841f6","steps":[{"after":{"x":24},"key":"b","op":"create","path":[]},{"after":3,"key":"c","op":"create","path":["b"]},{"after":[30],"before":3,"key":"c","op":"update","path":["b"]},{"before":1,"key":"a","op":"delete","path":[]},{"after":"item-0","key":0,"op":"arrayInsert","path":["b","c"]},{"before":30,"key":1,"op":"arrayRemove","path":["b","c"]}]}`, "Big Edit Delta:",Stringify(delta));
     assert(Stringify(ReverseDelta(delta)), `{"endHash":"0xb02841f6","startHash":"0x2289c69e","steps":[{"after":30,"key":1,"op":"arrayInsert","path":["b","c"]},{"before":"item-0","key":0,"op":"arrayRemove","path":["b","c"]},{"after":1,"key":"a","op":"create","path":[]},{"after":3,"before":[30],"key":"c","op":"update","path":["b"]},{"before":3,"key":"c","op":"delete","path":["b"]},{"before":{"x":24},"key":"b","op":"delete","path":[]}]}`);
 
@@ -147,20 +148,20 @@ func TestB1(test *T) {
     d:=&Dispatcher{}
     out1:=0
     d.On(func(val int) { fmt.Println("cb1"); out1=val },nil)
-    d.Fire(123)
+    d.Fire(reflect.ValueOf(123))
     assert(out1==123)
     d.On(func() { fmt.Println("cb2"); out1=456 },nil)
     d.On(func(a,b,c int, d,e,f,g bool) { fmt.Println(a,b,c,d,e,f,g) },nil)
-    d.Fire(123)
+    d.Fire(reflect.ValueOf(123))
     assert(out1==456, "out1:",out1)
 }
 
 func TestB2(test *T) {
-    s:=NewState(map[string]int{"a":111})
+    s:=NewState(dyn.DOf(map[string]int{"a":111}))
     cbCount:=0
     cb:=func(state *State, etype string, edata Delta) { cbCount+=1 }
     s.On(cb,nil)
-    s.Edit(Operations{{Op:"create", Key:"b", Value:222}})
+    s.Edit(Operations{{Op:"create", Key:"b", Value:dyn.NewD(222)}})
     assert(cbCount==1)
     assert(Stringify(s.Data)==`{"a":111,"b":222}`, Stringify(s.Data))
 }
@@ -180,7 +181,7 @@ func TestB3(test *T) {
 
 func TestC1(test *T) {
     u:=solo.NewSoloroutine(); defer func(){ u.Stop(); time.Sleep(100*time.Millisecond); assert(u.stopped) }()
-    u.SyncSlow(fmt.Println, "hello", "soloroutine")
+    u.SyncSlow(fmt.Println, reflect.ValueOf("hello"), reflect.ValueOf("soloroutine"))
     badFn:=func(){ panic("panic from soloroutine call") }
     func() {
         defer func() {
@@ -192,7 +193,7 @@ func TestC1(test *T) {
         }()
         u.SyncSlow(badFn)
     }()
-    ret:=u.SyncSlow(fmt.Sprintf, "%s %d", "abc", 123); retS:=ret[0].(string); fmt.Println(retS)
+    ret:=u.SyncSlow(fmt.Sprintf, reflect.ValueOf("%s %d"), reflect.ValueOf("abc"), reflect.ValueOf(123)); retS:=ret[0].Interface().(string); fmt.Println(retS)
 
     var n int64
     inc:=func() { n++ }
@@ -207,8 +208,8 @@ func TestC1(test *T) {
 func TestC2(test *T) {
     gotChainResult:=false
     SlideChain([]SlideFn{
-        {fn:func(a,b,c interface{}, next func(interface{},error)){ next(fmt.Sprintf("%#v %#v %#v",a,b,c),nil) }, args:[]interface{}{1,"2",'3'}},
-    }, func(results []interface{}, err error){
+        {fn:func(a,b,c interface{}, next func(V,error)){ next(reflect.ValueOf(fmt.Sprintf("%#v %#v %#v",a,b,c)),nil) }, args:[]V{reflect.ValueOf(1),reflect.ValueOf("2"),reflect.ValueOf('3')}},
+    }, func(results []V, err error){
         gotChainResult=true
         fmt.Println("Chain Result:", results, err)
     })
@@ -216,9 +217,9 @@ func TestC2(test *T) {
 }
 
 func TestC3(test *T) {
-    db:=NewRamDB(nil, map[string]*State{
+    db:=NewRamDB(nil, dyn.DOf(map[string]*State{
         "test1":nil,
-    })
+    }))
     db.Exists("test1", func(exists bool) { fmt.Println("test1 Exists result:", exists) })
     db.Exists("test2", func(exists bool) { fmt.Println("test2 Exists result:", exists) })
     ch:=make(chan bool)
@@ -228,7 +229,7 @@ func TestC3(test *T) {
     <-ch
     db.GetState("test2", nil, func(err interface{}){ fmt.Println(err); ch<-true })
     <-ch
-    db.GetStateAutocreate("test2", nil, func(state *State, id string){ ch<-true }, nil)
+    db.GetStateAutocreate("test2", dyn.D{}, func(state *State, id string){ ch<-true }, nil)
     <-ch
     db.GetState("test2", func(state *State, id string){ fmt.Println(id,state); ch<-true }, nil)
     <-ch
@@ -398,8 +399,5 @@ func TestZ5(test *T) {
     fmt.Println("fl0:",fl0, "fl1:",fl1, "fl2:",fl2)
     assert(fl1!=fl2)
 }
-
-
-
 
 

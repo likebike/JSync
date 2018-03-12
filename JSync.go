@@ -80,19 +80,19 @@ func DelID(id string) {  // Use this after you're done with an ID.
     delete(_ids.m, id)
 }
 
-var _globals=struct { sync.Mutex; m map[string]*V }{m:make(map[string]*V)}
-func NewGlobal(v *V) (id string) {
+var _globals=struct { sync.Mutex; m map[string]V }{m:make(map[string]V)}
+func NewGlobal(v V) (id string) {
     _globals.Lock(); defer _globals.Unlock()
     id=_newID(0,reflect.ValueOf(_globals.m))
     _globals.m[id]=v
     return
 }
-func GetGlobal(id string) *V {
+func GetGlobal(id string) V {
     _globals.Lock(); defer _globals.Unlock()
     v,has:=_globals.m[id]; if !has { panic("Unknown global key!") }
     return v
 }
-func PopGlobal(id string) *V {
+func PopGlobal(id string) V {
     _globals.Lock(); defer _globals.Unlock()
     v,has:=_globals.m[id]; if !has { panic("Unknown global key!") }
     delete(_globals.m, id)
@@ -113,22 +113,16 @@ func DSHash(s string) string { // The Down Syndrome Hash algorithm, translated f
 
 
 
-type M map[string]*D
-func (m M) Extend(ms ...M) M {
-    for _,m2:=range ms {
-        for k,v:=range m2 { m[k]=v }
-    }
-    return m
-}
 
 func TargetV(o V, path []interface{}) V {  // If you're getting errors like "reflect.Value.Set using unaddressable value", it's probably because Go's interface{} values are unaddressable.  See: https://stackoverflow.com/a/48874650/2177445
-fmt.Println("TargetV in:",o,o.CanAddr())
+fmt.Println("Target begin:",o.CanAddr(),o)
     o=D(o).DerefV()
-fmt.Println("        deref0:",o,o.CanAddr())
-    for _,p:=range path { o=D(o).DerefD().GetVOrPanic(p)
-fmt.Println("        derefN:",p,o,o.CanAddr())
+fmt.Println("       deref:",o.CanAddr(),o)
+    for _,p:=range path {
+o=D(o).DerefD().GetVOrPanic(p)
+fmt.Println("       path=",p,":",o.CanAddr(),o)
 }
-fmt.Println("TargetV out:",o,o.CanAddr())
+fmt.Println("Target end:",o.CanAddr(),o)
     return o
 }
 //func Target(o interface{}, path []interface{}) interface{} { return TargetV(dyn.VOf(o), path).Interface() }
@@ -157,14 +151,14 @@ type Operation struct {
     Op    string        `json:"op"`
     Path  []interface{} `json:"path"`
     Key   OperationKey  `json:"key"`
-    Value *D            `json:"value"`
+    Value D             `json:"value"`
 }
 func (o *Operation) UnmarshalJSON(bs []byte) error {
     var O struct {
         Op    string
         Path  []interface{}
         Key   interface{}
-        Value *D
+        Value D
     }
     err:=json.Unmarshal(bs,&O); if err!=nil { return err }
     *o=Operation{Op:O.Op, Path:O.Path, Key:ToOperationKey(O.Key), Value:O.Value}
@@ -226,28 +220,25 @@ func Edit(objV V, operations Operations) Delta {  // racey!  You need to manage 
         key:=step.Key
         value:=step.Value
         target:=TargetV(objV, step.Path)
-fmt.Printf("Edit got Target: objV=%#v step.Path=%#v target=%#v\n",objV,step.Path,target)
         switch op {
         case "create","update","update!":
             if key==nil { panic("nil key!") }
-            if !V(*value).IsValid() { panic("nil value!") }  // If you want to set something to undefined, just delete instead.
+            if !V(value).IsValid() { panic("nil value!") }  // If you want to set something to undefined, just delete instead.
             VV,has:=D(target).GetV(key)
             if op=="update!" {
                 if has { op="update" } else { op="create" }
             }
             if op=="create" {
                 if has { panic(fmt.Sprintf("Already in target: %#v",key)) }
-fmt.Printf("Edit create: target=%#v key=%#v value=%#v\n",target,key,value)
-                D(target).Set(key,V(*value))
+                D(target).Set(key,V(value))
 
-                steps=append(steps,DeltaStep{Op:op, Path:path, Key:key, After:D(DeepCopy(V(*value)))})
+                steps=append(steps,DeltaStep{Op:op, Path:path, Key:key, After:D(DeepCopy(V(value)))})
             } else if op=="update" {
                 if !has { panic(fmt.Sprintf("Not in target: %#v",key)) }
                 before:=DeepCopy(VV)
                 // We do NOT check if 'before' and 'after' are equal, or try to detect NOOP operations (setting the same value that already exists, etc.).  Logical linearity is more important than saving a few steps.
-fmt.Printf("Edit update: target=%#v key=%#v value=%#v\n",target,key,value)
-                D(target).Set(key,V(*value))
-                steps=append(steps,DeltaStep{Op:op, Path:path, Key:key, Before:D(before), After:D(DeepCopy(V(*value)))})
+                D(target).Set(key,V(value))
+                steps=append(steps,DeltaStep{Op:op, Path:path, Key:key, Before:D(before), After:D(DeepCopy(V(value)))})
             } else { panic("Inconceivable!") }
         case "delete":
             if key==nil { panic("nil key!") }
@@ -263,10 +254,10 @@ fmt.Printf("Edit update: target=%#v key=%#v value=%#v\n",target,key,value)
             fallthrough
         case "arrayInsert":
             if key==nil { panic("nil key!") }
-            if !V(*value).IsValid() { panic("nil value!") }
+            if !V(value).IsValid() { panic("nil value!") }
             if !isInt(key) { panic("Expected an int key!") }
-            D(target).SliceInsert(key,V(*value))
-            steps=append(steps,DeltaStep{Op:op, Path:path, Key:key, After:D(DeepCopy(V(*value)))})
+            D(target).SliceInsert(key,V(value))
+            steps=append(steps,DeltaStep{Op:op, Path:path, Key:key, After:D(DeepCopy(V(value)))})
         case "arrayPop":
             if key!=nil { panic("arrayPop: Expected key to be nil!") }
             if target.Kind()!=reflect.Slice { panic("arrayPop: Expected a Slice target!") }
@@ -275,7 +266,7 @@ fmt.Printf("Edit update: target=%#v key=%#v value=%#v\n",target,key,value)
             fallthrough
         case "arrayRemove":
             if key==nil { panic("nil key!") }
-            if !V(*value).IsValid() { panic("non-nil value!") }
+            if !V(value).IsValid() { panic("non-nil value!") }
             if !isInt(key) { panic("Expected an int key!") }
             before:=DeepCopy(D(target).GetVOrPanic(key))
             D(target).SliceRemove(key)
@@ -643,7 +634,7 @@ func (db *RamDB) importData(data D) {
                 true)  // 'true' tells createState not to wait for READY, so we don't deadlock.
         }
         keys:=data.Keys(); steps:=make([]SlideFn,0,len(keys))
-        for _,id:=range keys { steps=append(steps,SlideFn{fn:create, args:[]V{dyn.VOf(id), data.GetVOrPanic(id)}}) }
+        for _,id:=range keys { steps=append(steps,SlideFn{fn:create, args:[]V{dyn.VOf(id), data.GetDOrPanic(id).PeelV()}}) }
         SlideChain(steps, func([]V,error){ db.ready.Ready("RamDB.importData") })
     })
 }
