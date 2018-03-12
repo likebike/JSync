@@ -1273,7 +1273,7 @@ JSync.CometClient.prototype.addToSendQ = function(data, replyHandler) {
         delete data['_disposable'];  // Save some bandwidth.
     }
     if(replyHandler) data.cbID = JSync.newGlobal(replyHandler);
-    this.sendQ[this.sendQ.length] = data;
+    this.sendQ[this.sendQ.length] = JSync.deepCopy(data);  // The copy is necessary to avoid races.
     this._send();
 };
 JSync.CometClient.prototype._send = function() {

@@ -23,8 +23,12 @@ import (
     "os"
     "errors"
 )
-type D=dyn.D
-type V=reflect.Value
+type (
+    D=dyn.D
+    M=dyn.M
+    L=dyn.L
+    V=reflect.Value
+)
 
 func init() { rand.Seed(time.Now().UnixNano()) }  // The math/rand uses a constant seed by default.
 
@@ -312,7 +316,9 @@ func ApplyDeltaBB(objV V, delta Delta, doNotCheckStartHash,doNotCheckEndHash boo
     // Note: The given object is modified.
     origObjStr:=Stringify(objV.Interface())
     if !doNotCheckStartHash && delta.StartHash!="" {
-        if DSHash(origObjStr)!=delta.StartHash { panic("Wrong StartHash!") }
+        if DSHash(origObjStr)!=delta.StartHash {
+fmt.Fprintln(os.Stderr, "Wrong StartHash: delta.StartHash=",delta.StartHash, "DSHash(origObjStr)=",DSHash(origObjStr), "origObjStr=",origObjStr)
+panic("Wrong StartHash!") }
     }
     stepI:=int(0)
     defer func(){
