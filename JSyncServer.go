@@ -573,7 +573,6 @@ fmt.Printf("%s\n%s\n",err,debug.Stack())  // Here temporarily until I have a mor
                                               reply(M{"id":dataIDD, "error":dyn.NewD(fmt.Sprintf("%v",err))})
                                           }
                                       }()
-fmt.Println("Applying Delta: stateData=",Stringify(state.Data.JSON()), "delta=",V(*data["delta"]).Interface().(Delta))
                                       state.ApplyDelta(V(*data["delta"]).Interface().(Delta))
                                       return
                                   }() { return }
@@ -583,8 +582,4 @@ fmt.Println("Applying Delta: stateData=",Stringify(state.Data.JSON()), "delta=",
         })
     })
 }
-
-
-
-
 

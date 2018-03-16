@@ -1,9 +1,23 @@
 // This a direct translation from JSync.js , that's why none of this is idiomatic Go.
-// After I get it running, I'll probably do another translation pass, implementing idiomatic Go and SSE.
+// I'll probably keep it this way, since it makes future porting/synchronization easy between all platforms.
 
 // It would be good to rename 'clientID' to 'connectionID' since it represents an ephemeral connection.
 // Also, 'browserID' would be better named 'clientID' since it is the ID of the client (browser, Go, or whatever).  But I don't think i'll change that since 'clientID' already means something else.
 // NOTE: According to the Git log, I intentionally converted 'connectionID' to 'clientID' on Aug 27 2015, with the commit message: "Makes more sense for stable streaming and communication.".   I guess I was thinking of the "connection" concept as a stable communication path, regardless of how that stability is achieved.  OK, whatever, i'll keep the current naming convention.
+
+// 2018-03-13:  I'm suspending development, since other things are high priority right now.  I'll come back to this in the future.
+// Here are the TODO items:
+//
+//     * BrowserID is currently hard-coded!  Implement cookies and real browserIDs.
+//     * It seems like there's a bug in the client-disconnect stuff.  I get a "Disconnected" message followed by a "Disconnect: Wrong browserID or expired client" message, so there's a race or bug or something.
+//     * Create a more general error reporting infrastructure.  Right now, most errors just get sent back to the client, and there's no reporting or stack trace on the server-side.  I have a hack sitting in the "delta" opHandler (JSynServer.go line 572) that prints out some stuff for that particular case, but I really need an error handler at a higher level in the HTTP chain.
+//     * More testing.  The only thing I have tested with are the echoServer.  Probably lots of bugs still.
+//     * Probably lots of race conditions.  Wrapping the CometServer/DB with Soloroutine more consistently.
+//     * Implement some persistent DB, like FileDB and DirDB, or maybe even a Sqlite-backed DB.
+//     * Implement a CometClient, so Go can talk to Node.
+//     * SSE instead of long-polling?  It might simplify things while improving performance.
+//
+
 
 package JSync
 
@@ -32,7 +46,7 @@ type (
 
 func init() { rand.Seed(time.Now().UnixNano()) }  // The math/rand uses a constant seed by default.
 
-var VERSION="201802241630";
+var VERSION="201803131700";
 
 
 /////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////////
@@ -50,6 +64,17 @@ func Stringify(o interface{}) string {
     bs,e:=json.Marshal(o); if e!=nil { panic(e) }
     return string(bs)
 }
+func DeepCopy(o V) V {
+    wasPointer:=false
+    if o.Kind()==reflect.Ptr { o,wasPointer=o.Elem(),true }
+    out:=reflect.New(o.Type()).Interface()
+    Parse(Stringify(o.Interface()),out)
+    outV:=dyn.VOf(out)
+    if !wasPointer { outV=outV.Elem() }
+    return outV
+}
+func DeepEqual(a,b interface{}) bool { return Stringify(a)==Stringify(b) }
+
 
 func Pad(s,p string, n int) string {
     for utf8.RuneCountInString(s)<n { s=p+s }
@@ -119,28 +144,12 @@ func DSHash(s string) string { // The Down Syndrome Hash algorithm, translated f
 
 
 func TargetV(o V, path []interface{}) V {  // If you're getting errors like "reflect.Value.Set using unaddressable value", it's probably because Go's interface{} values are unaddressable.  See: https://stackoverflow.com/a/48874650/2177445
-fmt.Println("Target begin:",o.CanAddr(),o)
     o=D(o).DerefV()
-fmt.Println("       deref:",o.CanAddr(),o)
-    for _,p:=range path {
-o=D(o).DerefD().GetVOrPanic(p)
-fmt.Println("       path=",p,":",o.CanAddr(),o)
-}
-fmt.Println("Target end:",o.CanAddr(),o)
+    for _,p:=range path { o=D(o).DerefD().GetVOrPanic(p) }
     return o
 }
 //func Target(o interface{}, path []interface{}) interface{} { return TargetV(dyn.VOf(o), path).Interface() }
 
-func DeepCopy(o V) V {
-    wasPointer:=false
-    if o.Kind()==reflect.Ptr { o,wasPointer=o.Elem(),true }
-    out:=reflect.New(o.Type()).Interface()
-    Parse(Stringify(o.Interface()),out)
-    outV:=dyn.VOf(out)
-    if !wasPointer { outV=outV.Elem() }
-    return outV
-}
-func DeepEqual(a,b interface{}) bool { return Stringify(a)==Stringify(b) }
 func isInt(o interface{}) bool { _,ok:=o.(int); return ok }
 
 type OperationKey interface{}
@@ -318,7 +327,8 @@ func ApplyDeltaBB(objV V, delta Delta, doNotCheckStartHash,doNotCheckEndHash boo
     if !doNotCheckStartHash && delta.StartHash!="" {
         if DSHash(origObjStr)!=delta.StartHash {
 fmt.Fprintln(os.Stderr, "Wrong StartHash: delta.StartHash=",delta.StartHash, "DSHash(origObjStr)=",DSHash(origObjStr), "origObjStr=",origObjStr)
-panic("Wrong StartHash!") }
+            panic("Wrong StartHash!")
+        }
     }
     stepI:=int(0)
     defer func(){
