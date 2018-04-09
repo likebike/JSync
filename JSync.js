@@ -429,6 +429,10 @@ JSync.pad = function(s, p, n) {
         s = p+s;
     return s;
 };
+JSync.rpad=function(s,p,n) {
+    while(s.length < n) s=s+p;
+    return s;
+}
 
 JSync.ID_CHARS = '0123456789abcdefghijkmnopqrstuvwxyzABCDEFGHIJKLMNPQRSTUVWXYZ';  // Removed l and O because they are easily confused with 1 and 0.
 JSync.ID_REGEX = new RegExp('^['+JSync.ID_CHARS+']+$');
