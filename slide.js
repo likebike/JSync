@@ -111,7 +111,8 @@ slide.asyncMap = function() {
     if(errState) return;
     var argLen = arguments.length;
     for(var i=1; i<argLen; i++) if(arguments[i] !== undefined) {
-      data[i-1] = (data[i-1] || []).concat(arguments[i]);
+      //data[i-1] = (data[i-1] || []).concat(arguments[i]);                  //////// Commented by Christopher Sebastian.  I disagree with the use of 'concat' to collect results.  I think it should be an append instead.
+      var col=data[i-1]||[]; col[col.length]=arguments[i]; data[i-1]=col;    //////// Added by Christopher Sebastian.
     }
     // see if any new things have been added.
     if(list.length > l) {
