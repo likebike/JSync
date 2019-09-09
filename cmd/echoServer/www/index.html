@@ -1,0 +1,31 @@
+<html>
+  <head>
+    <title>JSync Echo Server Demo</title>
+    <script type="text/javascript" src="/lib/underscore-1.5.2/underscore.js?_=001"></script>
+    <script type="text/javascript" src="/lib/jquery-1.10.2/jquery.js?_=001"></script>
+    <script type="text/javascript" src="/lib/JSync/slide.js?_=001"></script>
+    <script type="text/javascript" src="/lib/JSync/JSync.js?_=001"></script>
+    <script>
+      "use strict";
+      var syncClient, syncDB;
+      (function() {
+         syncClient=JSync.CometClient('/rt')
+         syncClient.ready.waitReady('CometClient.connect', function(){
+            syncClient.addToSendQ({op:'echoImmediate', a:1, b:'hello', c:1.234}, function(reply,next){ console.log(reply); next() })
+            syncClient.addToSendQ({op:'echo', a:2, b:'world', c:3.14}, function(reply,next){ console.log(reply); next() })
+            syncDB=JSync.CometDB(syncClient)
+            syncDB.getStateAutocreate("a", {a:1,b:"2",c:["0",1,"2"]}, function(state,id){
+                state.edit([{op:'create', key:'d', value:"Dee"},
+                            {op:'update', key:'a', value:3},
+                            {op:'delete', key:'b'},
+                            {op:'arrayInsert', path:['c'], key:1, value:'item-1'},
+                            {op:'arrayRemove', path:['c'], key:2},
+                            {op:'arrayPush', path:['c'], value:'item-3'}])
+            })
+         })
+       })()
+    </script>
+  </head>
+  <body>
+  </body
+</html>
